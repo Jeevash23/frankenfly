@@ -20,7 +20,7 @@ Each checkout has its own local records and imported data. A fresh checkout star
 | Source code and launch/setup scripts | Python environments, `node_modules`, compiled frontend and caches |
 | Dependency manifests and lockfiles | Environment files, private keys and personal editor/assistant settings |
 | Generic documentation and configuration examples | Raw logs, screenshots, benchmark reports and session-specific evidence |
-| Attributed `data/atlas/` and `data/examples/` assets | Imported connectivity, optional asset caches and `runs/` exports |
+| Attributed `data/atlas/`, `data/circuits/` and `data/examples/` assets | Imported connectivity, downloaded connectome data (`.cache/circuits/`), optional asset caches and `runs/` exports |
 
 The exclusions are defined in [.gitignore](../.gitignore). They preserve existing local files; they do not delete experiments or sanitize their contents. Creating a ZIP of the entire working folder bypasses these exclusions, so share a repository checkout/source archive instead of bundling the development environment.
 

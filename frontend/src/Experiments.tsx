@@ -34,7 +34,7 @@ import {
 } from './protocol';
 
 const lineColors = ['#527751', '#ba9152', '#8584b2', '#a26e67'];
-// Each overlaid run also gets its own line style, so runs never differ by colour alone.
+// Each overlaid run also gets its own line style, so runs never differ by color alone.
 const lineDashes = [undefined, '7 4', '2 3', '9 3 2 3'];
 const conditionName = (condition: string) =>
   conditionNames[condition as Condition] ?? condition.replaceAll('_', ' ');

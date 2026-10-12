@@ -54,7 +54,7 @@ function BrainCanvas({
   type: string;
   surface: boolean;
   includeCord: boolean;
-  // Live model output per neuron ID; drawn instead of the cell-type colour.
+  // Live model output per neuron ID; drawn instead of the cell-type color.
   tint: Record<string, number> | null;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);

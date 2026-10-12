@@ -9,6 +9,7 @@ import time
 import uuid
 import zipfile
 import numpy as np
+from digitalfly import __version__ as APPLICATION_VERSION
 from digitalfly.api.models import ConnectomeParameters, Event, Interventions, RunConfig, Sample, Stimulus, NeuralParameters
 from digitalfly.neural.connectome import TRACE_TYPES, ConnectomeCircuit
 from digitalfly.neural.model import RateCircuit
@@ -16,7 +17,6 @@ from digitalfly.simulation.engines import FlyGymBody, ToyBody, CONTROL_DT, PHYSI
 
 RECORD_LIMIT = 30000
 EVENT_LIMIT = 10000
-APPLICATION_VERSION = "0.2.0"
 
 
 def make_circuit(config: RunConfig):

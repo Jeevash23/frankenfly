@@ -19,7 +19,7 @@ export function ModelDialog({state, close}: {state: State | null; close: () => v
       <button className="icon-button dialog-close" onClick={close} aria-label="Close model notes">
         <X size={20} />
       </button>
-      <span className="eyebrow">MODEL NOTES / VERSION 0.2</span>
+      <span className="eyebrow">MODEL NOTES / VERSION 0.3</span>
       <h2>An inspectable research loop.</h2>
       <p>
         Real biomechanics, optional compound-eye input, and a choice of two neural models: an

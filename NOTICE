@@ -4,9 +4,10 @@ Copyright 2026 Jeevash23
 This project's source code and documentation are licensed under the Apache
 License, Version 2.0 (see LICENSE).
 
-That license does not cover the third-party scientific data in data/atlas/.
-Those files keep their original licenses, including CC BY-NC 4.0
-(non-commercial) for the FlyWire-derived files. See data/atlas/LICENSE.md.
+That license does not cover the third-party scientific data in data/atlas/
+and data/circuits/. Those files keep their original licenses, including
+CC BY-NC 4.0 (non-commercial) for all FlyWire-derived files. See
+data/atlas/LICENSE.md and data/circuits/LICENSE.md.
 
 This project includes code adapted from:
 
@@ -17,7 +18,10 @@ This project includes code adapted from:
   The body construction, reset posture and controller usage in
   backend/src/digitalfly/simulation/engines.py and scripts/smoke_flygym.py
   follow the FlyGym turning-controller tutorial. This project changes the
-  ground colors and camera placement and adds a visual target.
+  ground colors and camera placement and adds a visual target. The fast
+  controller path in engines.py re-implements HybridController.step,
+  HybridTurningController.step and get_bodysegment_contact_forces with
+  precomputed lookups and unchanged arithmetic.
 
 The web interface uses the Instrument Serif and DM Sans typefaces (SIL Open
 Font License 1.1, docs/INSTRUMENT-SERIF-LICENSE.txt and

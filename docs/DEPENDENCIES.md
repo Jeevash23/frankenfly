@@ -9,7 +9,7 @@
 
 No GPU or CUDA installation is required. Setup creates a project-local `backend/.venv`; it does not install drivers or change system settings. Each checkout should create its own environment and frontend dependencies.
 
-Reference validation covers macOS/ARM64. Linux/EGL and other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
+Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL rendering (v0.3). Other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
 
 ## Chosen stack
 
@@ -114,3 +114,11 @@ The research features use the existing pinned runtime packages; no extra GPU fra
 Anatomy data was downloaded from the official MaleCNS v1.0 bucket and the Bates/Lee lab FAFB v783 compilation. Small surface files came from navis-flybrains; no navis, trimesh, PyTorch, JAX or new graphics dependency was installed. A narrow NumPy reader handles the retained, hash-verified PLY assets. Details, sizes, coordinate assumptions and licensing: [RESEARCH.md](RESEARCH.md).
 
 Reproduce these checks using the commands above. Generated results belong in the ignored evidence directory; the public repository retains generic instructions and the validation summary.
+
+## v0.3 dependencies
+
+The connectome model needs no new runtime package: it uses NumPy and `scipy.sparse`; SciPy was already installed with FlyGym and is now declared directly, with unchanged pins and hashes. Building the circuit needs pyarrow 25.0.1, in the optional `data` extra and `backend/requirements-data.lock`; the app never imports it. The build downloads about 61 MB of FlyWire v783 data (13.5 MB of metadata and 47.3 MB of Parquet column chunks) into the ignored cache; sources and hashes are in `data/circuits/downloads.json`.
+
+The frontend's Node range is 22.12–26. Nothing needs Node 24: Vite 7 and its React plugin need 22.12 or newer, and CI runs on 22.12.0. Rollup's optional `@napi-rs/lzma` binary declares a newer Node, but it is a build-tool helper that rollup never loads at run time, and npm skips it on older Node versions.
+
+The continuous-integration workflow (`.github/workflows/ci.yml`) installs the hashed backend lock and the frontend lockfile on Ubuntu and runs everything except the FlyGym physics tests, which need an OpenGL context.

@@ -47,7 +47,7 @@ export function AppHeader({
         <span>
           {serverClosed ? 'Server stopped' : connected ? 'Local connection' : 'Connecting locally'}
         </span>
-        <span className="version">v0.2</span>
+        <span className="version">v0.3</span>
         <button className="icon-button" onClick={openModelNotes} aria-label="Open model notes">
           <CircleHelp size={16} />
         </button>

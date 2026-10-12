@@ -18,7 +18,7 @@ const typeDashes = [undefined, '6 4', '2 3', '8 3 2 3', '1 4'];
 
 type Group = 'descending' | 'sensory' | 'steering' | 'dna02' | 'input' | 'types';
 
-// Left is a solid line, right a dashed one, so the two never differ by colour alone.
+// Left is a solid line, right a dashed one, so the two never differ by color alone.
 function LineKey({color, dash}: {color: string; dash?: string}) {
   return (
     <svg width="22" height="8" aria-hidden="true">

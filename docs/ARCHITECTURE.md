@@ -7,7 +7,9 @@ Python world/body pose
         ↓
 selected sensor encoder (geometric or rendered compound eye) ← stimulus
         ↓                          ← sensory channel interventions
-six engineered leaky rate units    ← group silencing
+selected neural model              ← silencing (groups, or DNa02 / cell types)
+  · engineered: six leaky rate units (default)
+  · connectome_dna02: 3,000-neuron FlyWire v783 DNa02 subcircuit
         ↓
 left/right descending command
         ↓
@@ -22,8 +24,8 @@ The browser sends validated commands and plots Python samples. It never integrat
 
 - Body pose: world position `[x,y,z]` in **mm**, yaw in **radians**, speed in **mm/s**. Right-handed frame, `+z` upward, yaw counterclockwise from `+x`. The thorax's local `+x` determines forward heading.
 - Sensor encoder: geometric pose/stimulus features or rendered eye pixels → dimensionless bilateral intensities in `[0,1]`, followed by input interventions. Raw intensities, geometric bearing and distance are retained as diagnostics. Neural and motor code receive no target coordinates.
-- Neural circuit: declared two sensor values + silencing mask → six dimensionless continuous rates. No privileged target-coordinate shortcut reaches neural or motor code.
-- Motor interface: neural descending rates × 1.4, clipped to `[0,1.4]` → upstream CPG amplitudes. The explicit baseline returns `[1,1]` regardless of rates and is labeled as a bypass.
+- Neural circuit: declared two sensor values + silencing mask → dimensionless continuous rates (six for the engineered model; 3,000 for the connectome model, of which five readouts are recorded). No privileged target-coordinate shortcut reaches neural or motor code.
+- Motor interface: engineered descending rates × 1.4, clipped to `[0,1.4]`, or for the connectome model `1.4 × clip([tonic + turn, tonic − turn], 0, 1)` with `turn = output gain × (DNa02 R − DNa02 L)` → upstream CPG amplitudes `[left legs, right legs]`. The explicit baseline returns `[1,1]` regardless of rates and is labeled as a bypass.
 - Body adapter: descending command → 100 upstream controller/physics updates per control interval → finite body state. Controller proprioception uses FlyGym's supported `HybridControllerObservation.from_sim`.
 - The target also appears as a non-colliding green landmark in the MuJoCo world. The optional vision adapter pools actual eye-camera pixels through the upstream retina and an engineered contrast encoder. See `RESEARCH.md` for exact rates, units and assumptions.
 
@@ -47,6 +49,8 @@ b = [0, 0, 0, 0, 0.35, 0.35]
 
 `B` injects left/right signals into their sensory units. Steering uses a hand-chosen opponent difference (`±1.7`). Descending units receive sensory sum (`0.45` each) and opposing steering terms (`±0.85`). Exact matrices live in `backend/src/digitalfly/neural/model.py` and each export. They are not synapse counts or inferred biological weights. Silenced rates are clamped before and after every neural update and immediately at intervention boundaries.
 
+The connectome model's equations, data and assumptions are in [RESEARCH.md](RESEARCH.md#the-connectome-model): `r += dt/τ × (clip(W r + input, 0, 1) − r)` with `W_ij = sign(j) × synapses(j→i) × global gain`, a CSR sparse matrix rebuilt only when parameters change.
+
 The toy adapter uses speed `12 × mean(motor)` mm/s and yaw rate `4 × (right − left)` rad/s. It has no collision or leg physics. Seed initializes a small heading offset. The FlyGym model instead resolves MuJoCo contact, actuated joints and adhesion.
 
 ## Timing
@@ -60,7 +64,7 @@ The toy adapter uses speed `12 × mean(motor)` mm/s and yaw rate `4 × (right �
 | Step command | One 0.01 s control interval |
 | Telemetry/rendering | Target approximately 10 Hz wall time, capacity-dependent |
 
-Each control interval samples sensors, advances the neural model for ten substeps with those held observations, computes a motor pair, then advances physics 100 times with that held pair. CSV rows contain the sensor values actually used for that interval and the resulting body pose. They do not retrospectively replace the applied observation with a post-motion reading. While paused, moving a stimulus updates the instantaneous readout without advancing any dynamics.
+Each control interval samples sensors, advances the neural model for ten substeps with those held observations, computes a motor pair, then advances physics 100 times with that held pair. Each physics step builds the controller observation and runs the hybrid turning controller through precomputed lookups (`ContactForces`, `fast_turning_controller` in `engines.py`); the arithmetic is FlyGym 2.1.0's, in the same order, and a FlyGym test keeps the body state bitwise identical to FlyGym's own code path (`FlyGymBody(upstream=True)`). CSV rows contain the sensor values actually used for that interval and the resulting body pose. They do not retrospectively replace the applied observation with a post-motion reading. While paused, moving a stimulus updates the instantaneous readout without advancing any dynamics.
 
 FlyGym resets its neutral keyframe and seeded CPG, applies the upstream default leg posture, and performs a documented 50 ms body-only settling period. Application time is then set to zero. Reset restores the initial random-generator state, circuit, controller, recorder and clocks; the web Reset supplies the default target/intensity and clears interventions. The API Reset accepts an explicit initial RunConfig, including a custom starting stimulus.
 
@@ -95,3 +99,18 @@ Comparisons reuse the same authoritative worker and body. Each seed/condition pa
 The local launcher creates a Uvicorn Server instance and provides its own shutdown callback. `/api/shutdown` requires the current instance ID, JSON and the existing local-origin restrictions, then requests graceful Uvicorn exit. The lifespan closes the owning worker and graphics contexts. It does not signal arbitrary PIDs or other servers.
 
 Complete methods, data licensing and limitations are in [RESEARCH.md](RESEARCH.md).
+
+
+## v0.3 connectome model
+
+`RunConfig.neural_model` selects `engineered` (default) or `connectome_dna02`; `connectome_parameters` holds the latter's global settings. Switching models resets the experiment. `neural/connectome.py` loads and validates the committed circuit once per process (`load_circuit`, cached by file and modification time) and implements the same interface as the engineered `RateCircuit`: `configure`, `reset`, `advance`, `apply_silencing`, `motor`, `readout`, `description`.
+
+- **Interventions.** `silence` (engineered groups) and `silence_dna02` / `silence_types` (connectome) are each rejected with a 409 when the other model is active. Cell-type names are validated against the circuit file (422). Silenced neurons are clamped like the engineered units.
+- **API.** `POST /api/connectome/parameters` records a `connectome_parameters` event; `GET /api/connectome/circuit` returns a cell-type view for the current parameters (types with counts, hop layer, transmitters and sides; type-to-type connections aggregated by sign; per-side DNa02 inputs). `/api/capabilities` lists both models and the circuit's hash and coverage.
+- **State.** Samples record five readouts for the connectome model (DNa02 L/R, mean visual input L/R, circuit mean); the circuit mean makes replay sensitive to the whole hidden state. The snapshot adds a display-only `connectome` block at the 10 Hz publish rate: per-type mean rates, the turn command and the traces of the five most active types, from a 201-sample buffer aligned with `history`. Per-neuron rates never leave the worker.
+- **Exports.** Schema 3. `metadata.neural` carries the circuit file, its SHA-256, the parameters, sign rules, input and output mapping and the data/assumed/engineered labels; telemetry rate columns follow the model's readout names. `replay.py` compares whichever rate columns a run recorded and re-applies connectome parameter events.
+- **Comparisons.** Conditions add `engineered_model` and `connectome_model` (switch the model for that trial), `dna02_left_off`, `dna02_right_off`, `dna02_both_off` and `cell_type_off` (with `BatchRequest.cell_type`). Model-specific conditions are validated against the configuration's model.
+- **Data.** `scripts/build_circuit.py` and its pyarrow dependency are build-only; the app reads only the committed 1.1 MB JSON and needs nothing beyond the runtime lock (SciPy was already installed with FlyGym and is now declared).
+
+The connectome view in the browser lays cell types out by hop distance to DNa02 and laterality, never anatomy; it draws the 140 strongest type-to-type connections plus every connection of the selected type. In the atlas, the two female DNa02 skeletons are tinted with the live readout, labeled as model output.
+
