@@ -73,6 +73,6 @@ backend/.venv/bin/python scripts/benchmark.py --vision
 
 **Body viewport disabled:** `--no-render` keeps the real physics and shows the labeled pose map instead. If the body itself fails to initialize, the app shows the error and keeps FlyGym selected; it never switches to the toy demo silently. The toy demo is always labeled **"Toy demo: not FlyGym physics or a biological connectome."**
 
-**Linux headless rendering:** `MUJOCO_GL=egl ./scripts/start.sh` selects EGL, if your system has the EGL/OpenGL libraries installed. Setup never installs drivers or system packages. Linux rendering hasn't been validated yet.
+**Linux rendering:** in a desktop session MuJoCo's default GLFW context works. Without a display (SSH, containers), DigitalFly selects EGL automatically. To choose explicitly, start with `MUJOCO_GL=egl ./scripts/start.sh`, or `MUJOCO_GL=osmesa` if your system still ships OSMesa (recent Mesa releases do not). Setup never installs drivers or system packages.
 
 **Connection lost:** controls disable, the last received state stays on screen with a label, and the page reconnects automatically. The app talks only to your own computer, fonts and meshes included; there are no analytics, accounts or cloud services.

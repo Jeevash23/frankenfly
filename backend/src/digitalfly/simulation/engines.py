@@ -6,6 +6,7 @@ Physics, renderer creation, rendering and cleanup must use one owning thread.
 from io import BytesIO
 from pathlib import Path
 import os
+import sys
 import numpy as np
 from digitalfly.api.models import Pose, Stimulus, SensorState, Interventions
 
@@ -15,6 +16,9 @@ CONTROL_DT = .01
 NEURAL_DT = .001
 os.environ.setdefault("MPLCONFIGDIR", str(ROOT / ".cache/matplotlib"))
 os.environ.setdefault("FLYGYM_ASSET_CACHE_DIR", str(ROOT / "data/flygym-assets"))
+# Headless Linux has no display for MuJoCo's default GLFW context; EGL renders offscreen.
+if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+    os.environ.setdefault("MUJOCO_GL", "egl")
 
 
 class FlyGymBody:

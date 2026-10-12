@@ -3,8 +3,8 @@
 ## Requirements
 
 - A POSIX shell for the launch/setup scripts.
-- Python **3.12**, selected from PATH or supplied explicitly through `PYTHON_BIN`.
-- Node.js **24–26** and npm for installing/building the frontend.
+- Python **3.12**, selected from PATH, supplied explicitly through `PYTHON_BIN`, or (when [uv](https://docs.astral.sh/uv/) is installed and no other 3.12 is found) a uv-managed Python 3.12. The project environment is still created with `python -m venv` and installed from the hashed lock with pip.
+- Node.js **22.12–26** and npm for installing/building the frontend. Vite 7 needs Node 22.12 or newer. The frontend unit tests import TypeScript directly through Node's built-in type stripping, which the test script enables explicitly for Node 22.12–22.17 (later releases enable it by default).
 - An offscreen OpenGL context for the body camera and compound-eye sensing. Geometric sensing with `--no-render` can run without those images.
 
 No GPU or CUDA installation is required. Setup creates a project-local `backend/.venv`; it does not install drivers or change system settings. Each checkout should create its own environment and frontend dependencies.
@@ -31,7 +31,7 @@ Reference validation covers macOS/ARM64. Linux/EGL and other environments have n
 | psutil | 7.2.2 |
 | pytest / httpx | 9.1.1 / 0.28.1 |
 | pip-tools | 7.5.3 |
-| Node requirement | 24–26 |
+| Node requirement | 22.12–26 |
 | React / React DOM | 19.3.0 |
 | Vite / React plugin | 7.3.6 / 5.2.0 |
 | TypeScript | 5.9.3 |

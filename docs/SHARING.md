@@ -9,7 +9,7 @@ The project can live in any folder. A new user clones or downloads the source, o
 ./scripts/start.sh --vision --open
 ```
 
-Setup uses Python 3.12 from PATH or an explicit `PYTHON_BIN`, plus Node 24–26 and npm. It creates all dependencies inside the checkout. See the [README](../README.md#quick-start) for prerequisites and the [usage guide](USAGE.md) for graphics options and shutdown.
+Setup uses Python 3.12 from PATH, an explicit `PYTHON_BIN` or, when uv is installed, a uv-managed Python 3.12, plus Node 22.12–26 and npm. It creates all dependencies inside the checkout. See the [README](../README.md#quick-start) for prerequisites and the [usage guide](USAGE.md) for graphics options and shutdown.
 
 Each checkout has its own local records and imported data. A fresh checkout starts with an empty run library. The published anatomical examples remain available with their original scientific identifiers and source attribution.
 

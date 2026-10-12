@@ -27,7 +27,7 @@ Everything runs on your own computer, in your browser.</p>
 
 ## Quick start
 
-You need **Python 3.12**, **Node.js 24–26** with npm, and OpenGL for the 3D views. DigitalFly is tested on Apple-silicon macOS; Linux should work with EGL rendering but hasn't been tested.
+You need **Python 3.12**, **Node.js 22.12 or newer** (up to 26) with npm, and OpenGL for the 3D views. DigitalFly is tested on Apple-silicon macOS and on x86-64 Linux with EGL rendering.
 
 ```sh
 git clone https://github.com/Jeevash23/frankenfly.git
@@ -38,7 +38,7 @@ cd frankenfly
 
 Setup builds a local Python environment and installs pinned dependencies, which takes a few minutes the first time. The app opens paused at http://127.0.0.1:8000. Add `--vision` to start with compound-eye input. To stop it, click **Quit** in the app or press Ctrl+C in the terminal.
 
-**No Python 3.12?** Install it from [python.org](https://www.python.org/downloads/), with Homebrew (`brew install python@3.12`) or with [uv](https://docs.astral.sh/uv/) (`uv python install 3.12`). Then point setup at it:
+**No Python 3.12?** If [uv](https://docs.astral.sh/uv/) is installed, setup uses a uv-managed Python 3.12, installing one first if needed (about 30 MB). Otherwise install Python 3.12 from [python.org](https://www.python.org/downloads/) or with Homebrew (`brew install python@3.12`), then point setup at it:
 
 ```sh
 PYTHON_BIN=/path/to/python3.12 ./scripts/setup.sh

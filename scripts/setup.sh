@@ -3,10 +3,13 @@ set -eu
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$PROJECT_ROOT"
 if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
-  echo "Node.js >=24 and <27 with npm is required. Install it before running setup."
+  echo "Node.js 22.12 or newer (below 27) with npm is required. Install it before running setup."
   exit 1
 fi
-node -e 'const m=Number(process.versions.node.split(".")[0]); if(m<24 || m>=27) {console.error("Need Node >=24 and <27");process.exit(1)}'
+node -e 'const [m,n]=process.versions.node.split(".").map(Number); if(m<22 || (m===22 && n<12) || m>=27) {console.error("Need Node >=22.12 and <27, found "+process.versions.node);process.exit(1)}'
+is_python312() {
+  [ -n "$1" ] && "$1" -c 'import sys; assert sys.version_info[:2] == (3,12)' 2>/dev/null
+}
 if [ ! -x backend/.venv/bin/python ]; then
   if [ -n "${PYTHON_BIN:-}" ]; then
     DIGITALFLY_PYTHON="$PYTHON_BIN"
@@ -15,8 +18,18 @@ if [ ! -x backend/.venv/bin/python ]; then
   else
     DIGITALFLY_PYTHON=$(command -v python3 || true)
   fi
-  if [ -z "$DIGITALFLY_PYTHON" ] || ! "$DIGITALFLY_PYTHON" -c 'import sys; assert sys.version_info[:2] == (3,12)' 2>/dev/null; then
-    echo "Python 3.12 is required. Install a local Python 3.12, then run PYTHON_BIN=/path/to/python3.12 ./scripts/setup.sh. System Python will not be changed."
+  if ! is_python312 "$DIGITALFLY_PYTHON" && [ -z "${PYTHON_BIN:-}" ] && command -v uv >/dev/null; then
+    # uv keeps its own Python builds in its data folder; system Python is never changed.
+    DIGITALFLY_PYTHON=$(uv python find 3.12 2>/dev/null || true)
+    if ! is_python312 "$DIGITALFLY_PYTHON"; then
+      echo "No Python 3.12 found. Installing a uv-managed Python 3.12 (about 30 MB download)..."
+      uv python install 3.12
+      DIGITALFLY_PYTHON=$(uv python find 3.12)
+    fi
+    echo "Using uv-managed Python: $DIGITALFLY_PYTHON"
+  fi
+  if ! is_python312 "$DIGITALFLY_PYTHON"; then
+    echo "Python 3.12 is required. Install a local Python 3.12 (or uv), then run PYTHON_BIN=/path/to/python3.12 ./scripts/setup.sh. System Python will not be changed."
     exit 1
   fi
   "$DIGITALFLY_PYTHON" -m venv backend/.venv
