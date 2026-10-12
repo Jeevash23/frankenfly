@@ -8,11 +8,21 @@ import {
   Play,
   Plus,
   RotateCcw,
+  Sparkles,
   Square,
   Trash2,
 } from 'lucide-react';
-import type {Command, Config, Protocol, SavedRun, State} from './types';
+import type {Command, Condition, Config, Protocol, SavedRun, State} from './types';
 import {fmt} from './format';
+import {
+  conditionNames,
+  conditionProblem,
+  conditionsFor,
+  firstExperiment,
+  modelPhrases,
+  noInterventions,
+} from './models';
+import {useCircuit} from './connectome/useCircuit';
 import {
   edited,
   freeStep,
@@ -23,14 +33,11 @@ import {
   withDuration,
 } from './protocol';
 
-const baseInterventions = {zero_left: false, zero_right: false, silence: 'none' as const};
-const conditionNames: Record<string, string> = {
-  control: 'Neural control',
-  left_sensor_off: 'Left sensor off',
-  descending_off: 'Descending units off',
-  baseline: 'Controller baseline',
-};
 const lineColors = ['#527751', '#ba9152', '#8584b2', '#a26e67'];
+// Each overlaid run also gets its own line style, so runs never differ by colour alone.
+const lineDashes = [undefined, '7 4', '2 3', '9 3 2 3'];
+const conditionName = (condition: string) =>
+  conditionNames[condition as Condition] ?? condition.replaceAll('_', ' ');
 
 export default function Experiments({
   state,
@@ -47,7 +54,18 @@ export default function Experiments({
     state?.config.protocol ?? preset('Target reversal', 2),
   );
   const [seeds, setSeeds] = useState('42, 43');
-  const [conditions, setConditions] = useState(['control', 'left_sensor_off']);
+  const [conditions, setConditions] = useState<Condition[]>(['control', 'left_sensor_off']);
+  const [cellType, setCellType] = useState('');
+  const model = state?.config.neural_model ?? 'engineered';
+  const available = conditionsFor(model);
+  const {circuit} = useCircuit(state);
+  // Switching models drops conditions the new model does not have.
+  useEffect(() => {
+    setConditions((previous) => {
+      const kept = previous.filter((c) => conditionsFor(model).includes(c));
+      return kept.length ? kept : ['control'];
+    });
+  }, [model]);
   const [runs, setRuns] = useState<SavedRun[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [details, setDetails] = useState<SavedRun[]>([]);
@@ -58,7 +76,10 @@ export default function Experiments({
   const refresh = () =>
     fetch('/api/runs')
       .then((r) => {
-        if (!r.ok) throw Error('Could not read the local run library.');
+        if (!r.ok)
+          throw Error(
+            'The run library could not be read. Check that the local server is still running, then press Refresh.',
+          );
         return r.json();
       })
       .then((d) => setRuns(d.runs))
@@ -71,7 +92,10 @@ export default function Experiments({
     Promise.all(
       selected.map((key) =>
         fetch(`/api/runs/${key}`).then((r) => {
-          if (!r.ok) throw Error('A selected run could not be read.');
+          if (!r.ok)
+            throw Error(
+              'A selected run could not be read. Its files may have been moved or deleted.',
+            );
           return r.json();
         }),
       ),
@@ -91,7 +115,7 @@ export default function Experiments({
     ...state!.config,
     stimulus: {x: 12, y: 8, intensity: 1},
     protocol: sortedEvents(protocol),
-    initial_interventions: baseInterventions,
+    initial_interventions: noInterventions,
   });
   const load = async () => {
     if (!state) return;
@@ -120,12 +144,28 @@ export default function Experiments({
       setError('Use each seed only once.');
       return;
     }
-    if (!conditions.length) {
-      setError('Select at least one condition.');
+    const conditionError = conditionProblem(conditions, model, cellType);
+    if (conditionError) {
+      setError(conditionError);
       return;
     }
-    const result = await command('batch/start', {config: config(), seeds: list, conditions});
+    const result = await command('batch/start', {
+      config: config(),
+      seeds: list,
+      conditions,
+      cell_type: conditions.includes('cell_type_off') ? cellType.trim() : null,
+    });
     if (result) setNotice('Comparison started. Each complete trial is saved automatically.');
+  };
+  const loadFirstExperiment = () => {
+    const preset = firstExperiment(model);
+    setProtocol(preset.protocol);
+    setSeeds(preset.seeds);
+    setConditions(preset.conditions);
+    setError('');
+    setNotice(
+      `First experiment ready: ${preset.protocol.name.toLowerCase()} over ${preset.protocol.duration_steps / 100} simulated seconds, seeds ${preset.seeds}, comparing “${conditionNames[preset.conditions[0]]}” with “${conditionNames[preset.conditions[1]]}”. Press Run comparison to start. The research guide's walkthrough also switches to compound-eye input on the Workbench.`,
+    );
   };
   const duration = protocol.duration_steps / 100;
   const paths = details.flatMap((d) => d.trajectory ?? []);
@@ -138,7 +178,17 @@ export default function Experiments({
           <h2>Ask a repeatable question.</h2>
           <p>Control the stimulus, vary one condition, and keep a record of every trial.</p>
         </div>
-        <span className="mini-badge">ONE ANIMAL AT A TIME / LOCAL</span>
+        <div className="intro-actions">
+          <button
+            className="secondary-button"
+            disabled={disabled || active}
+            onClick={loadFirstExperiment}
+          >
+            <Sparkles size={14} />
+            Set up the first experiment
+          </button>
+          <span className="mini-badge">ONE ANIMAL AT A TIME / LOCAL</span>
+        </div>
       </div>
       {(error || notice) && (
         <div
@@ -358,25 +408,49 @@ export default function Experiments({
             </label>
             <p className="microcopy">The same seeds are used for each condition.</p>
             <div className="condition-list">
-              {Object.entries(conditionNames).map(([key, label]) => (
+              {available.map((key) => (
                 <label key={key}>
                   <input
                     type="checkbox"
                     checked={conditions.includes(key)}
-                    disabled={disabled || active}
+                    disabled={
+                      disabled || active || (!conditions.includes(key) && conditions.length >= 4)
+                    }
                     onChange={(e) =>
                       setConditions((prev) =>
                         e.target.checked ? [...prev, key] : prev.filter((k) => k !== key),
                       )
                     }
                   />
-                  <span>{label}</span>
+                  <span>{conditionNames[key]}</span>
                 </label>
               ))}
             </div>
+            {conditions.includes('cell_type_off') && (
+              <label className="field-label">
+                Cell type to silence
+                <input
+                  className="type-input"
+                  list="comparison-cell-types"
+                  aria-label="Cell type to silence in the comparison"
+                  value={cellType}
+                  disabled={disabled || active}
+                  placeholder={circuit ? 'e.g. DNa03' : 'Loading cell types…'}
+                  onChange={(e) => setCellType(e.target.value)}
+                />
+                <datalist id="comparison-cell-types">
+                  {circuit?.types.map((t) => (
+                    <option key={t.name} value={t.name}>
+                      {t.count} neurons
+                    </option>
+                  ))}
+                </datalist>
+              </label>
+            )}
             <p className="microcopy">
               Each condition holds its intervention for the whole trial. Runs happen sequentially
-              using the selected body and sensor model.
+              using the selected body, sensor and the {modelPhrases[model]} (unless a condition
+              switches the model). Up to four conditions.
             </p>
             <button
               className="primary-button"
@@ -400,8 +474,11 @@ export default function Experiments({
             <h3>{state.batch.protocol}</h3>
             <p>
               Trial {state.batch.current} of {state.batch.total} ·{' '}
-              {conditionNames[state.batch.condition] ?? state.batch.condition} · seed{' '}
-              {state.batch.seed}
+              {conditionName(state.batch.condition)}
+              {state.batch.condition === 'cell_type_off' && state.batch.cell_type
+                ? ` (${state.batch.cell_type})`
+                : ''}{' '}
+              · seed {state.batch.seed}
             </p>
           </div>
           <div className="batch-meter">
@@ -505,7 +582,8 @@ export default function Experiments({
                       <td>
                         <strong>
                           {run.trial
-                            ? conditionNames[run.trial.condition]
+                            ? conditionName(run.trial.condition) +
+                              (run.trial.cell_type ? ` (${run.trial.cell_type})` : '')
                             : (run.config.protocol?.name ?? 'Workbench run')}
                         </strong>
                         <small>
@@ -516,7 +594,10 @@ export default function Experiments({
                       <td>
                         {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
                         <small>
-                          {run.config.sensor_model === 'vision' ? 'Compound eye' : 'Geometric'}
+                          {run.config.sensor_model === 'vision' ? 'Compound eye' : 'Geometric'} ·{' '}
+                          {run.config.neural_model === 'connectome_dna02'
+                            ? 'connectome'
+                            : 'engineered'}
                         </small>
                       </td>
                       <td>{run.config.seed}</td>
@@ -556,6 +637,7 @@ export default function Experiments({
                       .join(' ')}
                     fill="none"
                     stroke={lineColors[i]}
+                    strokeDasharray={lineDashes[i]}
                     strokeWidth="2"
                   />
                 ))}
@@ -573,10 +655,17 @@ export default function Experiments({
               {details.map((run, i) => (
                 <div className="outcome" key={run.key}>
                   <div>
-                    <i style={{background: lineColors[i]}} />
+                    <svg width="24" height="8" aria-hidden="true">
+                      <path
+                        d="M1 4H23"
+                        stroke={lineColors[i]}
+                        strokeWidth="2"
+                        strokeDasharray={lineDashes[i]}
+                      />
+                    </svg>
                     <strong>
                       {run.trial
-                        ? conditionNames[run.trial.condition]
+                        ? conditionName(run.trial.condition)
                         : (run.config.protocol?.name ?? 'Workbench run')}
                     </strong>
                     <span>seed {run.config.seed}</span>

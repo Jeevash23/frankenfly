@@ -1,5 +1,6 @@
 import {ChevronDown, Crosshair} from 'lucide-react';
-import type {Config, Sample, State, Stimulus} from '../types';
+import type {Config, NeuralModel, Sample, State, Stimulus} from '../types';
+import {modelNames} from '../models';
 import {fmt} from '../format';
 import {Arena} from './Arena';
 
@@ -49,6 +50,24 @@ export function StimulusPanel({
               <option value="vision" disabled={state?.config.engine !== 'flygym'}>
                 Rendered compound eyes
               </option>
+            </select>
+            <ChevronDown size={14} />
+          </div>
+        </label>
+        <label className="field-label sensory-select">
+          Neural model
+          <div className="select-wrap">
+            <select
+              aria-label="Neural model"
+              disabled={editDisabled || running}
+              value={state?.config.neural_model ?? 'engineered'}
+              onChange={(e) => reset({neural_model: e.target.value as NeuralModel})}
+            >
+              {(Object.keys(modelNames) as NeuralModel[]).map((model) => (
+                <option key={model} value={model}>
+                  {modelNames[model]}
+                </option>
+              ))}
             </select>
             <ChevronDown size={14} />
           </div>
@@ -130,8 +149,9 @@ export function StimulusPanel({
         </div>
         <p className="microcopy">
           {state?.config.sensor_model === 'vision'
-            ? 'Green contrast from rendered eye images. Sensor selection starts a fresh run.'
-            : 'Bearing + distance approximation. Select compound eyes for rendered visual input.'}
+            ? 'Green contrast from rendered eye images.'
+            : 'Bearing + distance approximation. Select compound eyes for rendered visual input.'}{' '}
+          Changing the sensor or neural model starts a fresh run.
         </p>
       </div>
     </section>

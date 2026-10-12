@@ -6,6 +6,8 @@ import {fmt} from './format';
 import {AnatomyPanel, ConnectivityPanel} from './Atlas';
 import {CircuitPanel} from './ResearchPanels';
 import Experiments from './Experiments';
+import {ConnectomeCircuitView} from './connectome/CircuitView';
+import {modelPhrases, noInterventions} from './models';
 import {AppHeader, type Page} from './shell/AppHeader';
 import {Alerts, type Exported} from './shell/Alerts';
 import {ModelDialog, QuitDialog} from './shell/Dialogs';
@@ -77,7 +79,7 @@ export default function App() {
     void command('reset', {
       ...state.config,
       seed,
-      initial_interventions: {zero_left: false, zero_right: false, silence: 'none'},
+      initial_interventions: noInterventions,
       stimulus: {x: 12, y: 8, intensity: 1},
       ...override,
     });
@@ -143,8 +145,8 @@ export default function App() {
               Female-derived body · single animal
             </span>
             <small>
-              {state?.config.sensor_model === 'vision' ? 'Compound-eye input' : 'Geometric input'} ·
-              engineered neural controller
+              {state?.config.sensor_model === 'vision' ? 'Compound-eye input' : 'Geometric input'} ·{' '}
+              {modelPhrases[state?.config.neural_model ?? 'engineered']}
             </small>
           </div>
         </section>
@@ -175,9 +177,13 @@ export default function App() {
               ))}
             </div>
             {atlasView === 'anatomy' ? (
-              <AnatomyPanel />
+              <AnatomyPanel state={state} />
             ) : atlasView === 'circuit' ? (
-              <CircuitPanel state={state} command={command} disabled={disabled} />
+              state?.config.neural_model === 'connectome_dna02' ? (
+                <ConnectomeCircuitView state={state} command={command} disabled={disabled} />
+              ) : (
+                <CircuitPanel state={state} command={command} disabled={disabled} />
+              )
             ) : (
               <ConnectivityPanel command={command} disabled={disabled} />
             )}
@@ -219,7 +225,11 @@ export default function App() {
         <footer>
           <div>
             <FlyMark small />
-            <span>No biological connectome loaded into the walking controller</span>
+            <span>
+              {state?.config.neural_model === 'connectome_dna02'
+                ? 'Walking controller: FlyWire DNa02 subcircuit · data-derived wiring, assumed signs, engineered dynamics'
+                : 'No biological connectome loaded into the walking controller'}
+            </span>
             <button onClick={() => setModelNotes(true)}>
               Model & sources <MoveUpRight size={12} />
             </button>

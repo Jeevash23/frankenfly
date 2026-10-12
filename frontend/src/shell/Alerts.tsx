@@ -55,7 +55,7 @@ export function Alerts({
       {state?.config.engine === 'toy' && (
         <div className="alert toy-alert">
           <FlaskConical size={17} />
-          <strong>Toy demo: not FlyGym physics or a biological connectome</strong>
+          <strong>Toy demo: a kinematic body, not FlyGym physics</strong>
         </div>
       )}
       {state?.config.controller === 'baseline' && (

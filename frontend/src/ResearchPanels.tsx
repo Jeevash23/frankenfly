@@ -157,9 +157,13 @@ export function EyePanel({state}: {state: State | null}) {
                     .map((v, i) => `${i ? 'L' : 'M'}${(i / 720) * 360},${34 - Math.min(1, v) * 32}`)
                     .join(' ')}
                   stroke={side === 'left' ? '#4c765c' : '#b58f51'}
+                  strokeDasharray={side === 'right' ? '4 2' : undefined}
                   strokeWidth=".8"
                   fill="none"
                 />
+                <text x="3" y="10" className="retina-side">
+                  {side === 'left' ? 'L' : 'R'}
+                </text>
               </svg>
             ))}
           </div>
@@ -214,7 +218,10 @@ export function CircuitPanel({
     let cancelled = false;
     fetch('/api/circuit')
       .then((r) => {
-        if (!r.ok) throw Error('Circuit could not be loaded.');
+        if (!r.ok)
+          throw Error(
+            'The six-unit circuit could not be loaded. Check that the local server is still running, then reopen this tab.',
+          );
         return r.json();
       })
       .then((d) => {

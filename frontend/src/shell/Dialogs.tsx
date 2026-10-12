@@ -22,8 +22,9 @@ export function ModelDialog({state, close}: {state: State | null; close: () => v
       <span className="eyebrow">MODEL NOTES / VERSION 0.2</span>
       <h2>An inspectable research loop.</h2>
       <p>
-        Real biomechanics, optional compound-eye input, and an engineered neural controller.
-        Published male and female anatomy is available in a separate explorer.
+        Real biomechanics, optional compound-eye input, and a choice of two neural models: an
+        engineered six-unit controller, or a connectome-constrained circuit around the DNa02
+        steering neurons. Published male and female anatomy is available in a separate explorer.
       </p>
       <div className="model-chain">
         <span>World</span>
@@ -45,18 +46,42 @@ export function ModelDialog({state, close}: {state: State | null; close: () => v
           ))}
       </dl>
       <h3>What is actually computed?</h3>
-      <p>
-        The selected sensor uses geometric target bearing or rendered compound-eye pixels. Six leaky
-        rate units update every 1 ms. Their left/right outputs drive the upstream hybrid walking
-        controller. Physics advances every 0.1 ms; a Step advances 10 ms.
-      </p>
-      <p>
-        The neural rates and weights are engineered. The female-derived body has actual joint and
-        contact physics. The anatomical explorer retains real neuron identities and source
-        coordinates; those skeletons do not supply this controller's dynamics. A separate male
-        biomechanical model is not included.
-      </p>
-      <div className="model-notice">No biological connectome loaded</div>
+      {state?.config.neural_model === 'connectome_dna02' ? (
+        <>
+          <p>
+            The selected sensor uses geometric target bearing or rendered compound-eye pixels. Each
+            side's value drives the visual projection neurons on that side of a 3,000-neuron FlyWire
+            v783 subcircuit: both DNa02 neurons and their presynaptic partners up to two hops back.
+            Leaky rate units update every 1 ms. The right − left difference of the two DNa02 rates
+            sets the turn; forward drive is a constant tonic term. Physics advances every 0.1 ms; a
+            Step advances 10 ms.
+          </p>
+          <p>
+            Which neurons connect, and with how many synapses, is data-derived. Each connection's
+            sign is assumed from its predicted transmitter, the dynamics and gains are engineered,
+            and so is the sensor-to-neuron input mapping. This is a small, connectome-constrained
+            model, not a whole brain and not biologically validated.
+          </p>
+          <div className="model-notice">
+            Connectome-constrained circuit · data-derived wiring, assumed signs, engineered dynamics
+          </div>
+        </>
+      ) : (
+        <>
+          <p>
+            The selected sensor uses geometric target bearing or rendered compound-eye pixels. Six
+            leaky rate units update every 1 ms. Their left/right outputs drive the upstream hybrid
+            walking controller. Physics advances every 0.1 ms; a Step advances 10 ms.
+          </p>
+          <p>
+            The neural rates and weights are engineered. The female-derived body has actual joint
+            and contact physics. The anatomical explorer retains real neuron identities and source
+            coordinates; those skeletons do not supply this controller's dynamics. A separate male
+            biomechanical model is not included.
+          </p>
+          <div className="model-notice">No biological connectome loaded</div>
+        </>
+      )}
       <button className="primary-button" onClick={close}>
         Back to the experiment <ArrowRight size={15} />
       </button>

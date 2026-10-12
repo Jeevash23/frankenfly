@@ -1,8 +1,7 @@
-import type {Sample} from './types';
-
-export function trace(
-  samples: Sample[],
-  pick: (sample: Sample) => number,
+// Any time-stamped series: telemetry samples or derived traces.
+export function trace<T extends {t: number}>(
+  samples: T[],
+  pick: (sample: T) => number,
   width = 600,
   height = 110,
 ): string {

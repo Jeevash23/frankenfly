@@ -2,6 +2,7 @@ import type {RefObject} from 'react';
 import {ChevronDown, Expand, LoaderCircle, Pause, Play, RotateCcw, SkipForward} from 'lucide-react';
 import type {Command, Sample, State, Stimulus} from '../types';
 import {fmt} from '../format';
+import {modelDrivers, modelNames, modelPhrases, slowdownNote} from '../models';
 import {Arena} from './Arena';
 
 export type WorldView = 'specimen' | 'arena';
@@ -38,6 +39,8 @@ export function WorldPanel({
   setSeed: (seed: number) => void;
 }) {
   const sample: Sample | undefined = state?.sample ?? undefined;
+  const model = state?.config.neural_model ?? 'engineered';
+  const slow = slowdownNote(state?.real_time_factor ?? 0, state?.config.speed ?? 1, running);
   return (
     <section className="world-panel panel">
       <div className="panel-heading">
@@ -191,6 +194,11 @@ export function WorldPanel({
           </div>
         </div>
       </div>
+      {slow && (
+        <p className="slowdown-note" role="status">
+          {slow}
+        </p>
+      )}
       <div className="telemetry-strip">
         <div>
           <span>Simulated time</span>
@@ -220,6 +228,14 @@ export function WorldPanel({
             <small>s</small>
           </strong>
         </div>
+      </div>
+      <div className="model-driver" aria-label="What drives the fly">
+        <strong>Driving the fly</strong>
+        <span>
+          {state?.config.controller === 'baseline'
+            ? `Controller-only baseline: the ${modelPhrases[model]} is computed but bypassed`
+            : `${modelNames[model]} · ${modelDrivers[model]}`}
+        </span>
       </div>
     </section>
   );
