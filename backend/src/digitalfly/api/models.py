@@ -1,5 +1,5 @@
-from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from typing import Annotated, Literal
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -12,10 +12,48 @@ class Stimulus(StrictModel):
     intensity: float = Field(default=1, ge=0, le=2)
 
 
+CellTypeName = Annotated[str, Field(min_length=1, max_length=120)]
+
+
+def check_cell_types(names: list[str]) -> list[str]:
+    """Silenced cell types must exist in the committed connectome circuit."""
+    if not names:
+        return names
+    if len(set(names)) != len(names):
+        raise ValueError("List each silenced cell type once.")
+    from digitalfly.neural.connectome import known_cell_types
+    try:
+        known = known_cell_types()
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"The connectome circuit is unavailable: {exc}") from exc
+    unknown = [name for name in names if name not in known]
+    if unknown:
+        raise ValueError(f"Not a cell type in the connectome circuit: {', '.join(unknown)}.")
+    return names
+
+
 class Interventions(StrictModel):
     zero_left: bool = False
     zero_right: bool = False
+    # Engineered six-unit model only.
     silence: Literal["none", "sensory", "steering", "descending", "all"] = "none"
+    # Connectome model only.
+    silence_dna02: Literal["none", "left", "right", "both"] = "none"
+    silence_types: list[CellTypeName] = Field(default_factory=list, max_length=32)
+
+    @field_validator("silence_types")
+    @classmethod
+    def known_types(cls, names):
+        return check_cell_types(names)
+
+    def for_model(self, neural_model: str):
+        """Reject interventions that the selected neural model does not have."""
+        if neural_model == "engineered" and (self.silence_dna02 != "none" or self.silence_types):
+            raise ValueError("DNa02 and cell-type silencing need the connectome model. Select it first.")
+        if neural_model == "connectome_dna02" and self.silence != "none":
+            raise ValueError("Group silencing belongs to the engineered six-unit model. "
+                             "With the connectome model, silence DNa02 or a cell type instead.")
+        return self
 
 
 class NeuralParameters(StrictModel):
@@ -23,6 +61,17 @@ class NeuralParameters(StrictModel):
     steering_gain: float = Field(default=1, ge=0, le=3)
     tonic_drive: float = Field(default=.35, ge=0, le=1)
     time_scale: float = Field(default=1, ge=.25, le=4)
+
+
+class ConnectomeParameters(StrictModel):
+    """Global settings of the connectome model. Nothing here addresses a single neuron or synapse."""
+    synapse_threshold: int = Field(default=5, ge=5, le=100)
+    global_gain: float = Field(default=.001, ge=0, le=1)
+    input_gain: float = Field(default=1, ge=0, le=10)
+    output_gain: float = Field(default=1, ge=0, le=20)
+    tonic_drive: float = Field(default=.35, ge=0, le=1)
+    tau_ms: float = Field(default=20, ge=5, le=200)
+    other_transmitters: Literal["excluded", "excitatory"] = "excluded"
 
 
 class ProtocolEvent(StrictModel):
@@ -57,7 +106,9 @@ class RunConfig(StrictModel):
     speed: float = Field(default=0.25, ge=0.05, le=2)
     stimulus: Stimulus = Field(default_factory=Stimulus)
     sensor_model: Literal["geometric", "vision"] = "geometric"
+    neural_model: Literal["engineered", "connectome_dna02"] = "engineered"
     neural_parameters: NeuralParameters = Field(default_factory=NeuralParameters)
+    connectome_parameters: ConnectomeParameters = Field(default_factory=ConnectomeParameters)
     initial_interventions: Interventions = Field(default_factory=Interventions)
     protocol: Protocol | None = None
 
@@ -65,19 +116,44 @@ class RunConfig(StrictModel):
     def supported_sensor(self):
         if self.engine == "toy" and self.sensor_model == "vision":
             raise ValueError("Compound-eye vision requires the FlyGym body and an OpenGL context.")
+        self.initial_interventions.for_model(self.neural_model)
+        if self.protocol:
+            for event in self.protocol.events:
+                if event.interventions is not None:
+                    event.interventions.for_model(self.neural_model)
         return self
+
+
+Condition = Literal["control", "left_sensor_off", "descending_off", "baseline",
+                    "engineered_model", "connectome_model",
+                    "dna02_left_off", "dna02_right_off", "dna02_both_off", "cell_type_off"]
+ENGINEERED_ONLY = {"descending_off"}
+CONNECTOME_ONLY = {"dna02_left_off", "dna02_right_off", "dna02_both_off", "cell_type_off"}
 
 
 class BatchRequest(StrictModel):
     config: RunConfig
     seeds: list[int] = Field(default_factory=lambda: [42, 43], min_length=1, max_length=5)
-    conditions: list[Literal["control", "left_sensor_off", "descending_off", "baseline"]] = Field(
+    conditions: list[Condition] = Field(
         default_factory=lambda: ["control", "left_sensor_off"], min_length=1, max_length=4)
+    cell_type: CellTypeName | None = None
+
+    @field_validator("cell_type")
+    @classmethod
+    def known_type(cls, name):
+        return name if name is None else check_cell_types([name])[0]
 
     @model_validator(mode="after")
     def bounded(self):
         if self.config.protocol is None:
             raise ValueError("A comparison needs a finite protocol.")
+        model = self.config.neural_model
+        if model == "engineered" and CONNECTOME_ONLY & set(self.conditions):
+            raise ValueError("DNa02 and cell-type conditions need the connectome model. Select it before comparing.")
+        if model == "connectome_dna02" and ENGINEERED_ONLY & set(self.conditions):
+            raise ValueError("“Descending units off” belongs to the engineered model; use a DNa02 condition instead.")
+        if ("cell_type_off" in self.conditions) != (self.cell_type is not None):
+            raise ValueError("Choose a cell type for the “cell type off” condition, and only with that condition.")
         if len(set(self.seeds)) != len(self.seeds) or any(s < 0 or s > 2147483647 for s in self.seeds):
             raise ValueError("Seeds must be distinct integers between 0 and 2147483647.")
         if len(set(self.conditions)) != len(self.conditions):
@@ -156,3 +232,4 @@ class State(StrictModel):
     metrics: dict = Field(default_factory=dict)
     vision: dict = Field(default_factory=dict)
     batch: dict | None = None
+    connectome: dict | None = None

@@ -37,6 +37,9 @@ def encode(pose: Pose, stimulus: Stimulus, interventions: Interventions) -> Sens
 
 
 class RateCircuit:
+    kind = "engineered"
+    unit_names = NAMES
+
     def __init__(self, parameters: NeuralParameters | None = None):
         self.rates = np.zeros(6)
         self.configure(parameters or NeuralParameters())
@@ -58,6 +61,12 @@ class RateCircuit:
 
     def reset(self):
         self.rates.fill(0)
+
+    def apply_silencing(self, interventions: Interventions):
+        self.rates[GROUPS[interventions.silence]] = 0
+
+    def readout(self) -> list[float]:
+        return self.rates.tolist()
 
     def advance(self, sensors: SensorState, interventions: Interventions, dt: float = .001):
         silenced = GROUPS[interventions.silence]

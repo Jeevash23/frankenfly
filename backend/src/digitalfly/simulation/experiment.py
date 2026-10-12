@@ -9,12 +9,20 @@ import time
 import uuid
 import zipfile
 import numpy as np
-from digitalfly.api.models import Event, Interventions, RunConfig, Sample, Stimulus, NeuralParameters
-from digitalfly.neural.model import RateCircuit, encode, GROUPS, NAMES, W, B, BIAS, TAU
+from digitalfly.api.models import ConnectomeParameters, Event, Interventions, RunConfig, Sample, Stimulus, NeuralParameters
+from digitalfly.neural.connectome import TRACE_TYPES, ConnectomeCircuit
+from digitalfly.neural.model import RateCircuit
 from digitalfly.simulation.engines import FlyGymBody, ToyBody, CONTROL_DT, PHYSICS_DT, NEURAL_DT, ROOT
 
 RECORD_LIMIT = 30000
 EVENT_LIMIT = 10000
+APPLICATION_VERSION = "0.2.0"
+
+
+def make_circuit(config: RunConfig):
+    if config.neural_model == "connectome_dna02":
+        return ConnectomeCircuit(config.connectome_parameters)
+    return RateCircuit(config.neural_parameters)
 
 
 class Experiment:
@@ -31,11 +39,10 @@ class Experiment:
         self.config = config.model_copy(deep=True)
         self.initial_config = config.model_copy(deep=True)
         self.interventions = config.initial_interventions.model_copy(deep=True)
-        self.circuit.configure(config.neural_parameters)
-        self.circuit.reset()
         self.step_index = 0
         self.sample = None
         self.history = deque(maxlen=201)
+        self.type_history = deque(maxlen=201)
         self.trail = deque(maxlen=600)
         self.records: list[Sample] = []
         self.events: list[Event] = []
@@ -51,6 +58,13 @@ class Experiment:
         self.trial = None
         self.error = None
         try:
+            if self.circuit.kind != config.neural_model:
+                self.circuit = make_circuit(config)
+            elif config.neural_model == "connectome_dna02":
+                self.circuit.configure(config.connectome_parameters)
+            else:
+                self.circuit.configure(config.neural_parameters)
+            self.circuit.reset()
             if self.body is not None and self.body.name == config.engine and self.body.sensor_model == config.sensor_model:
                 self.body.reset(config.seed)
             else:
@@ -91,11 +105,11 @@ class Experiment:
             self._run_started = None
 
     def observe(self):
-        self.circuit.rates[GROUPS[self.interventions.silence]] = 0
+        self.circuit.apply_silencing(self.interventions)
         pose = self.body.pose()
         sensors = self.body.sensors(self.config.stimulus, self.interventions)
         self.sample = Sample(step=self.step_index, t=self.t, pose=pose, sensors=sensors,
-            rates=self.circuit.rates.tolist(), motor=self.circuit.motor(self.config.controller == "baseline").tolist(),
+            rates=self.circuit.readout(), motor=self.circuit.motor(self.config.controller == "baseline").tolist(),
             body_signals=self.body.body_signals())
 
     def record(self):
@@ -106,6 +120,8 @@ class Experiment:
         if self.step_index % 2 == 0:
             self.history.append(sample.model_copy(update={"body_signals": {
                 k: v for k, v in sample.body_signals.items() if k != "joint_position_rad"}}))
+            if self.circuit.kind == "connectome_dna02":
+                self.type_history.append(self.circuit.type_means().astype(np.float32))
         self.trail.append([sample.pose.x, sample.pose.y])
 
     def advance(self):
@@ -135,7 +151,7 @@ class Experiment:
         self.step_index += 1
         # The sample contains the sensory observation actually used for this interval.
         self.sample = Sample(step=self.step_index, t=self.t, pose=self.body.pose(),
-                             sensors=sensors, rates=self.circuit.rates.tolist(), motor=motor.tolist(),
+                             sensors=sensors, rates=self.circuit.readout(), motor=motor.tolist(),
                              body_signals=self.body.body_signals())
         pose = self.sample.pose
         self.path_length += float(np.hypot(pose.x-previous_x, pose.y-previous_y))
@@ -161,15 +177,45 @@ class Experiment:
         self.event("stimulus", f"Target moved to ({stimulus.x:g}, {stimulus.y:g}) mm · intensity {stimulus.intensity:g}", {**stimulus.model_dump(), "source": source})
 
     def set_interventions(self, interventions: Interventions, source="manual"):
+        interventions.for_model(self.config.neural_model)
         self.interventions = interventions
         if self.body is not None and self.status != "error":
             self.observe()
-        self.event("interventions", f"Inputs L {'off' if interventions.zero_left else 'on'} / R {'off' if interventions.zero_right else 'on'} · silence {interventions.silence}", {**interventions.model_dump(), "source": source})
+        if self.config.neural_model == "connectome_dna02":
+            silenced = ", ".join([f"DNa02 {interventions.silence_dna02}"] * (interventions.silence_dna02 != "none")
+                                 + interventions.silence_types) or "none"
+        else:
+            silenced = interventions.silence
+        self.event("interventions", f"Inputs L {'off' if interventions.zero_left else 'on'} / R {'off' if interventions.zero_right else 'on'} · silence {silenced}", {**interventions.model_dump(), "source": source})
 
     def set_parameters(self, parameters: NeuralParameters):
+        if self.config.neural_model != "engineered":
+            raise ValueError("These parameters belong to the engineered six-unit model. Use the connectome parameters instead.")
         self.config.neural_parameters = parameters
         self.circuit.configure(parameters)
         self.event("parameters", "Neural parameters updated", parameters.model_dump())
+
+    def set_connectome_parameters(self, parameters: ConnectomeParameters):
+        if self.config.neural_model != "connectome_dna02":
+            raise ValueError("Connectome parameters apply when the connectome model is selected.")
+        self.config.connectome_parameters = parameters
+        self.circuit.configure(parameters)
+        self.event("connectome_parameters", "Connectome parameters updated", parameters.model_dump())
+
+    def connectome_snapshot(self):
+        """Live, display-only activity summary for the connectome model; not recorded."""
+        if self.circuit.kind != "connectome_dna02":
+            return None
+        circuit = self.circuit
+        means = circuit.type_means()
+        dna02 = circuit.data.type_names.index("DNa02")
+        order = [int(i) for i in np.argsort(-means, kind="stable") if i != dna02][:TRACE_TYPES]
+        history = np.array(self.type_history) if self.type_history else np.zeros((0, len(means)))
+        return {"type_rates": np.round(means, 4).tolist(), "turn": circuit.turn(),
+                "silenced_neurons": int(len(circuit.silenced(self.interventions))),
+                "trace_t": [s.t for s in self.history][-len(history):] if len(history) else [],
+                "top_types": [{"index": i, "name": circuit.data.type_names[i],
+                               "trace": np.round(history[:, i], 4).tolist()} for i in order]}
 
     @property
     def metrics(self):
@@ -193,16 +239,33 @@ class Experiment:
 
     @property
     def provenance(self):
+        connectome = self.config.neural_model == "connectome_dna02"
+        if connectome:
+            info = self.circuit.description()
+            neural = (f"Connectome-constrained rate model · {info['neurons']:,} neurons and {info['connections_active']:,} "
+                      "connections around DNa02 · structure data-derived, signs assumed, dynamics engineered")
+            wiring = (f"{info['dataset']} DNa02 input subcircuit · {info['license']} · "
+                      f"circuit sha256 {info['circuit_sha256'][:12]}")
+            mode = ("Controller-only baseline; neural output bypassed" if self.config.controller == "baseline" else
+                    "Connectome closed loop: turning from DNa02 right − left (direction from Rayshubskiy et al. 2025); "
+                    "forward drive is an engineered tonic term")
+        else:
+            neural = "Six engineered leaky rate units · v1 · hand-chosen weights"
+            wiring = "No biological connectome loaded"
+            mode = "Controller-only baseline; neural output bypassed" if self.config.controller == "baseline" else "Engineered neural closed loop"
         return {
-            "body_engine": "FlyGym 2.1.0 / MuJoCo 3.9.0 · NeuroMechFly" if self.config.engine == "flygym" else "Toy demo: not FlyGym physics or a biological connectome",
+            "body_engine": "FlyGym 2.1.0 / MuJoCo 3.9.0 · NeuroMechFly" if self.config.engine == "flygym" else "Toy demo: not FlyGym physics",
             "sensor_model": "FlyGym compound-eye rendering · engineered green-contrast encoder" if self.config.sensor_model == "vision" else "Geometric bilateral bearing / intensity approximation · v1",
-            "neural_model": "Six engineered leaky rate units · v1 · hand-chosen weights",
+            "neural_model": neural,
             "motor_controller": "FlyGym hybrid turning controller · engineered" if self.config.engine == "flygym" else "Differential kinematic controller · engineered",
-            "connectivity_source": "No biological connectome loaded",
-            "controller_mode": "Controller-only baseline; neural output bypassed" if self.config.controller == "baseline" else "Engineered neural closed loop",
+            "connectivity_source": wiring,
+            "input_mapping": ("Engineered: each sensor drives every visual projection neuron on its side" if connectome
+                              else "Engineered: each sensor drives its sensory unit"),
+            "controller_mode": mode,
             "viewport": "MuJoCo rendered body / pose-synchronized arena schematic",
             "body_sex": "Female-derived NeuroMechFly morphology; no separate male biomechanics" if self.config.engine == "flygym" else "Unspecified; kinematic demonstration",
-            "anatomy_atlas": "Published male/female anatomical samples are separate from this controller",
+            "anatomy_atlas": ("Female DNa02 skeletons are tinted with this model's output; other anatomy is display-only" if connectome
+                              else "Published male/female anatomical samples are separate from this controller"),
         }
 
     def export(self, directory: Path | None = None):
@@ -212,7 +275,7 @@ class Experiment:
         destination = base / f"{self.run_id}-{uuid.uuid4().hex[:6]}"
         destination.mkdir()
         metadata = {
-            "schema_version": 2, "application_version": "0.2.0", "run_id": self.run_id,
+            "schema_version": 3, "application_version": APPLICATION_VERSION, "run_id": self.run_id,
             "created_utc": self.started_at, "exported_utc": datetime.now(timezone.utc).isoformat(),
             "initial_config": self.initial_config.model_dump(), "final_config": self.config.model_dump(),
             "final_interventions": self.interventions.model_dump(), "final_sample": self.sample.model_dump() if self.sample else None,
@@ -236,7 +299,7 @@ class Experiment:
         (destination / "metadata.json").write_text(json.dumps(metadata, indent=2, allow_nan=False))
         with (destination / "telemetry.csv").open("w", newline="") as output:
             writer = csv.writer(output)
-            writer.writerow(["step", "time_s", "x_mm", "y_mm", "z_mm", "yaw_rad", "speed_mm_s", "sensor_l", "sensor_r", "raw_sensor_l", "raw_sensor_r", *["rate_" + n.lower().replace(" ", "_") for n in NAMES], "motor_l", "motor_r"])
+            writer.writerow(["step", "time_s", "x_mm", "y_mm", "z_mm", "yaw_rad", "speed_mm_s", "sensor_l", "sensor_r", "raw_sensor_l", "raw_sensor_r", *["rate_" + n.lower().replace(" ", "_") for n in self.circuit.unit_names], "motor_l", "motor_r"])
             for s in self.records:
                 writer.writerow([s.step, s.t, s.pose.x, s.pose.y, s.pose.z, s.pose.yaw, s.pose.velocity,
                                  s.sensors.left, s.sensors.right, s.sensors.raw_left, s.sensors.raw_right, *s.rates, *s.motor])

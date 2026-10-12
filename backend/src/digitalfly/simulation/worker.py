@@ -5,7 +5,8 @@ from threading import Event, Lock, Thread
 import time
 import uuid
 import psutil
-from digitalfly.api.models import State, RunConfig, Stimulus, Interventions, Speed, NeuralParameters, BatchRequest
+from digitalfly.api.models import (State, RunConfig, Stimulus, Interventions, Speed, NeuralParameters,
+    ConnectomeParameters, BatchRequest)
 from digitalfly.simulation.experiment import Experiment, RECORD_LIMIT
 from digitalfly.simulation.engines import CONTROL_DT
 
@@ -89,7 +90,8 @@ class SimulationWorker:
             rendering=exp.body is not None and exp.body.renderer is not None,
             render_error=exp.body.render_error if exp.body else None,
             recording_samples=len(exp.records), recording_limit=RECORD_LIMIT, provenance=exp.provenance,
-            metrics=exp.metrics, vision=exp.body.vision if exp.body else {}, batch=self.batch)
+            metrics=exp.metrics, vision=exp.body.vision if exp.body else {}, batch=self.batch,
+            connectome=exp.connectome_snapshot())
         with self.lock:
             self.snapshot = state.model_dump()
             self.eye_bytes = exp.body.eye_frame if exp.body else None
@@ -99,15 +101,21 @@ class SimulationWorker:
         config = self.batch_request.config.model_copy(deep=True)
         config.seed = seed
         config.controller = "baseline" if condition == "baseline" else "neural"
+        if condition in {"engineered_model", "connectome_model"}:
+            config.neural_model = "engineered" if condition == "engineered_model" else "connectome_dna02"
         config.initial_interventions = Interventions(zero_left=condition == "left_sensor_off",
-            silence="descending" if condition == "descending_off" else "none")
+            silence="descending" if condition == "descending_off" else "none",
+            silence_dna02={"dna02_left_off": "left", "dna02_right_off": "right",
+                           "dna02_both_off": "both"}.get(condition, "none"),
+            silence_types=[self.batch_request.cell_type] if condition == "cell_type_off" else [])
         self.experiment.reset(config)
         if self.experiment.status == "error":
             self.batch["status"] = "failed"
             self.batch["error"] = self.experiment.error
             return
         self.experiment.trial = {"batch_id": self.batch["id"], "condition": condition, "seed": seed,
-            "index": self.trial_index + 1, "total": len(self.trials)}
+            "index": self.trial_index + 1, "total": len(self.trials), "neural_model": config.neural_model,
+            "cell_type": self.batch_request.cell_type if condition == "cell_type_off" else None}
         self.batch.update(status="running", current=self.trial_index+1, condition=condition, seed=seed)
         self.experiment.start_clock()
         self.experiment.status = "running"
@@ -174,12 +182,15 @@ class SimulationWorker:
             exp.event("speed", f"Requested speed {exp.config.speed:g}×", payload)
         elif name == "parameters":
             exp.set_parameters(NeuralParameters.model_validate(payload))
+        elif name == "connectome_parameters":
+            exp.set_connectome_parameters(ConnectomeParameters.model_validate(payload))
         elif name == "batch_start":
             self.batch_request = BatchRequest.model_validate(payload)
             self.trials = [(condition, seed) for seed in self.batch_request.seeds for condition in self.batch_request.conditions]
             self.trial_index = 0
             self.batch = {"id": uuid.uuid4().hex[:12], "status": "running", "total": len(self.trials),
-                "current": 0, "results": [], "protocol": self.batch_request.config.protocol.name}
+                "current": 0, "results": [], "protocol": self.batch_request.config.protocol.name,
+                "cell_type": self.batch_request.cell_type}
             self._start_trial()
         elif name == "batch_cancel":
             if not batch_active:
