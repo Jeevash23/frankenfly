@@ -12,7 +12,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import type {Command} from './types';
-import {fmt} from './ResearchPanels';
+import {fmt} from './format';
 
 type Neuron = {
   id: string;

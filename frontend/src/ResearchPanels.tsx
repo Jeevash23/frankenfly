@@ -1,9 +1,7 @@
 import {useEffect, useState} from 'react';
 import {Activity, Eye, Network, ArrowRight} from 'lucide-react';
 import type {Command, NeuralParameters, State} from './types';
-
-export const fmt = (value: number | undefined, digits = 2) =>
-  value === undefined ? '—' : value.toFixed(digits);
+import {fmt} from './format';
 const names = [
   'Sensory L',
   'Sensory R',

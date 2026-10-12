@@ -12,7 +12,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type {Command, Config, Protocol, SavedRun, State} from './types';
-import {fmt} from './ResearchPanels';
+import {fmt} from './format';
 import {
   edited,
   freeStep,
