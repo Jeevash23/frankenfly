@@ -1,0 +1,45 @@
+{
+  "provenance": {
+    "kind": "synthetic",
+    "dataset": "Format example (synthetic)",
+    "release": "1",
+    "specimen": "No biological specimen",
+    "sex": "unknown",
+    "source_url": "https://example.org/format-example",
+    "license": "CC0-1.0",
+    "coverage": "Three invented nodes for testing the import format.",
+    "weight_assumption": "Counts are synthetic example values. They are not measurements and do not drive the walking model."
+  },
+  "nodes": [
+    {
+      "id": "example-input",
+      "label": "Example input",
+      "cell_type": "synthetic",
+      "side": "left"
+    },
+    {
+      "id": "example-intermediate",
+      "label": "Example intermediate",
+      "cell_type": "synthetic",
+      "side": "midline"
+    },
+    {
+      "id": "example-output",
+      "label": "Example output",
+      "cell_type": "synthetic",
+      "side": "right"
+    }
+  ],
+  "edges": [
+    {
+      "pre_id": "example-input",
+      "post_id": "example-intermediate",
+      "synapse_count": 10
+    },
+    {
+      "pre_id": "example-intermediate",
+      "post_id": "example-output",
+      "synapse_count": 5
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "engine": "flygym",
+  "seed": 42,
+  "controller": "neural",
+  "speed": 0.25,
+  "stimulus": {"x": 12, "y": 8, "intensity": 1}
+}

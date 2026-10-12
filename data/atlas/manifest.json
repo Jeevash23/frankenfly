@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "datasets": [
+    {
+      "sex": "female",
+      "dataset": "FAFB / FlyWire",
+      "release": "783; shared cell-type mapping from Berg et al.",
+      "space": "FAFB native",
+      "units": "\u00b5m",
+      "source_units": "nm",
+      "neurons_loaded": 6,
+      "types": [
+        "DNa02",
+        "DNp01",
+        "DNp09"
+      ],
+      "coverage": "Brain surface and six descending-neuron skeletons",
+      "license": "CC BY-NC 4.0 for FlyWire data; navis-flybrains surfaces distributed under GPL-3.0 (source notice retained)",
+      "source_url": "https://github.com/sjcabs/fly_connectome_data_tutorial",
+      "caveat": "Anatomy only. No synaptic wiring or activity is inferred. The two specimens have different coverage and preparation; shape differences are not evidence of a sex effect."
+    },
+    {
+      "sex": "male",
+      "dataset": "MaleCNS",
+      "release": "v1.0",
+      "space": "MaleCNS EM",
+      "units": "\u00b5m",
+      "source_units": "8 nm voxels",
+      "neurons_loaded": 6,
+      "types": [
+        "DNa02",
+        "DNp01",
+        "DNp09"
+      ],
+      "coverage": "Brain + VNC surfaces and six descending-neuron skeletons",
+      "license": "CC BY 4.0 for MaleCNS data; navis-flybrains surfaces distributed under GPL-3.0 (source notice retained)",
+      "source_url": "https://male-cns.janelia.org/download/",
+      "caveat": "Anatomy only. No synaptic wiring or activity is inferred. The two specimens have different coverage and preparation; shape differences are not evidence of a sex effect."
+    }
+  ],
+  "body": {
+    "sex": "female",
+    "source": "https://neuromechfly.org/",
+    "male_body_available": false
+  },
+  "display_processing": "SWC degree-two chain contraction at 2 \u00b5m; surface vertex clustering at 4 \u00b5m. Original source files and hashes retained.",
+  "cell_type_mapping": {
+    "source_url": "https://github.com/flyconnectome/2025malecns/blob/main/supplemental_data/mcns_fw_edge_comp_mappings.json",
+    "source_sha256": "94aaadbefedcc314c69fb8ad62a07361c1f78ee39424bad38ac1a6d7ca4d0a12",
+    "retrieved_utc": "2026-09-15"
+  },
+  "catalog": [
+    {
+      "name": "FlyWire",
+      "sex": "female",
+      "coverage": "Adult brain",
+      "url": "https://codex.flywire.ai/"
+    },
+    {
+      "name": "MaleCNS",
+      "sex": "male",
+      "coverage": "Adult brain + nerve cord",
+      "url": "https://male-cns.janelia.org/"
+    },
+    {
+      "name": "BANC",
+      "sex": "female",
+      "coverage": "Brain + nerve cord; coverage differs by release",
+      "url": "https://github.com/htem/BANC-project"
+    },
+    {
+      "name": "MANC",
+      "sex": "male",
+      "coverage": "Adult nerve cord",
+      "url": "https://www.janelia.org/project-team/flyem/manc-connectome"
+    }
+  ]
+}

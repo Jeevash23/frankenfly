@@ -1,0 +1,41 @@
+# Local environments and generated builds
+backend/.venv/
+.venv/
+venv/
+node_modules/
+frontend/dist/
+.cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Personal settings, credentials and OS/editor files
+.DS_Store
+.env
+.env.*
+!.env.example
+/.codex/
+/.claude/
+/.agents/
+/.idea/
+/.vscode/
+/.npmrc
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local experiment records, imports and downloaded caches
+/runs/*
+!/runs/.gitkeep
+/data/*
+!/data/README.md
+!/data/atlas/
+!/data/examples/
+
+# Execution evidence can contain local paths, device details and session IDs.
+# Only the generic instructions belong in the public repository.
+/docs/evidence/*
+!/docs/evidence/README.md
+*.log

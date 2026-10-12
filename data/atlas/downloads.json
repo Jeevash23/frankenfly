@@ -1,0 +1,149 @@
+[
+  {
+    "name": "720575940604737708.swc",
+    "url": "https://storage.googleapis.com/lee-lab_brain-and-nerve-cord-fly-connectome/compiled_data/fafb_783/fafb_fafb_space_swc/720575940604737708.swc",
+    "neuron_id": "720575940604737708",
+    "cell_type": "DNa02",
+    "sex": "female",
+    "etag": "\"d9bdda7d8013603001ab0c5c4cf456b2\"",
+    "bytes": 1249364,
+    "sha256": "a2d5df96e1735fd50ccac321767a9f521f9909a5b7d5ebc8c63e41b02cb8a654"
+  },
+  {
+    "name": "720575940629327659.swc",
+    "url": "https://storage.googleapis.com/lee-lab_brain-and-nerve-cord-fly-connectome/compiled_data/fafb_783/fafb_fafb_space_swc/720575940629327659.swc",
+    "neuron_id": "720575940629327659",
+    "cell_type": "DNa02",
+    "sex": "female",
+    "etag": "\"39393900184ef3f92712ce1977a69601\"",
+    "bytes": 1196849,
+    "sha256": "324cf554a9d01c32963072592a75a58e2e1be350b8b01c1447bf5c2f6ebbfa68"
+  },
+  {
+    "name": "10360.swc",
+    "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/segmentation/skeletons-malecns/skeletons-swc/10360.swc",
+    "neuron_id": "10360",
+    "cell_type": "DNa02",
+    "sex": "male",
+    "etag": "\"abad922d6ee147925437517351cdeb5a\"",
+    "bytes": 456618,
+    "sha256": "50d9a19db9987ce8ac0dc94078def9aa74f9b35e25305003c5e440bf91874a10"
+  },
+  {
+    "name": "523769.swc",
+    "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/segmentation/skeletons-malecns/skeletons-swc/523769.swc",
+    "neuron_id": "523769",
+    "cell_type": "DNa02",
+    "sex": "male",
+    "etag": "\"1530ab22f30825f4e6dc209365a0b3c5\"",
+    "bytes": 443772,
+    "sha256": "2b605a73b6a015e3b2eb7b6eccf089be6c087374914f7d4c9a7f70983e9036f1"
+  },
+  {
+    "name": "720575940622838154.swc",
+    "url": "https://storage.googleapis.com/lee-lab_brain-and-nerve-cord-fly-connectome/compiled_data/fafb_783/fafb_fafb_space_swc/720575940622838154.swc",
+    "neuron_id": "720575940622838154",
+    "cell_type": "DNp01",
+    "sex": "female",
+    "etag": "\"bcfb6a45e3d7f0c7b9ddfe7673a55bad\"",
+    "bytes": 611734,
+    "sha256": "03d49fa300d2f0c877bd0346fd54fbd3d0fa05c7c13d5d4a36a2e3679a701805"
+  },
+  {
+    "name": "720575940632499757.swc",
+    "url": "https://storage.googleapis.com/lee-lab_brain-and-nerve-cord-fly-connectome/compiled_data/fafb_783/fafb_fafb_space_swc/720575940632499757.swc",
+    "neuron_id": "720575940632499757",
+    "cell_type": "DNp01",
+    "sex": "female",
+    "etag": "\"8f1010df5f4fec2cbd8a7b207ef2d36a\"",
+    "bytes": 517071,
+    "sha256": "302efedd271ed2f5b93613051abdc204f0ad7e2f7ea05320818dd969d47d8e80"
+  },
+  {
+    "name": "10001.swc",
+    "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/segmentation/skeletons-malecns/skeletons-swc/10001.swc",
+    "neuron_id": "10001",
+    "cell_type": "DNp01",
+    "sex": "male",
+    "etag": "\"7954e730f325f8c14ca6daae0446a2a5\"",
+    "bytes": 102779,
+    "sha256": "838c60b0e4724d8ca163be994012ebdc23e7ccbdcb9cde92f25e541bc4696511"
+  },
+  {
+    "name": "10010.swc",
+    "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/segmentation/skeletons-malecns/skeletons-swc/10010.swc",
+    "neuron_id": "10010",
+    "cell_type": "DNp01",
+    "sex": "male",
+    "etag": "\"d3a8fc2d7a398ae003ddd8702bbfab31\"",
+    "bytes": 115111,
+    "sha256": "97e1c587397bd6ec1d6489c1ff129c13b3794745f1ada4376313fdf50363d336"
+  },
+  {
+    "name": "720575940627652358.swc",
+    "url": "https://storage.googleapis.com/lee-lab_brain-and-nerve-cord-fly-connectome/compiled_data/fafb_783/fafb_fafb_space_swc/720575940627652358.swc",
+    "neuron_id": "720575940627652358",
+    "cell_type": "DNp09",
+    "sex": "female",
+    "etag": "\"89f0cf252c1d1109ca5f5e4103eb9596\"",
+    "bytes": 1266284,
+    "sha256": "2a27899357698283b5c225e5971a9d4d76ba5ad09996bf2781730c94fd316bfe"
+  },
+  {
+    "name": "720575940635872101.swc",
+    "url": "https://storage.googleapis.com/lee-lab_brain-and-nerve-cord-fly-connectome/compiled_data/fafb_783/fafb_fafb_space_swc/720575940635872101.swc",
+    "neuron_id": "720575940635872101",
+    "cell_type": "DNp09",
+    "sex": "female",
+    "etag": "\"f2e361bb5c63613c89db2b164c38cd34\"",
+    "bytes": 950425,
+    "sha256": "40bc82209d2cef4ec6849f3695b00f03de00ec10d8d5e68348e10b8fed6cbbce"
+  },
+  {
+    "name": "10783.swc",
+    "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/segmentation/skeletons-malecns/skeletons-swc/10783.swc",
+    "neuron_id": "10783",
+    "cell_type": "DNp09",
+    "sex": "male",
+    "etag": "\"9f532f30f6321b1b112b9e4bbcbad286\"",
+    "bytes": 373551,
+    "sha256": "b702c072f0a2ae0ce5531e14a4b7e197f8d13b39ac864ad7fa2c601d129e0d50"
+  },
+  {
+    "name": "11177.swc",
+    "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/segmentation/skeletons-malecns/skeletons-swc/11177.swc",
+    "neuron_id": "11177",
+    "cell_type": "DNp09",
+    "sex": "male",
+    "etag": "\"2848bd7dc2dc95989cdd60a241d2fe94\"",
+    "bytes": 390438,
+    "sha256": "df374c15104b8ed60c454a1f4f21d352da0ed2c21d4a33055d89c391d068ae16"
+  },
+  {
+    "name": "JRCFIB2022M_brain.ply",
+    "url": "https://raw.githubusercontent.com/navis-org/navis-flybrains/main/flybrains/meshes/JRCFIB2022M_brain.ply",
+    "etag": "\"6cd51b6332c332c92e39c9373d702e62fd0b3af95bd103f93d939a9697eafe7b\"",
+    "bytes": 1255587,
+    "sha256": "13ea41a7ce2677eae00738c23b2be3c2f29ac17c6976c2209998a85efccaa427"
+  },
+  {
+    "name": "JRCFIB2022M_vnc.ply",
+    "url": "https://raw.githubusercontent.com/navis-org/navis-flybrains/main/flybrains/meshes/JRCFIB2022M_vnc.ply",
+    "etag": "\"53cf5807fbb0ef9ce758d5416b1c63947759f37bd2d40d2e1d6c5cdf3cf4afab\"",
+    "bytes": 692765,
+    "sha256": "79b8affe4a728bf485f365b4c936b0405191c303574dc4d0237d33c8a6a0eb03"
+  },
+  {
+    "name": "flybrains-LICENSE",
+    "url": "https://raw.githubusercontent.com/navis-org/navis-flybrains/main/LICENSE",
+    "etag": "\"a557c68680a9ca98d23192c9faf403311cf8d7cf0e42d3a9c67114a28482e06b\"",
+    "bytes": 35149,
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+  },
+  {
+    "name": "FAFB14.ply",
+    "url": "https://raw.githubusercontent.com/navis-org/navis-flybrains/main/flybrains/meshes/FAFB14.ply",
+    "bytes": 956191,
+    "sha256": "fec24a5290d66a29686a06cacfb3eff247fce22eba1ccd5cf63fe311dbd78874"
+  }
+]

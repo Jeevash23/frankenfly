@@ -1,0 +1,19 @@
+{
+  "source_url": "https://github.com/flyconnectome/2025malecns/blob/main/supplemental_data/mcns_fw_edge_comp_mappings.json",
+  "source_sha256": "94aaadbefedcc314c69fb8ad62a07361c1f78ee39424bad38ac1a6d7ca4d0a12",
+  "retrieved_utc": "2026-09-15",
+  "assignments": {
+    "720575940604737708": "DNa02",
+    "720575940629327659": "DNa02",
+    "10360": "DNa02",
+    "523769": "DNa02",
+    "720575940622838154": "DNp01",
+    "720575940632499757": "DNp01",
+    "10001": "DNp01",
+    "10010": "DNp01",
+    "720575940627652358": "DNp09",
+    "720575940635872101": "DNp09",
+    "10783": "DNp09",
+    "11177": "DNp09"
+  }
+}

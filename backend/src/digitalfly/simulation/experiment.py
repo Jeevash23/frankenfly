@@ -1,0 +1,255 @@
+from collections import deque
+from datetime import datetime, timezone
+from importlib.metadata import version
+from pathlib import Path
+import csv
+import json
+import platform
+import time
+import uuid
+import zipfile
+import numpy as np
+from digitalfly.api.models import Event, Interventions, RunConfig, Sample, Stimulus, NeuralParameters
+from digitalfly.neural.model import RateCircuit, encode, GROUPS, NAMES, W, B, BIAS, TAU
+from digitalfly.simulation.engines import FlyGymBody, ToyBody, CONTROL_DT, PHYSICS_DT, NEURAL_DT, ROOT
+
+RECORD_LIMIT = 30000
+EVENT_LIMIT = 10000
+
+
+class Experiment:
+    def __init__(self, config: RunConfig, render=True):
+        self.body = None
+        self.render_enabled = render
+        self.circuit = RateCircuit()
+        self.status = "initializing"
+        self.error = None
+        self.reset(config)
+
+    def reset(self, config: RunConfig):
+        self.status = "initializing"
+        self.config = config.model_copy(deep=True)
+        self.initial_config = config.model_copy(deep=True)
+        self.interventions = config.initial_interventions.model_copy(deep=True)
+        self.circuit.configure(config.neural_parameters)
+        self.circuit.reset()
+        self.step_index = 0
+        self.sample = None
+        self.history = deque(maxlen=201)
+        self.trail = deque(maxlen=600)
+        self.records: list[Sample] = []
+        self.events: list[Event] = []
+        self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.compute_s = self.active_wall_s = 0.
+        self._run_started = None
+        self.path_length = self.turning = self.speed_sum = 0.
+        self.contact_sum = np.zeros(6)
+        self.contact_samples = 0
+        self.protocol_applied = set()
+        self.protocol_complete = False
+        self.trial = None
+        self.error = None
+        try:
+            if self.body is not None and self.body.name == config.engine and self.body.sensor_model == config.sensor_model:
+                self.body.reset(config.seed)
+            else:
+                if self.body is not None:
+                    self.body.close()
+                self.body = None
+                self.body = (FlyGymBody if config.engine == "flygym" else ToyBody)(config.seed, self.render_enabled, config.sensor_model)
+            self.body.set_stimulus(config.stimulus)
+            self.observe()
+            self.initial_pose = self.sample.pose.model_copy(deep=True)
+            self.record()
+            self.status = "paused"
+            self.event("reset", "Experiment initialized · seed " + str(config.seed), config.model_dump())
+        except Exception as exc:
+            self.fail(exc)
+
+    def event(self, kind: str, message: str, payload: dict | None = None):
+        if len(self.events) >= EVENT_LIMIT:
+            raise RuntimeError("Input schedule reached 10,000 events. Export and reset to continue.")
+        self.events.append(Event(seq=len(self.events), step=self.step_index, t=self.t,
+                                 kind=kind, message=message, payload=payload or {}))
+
+    @property
+    def t(self):
+        return round(self.step_index * CONTROL_DT, 8)
+
+    @property
+    def wall_s(self):
+        return self.active_wall_s + (time.perf_counter() - self._run_started if self._run_started is not None else 0)
+
+    def start_clock(self):
+        if self._run_started is None:
+            self._run_started = time.perf_counter()
+
+    def stop_clock(self):
+        if self._run_started is not None:
+            self.active_wall_s += time.perf_counter() - self._run_started
+            self._run_started = None
+
+    def observe(self):
+        self.circuit.rates[GROUPS[self.interventions.silence]] = 0
+        pose = self.body.pose()
+        sensors = self.body.sensors(self.config.stimulus, self.interventions)
+        self.sample = Sample(step=self.step_index, t=self.t, pose=pose, sensors=sensors,
+            rates=self.circuit.rates.tolist(), motor=self.circuit.motor(self.config.controller == "baseline").tolist(),
+            body_signals=self.body.body_signals())
+
+    def record(self):
+        # Retain full pose in the latest sample only, avoiding repeated mesh/joint history.
+        sample = self.sample.model_copy(update={"pose": self.sample.pose.model_copy(update={"legs": []})}, deep=True)
+        self.records.append(sample)
+        if self.step_index % 2 == 0:
+            self.history.append(sample.model_copy(update={"body_signals": {
+                k: v for k, v in sample.body_signals.items() if k != "joint_position_rad"}}))
+        self.trail.append([sample.pose.x, sample.pose.y])
+
+    def advance(self):
+        if self.status == "error":
+            raise RuntimeError("Reset the experiment before stepping after an error.")
+        if len(self.records) >= RECORD_LIMIT:
+            self.status = "paused"
+            raise RuntimeError("Recording limit reached. Export this run and reset to continue.")
+        if self.protocol_complete:
+            raise RuntimeError("Protocol finished. Reset to repeat it.")
+        before = time.perf_counter()
+        protocol = self.config.protocol
+        if protocol:
+            for index, event in enumerate(protocol.events):
+                if event.step == self.step_index and index not in self.protocol_applied:
+                    if event.stimulus is not None:
+                        self.set_stimulus(event.stimulus, source="protocol")
+                    if event.interventions is not None:
+                        self.set_interventions(event.interventions, source="protocol")
+                    self.protocol_applied.add(index)
+        previous = self.body.pose()
+        sensors = self.body.sensors(self.config.stimulus, self.interventions)
+        for _ in range(round(CONTROL_DT / NEURAL_DT)):
+            self.circuit.advance(sensors, self.interventions, NEURAL_DT)
+        motor = self.circuit.motor(self.config.controller == "baseline")
+        self.body.advance(motor)
+        self.step_index += 1
+        # The sample contains the sensory observation actually used for this interval.
+        self.sample = Sample(step=self.step_index, t=self.t, pose=self.body.pose(),
+                             sensors=sensors, rates=self.circuit.rates.tolist(), motor=motor.tolist(),
+                             body_signals=self.body.body_signals())
+        pose = self.sample.pose
+        self.path_length += float(np.hypot(pose.x-previous.x, pose.y-previous.y))
+        self.turning += float(np.arctan2(np.sin(pose.yaw-previous.yaw), np.cos(pose.yaw-previous.yaw)))
+        self.speed_sum += pose.velocity
+        contacts = self.sample.body_signals.get("contact")
+        if contacts is not None:
+            self.contact_sum += contacts
+            self.contact_samples += 1
+        self.record()
+        self.compute_s += time.perf_counter() - before
+        if protocol and self.step_index >= protocol.duration_steps:
+            self.protocol_complete = True
+            self.stop_clock()
+            self.status = "paused"
+            self.event("protocol_complete", f"{protocol.name} completed · {self.t:g} simulated seconds")
+
+    def set_stimulus(self, stimulus: Stimulus, source="manual"):
+        self.config.stimulus = stimulus
+        if self.body is not None and self.status != "error":
+            self.body.set_stimulus(stimulus)
+            self.observe()
+        self.event("stimulus", f"Target moved to ({stimulus.x:g}, {stimulus.y:g}) mm · intensity {stimulus.intensity:g}", {**stimulus.model_dump(), "source": source})
+
+    def set_interventions(self, interventions: Interventions, source="manual"):
+        self.interventions = interventions
+        if self.body is not None and self.status != "error":
+            self.observe()
+        self.event("interventions", f"Inputs L {'off' if interventions.zero_left else 'on'} / R {'off' if interventions.zero_right else 'on'} · silence {interventions.silence}", {**interventions.model_dump(), "source": source})
+
+    def set_parameters(self, parameters: NeuralParameters):
+        self.config.neural_parameters = parameters
+        self.circuit.configure(parameters)
+        self.event("parameters", "Neural parameters updated", parameters.model_dump())
+
+    @property
+    def metrics(self):
+        if not self.sample:
+            return {}
+        pose = self.sample.pose
+        return {"path_length_mm": self.path_length,
+            "displacement_mm": float(np.hypot(pose.x-self.initial_pose.x, pose.y-self.initial_pose.y)),
+            "mean_speed_mm_s": self.speed_sum / max(self.step_index, 1),
+            "net_turn_deg": float(np.degrees(self.turning)),
+            "target_distance_mm": float(np.hypot(pose.x-self.config.stimulus.x, pose.y-self.config.stimulus.y)),
+            "contact_fraction": (self.contact_sum / max(self.contact_samples, 1)).tolist() if self.contact_samples else [],
+            "duration_s": self.t, "protocol_complete": self.protocol_complete}
+
+    def fail(self, exc: Exception):
+        self.stop_clock()
+        self.status = "error"
+        self.error = f"{type(exc).__name__}: {exc}"
+        if len(self.events) < EVENT_LIMIT:
+            self.event("error", self.error)
+
+    @property
+    def provenance(self):
+        return {
+            "body_engine": "FlyGym 2.1.0 / MuJoCo 3.9.0 · NeuroMechFly" if self.config.engine == "flygym" else "Toy demo: not FlyGym physics or a biological connectome",
+            "sensor_model": "FlyGym compound-eye rendering · engineered green-contrast encoder" if self.config.sensor_model == "vision" else "Geometric bilateral bearing / intensity approximation · v1",
+            "neural_model": "Six engineered leaky rate units · v1 · hand-chosen weights",
+            "motor_controller": "FlyGym hybrid turning controller · engineered" if self.config.engine == "flygym" else "Differential kinematic controller · engineered",
+            "connectivity_source": "No biological connectome loaded",
+            "controller_mode": "Controller-only baseline; neural output bypassed" if self.config.controller == "baseline" else "Engineered neural closed loop",
+            "viewport": "MuJoCo rendered body / pose-synchronized arena schematic",
+            "body_sex": "Female-derived NeuroMechFly morphology; no separate male biomechanics" if self.config.engine == "flygym" else "Unspecified; kinematic demonstration",
+            "anatomy_atlas": "Published male/female anatomical samples are separate from this controller",
+        }
+
+    def export(self, directory: Path | None = None):
+        # Caller never supplies a filesystem path. Generated IDs are confined under runs/.
+        base = directory or ROOT / "runs"
+        base.mkdir(parents=True, exist_ok=True)
+        destination = base / f"{self.run_id}-{uuid.uuid4().hex[:6]}"
+        destination.mkdir()
+        metadata = {
+            "schema_version": 2, "application_version": "0.2.0", "run_id": self.run_id,
+            "created_utc": self.started_at, "exported_utc": datetime.now(timezone.utc).isoformat(),
+            "initial_config": self.initial_config.model_dump(), "final_config": self.config.model_dump(),
+            "final_interventions": self.interventions.model_dump(), "final_sample": self.sample.model_dump() if self.sample else None,
+            "status": self.status, "error": self.error, "provenance": self.provenance,
+            "time_steps_s": {"physics": PHYSICS_DT if self.config.engine == "flygym" else CONTROL_DT,
+                             "neural": NEURAL_DT, "control": CONTROL_DT},
+            "units": {"position": "mm", "velocity": "mm/s", "yaw": "rad", "time": "s", "rates_and_commands": "dimensionless"},
+            "coordinates": "Right-handed world; +z up; yaw counterclockwise from +x. Camera follows body. Arena is top-down.",
+            "warmup_s": .05 if self.config.engine == "flygym" else 0,
+            "rendering": {"requested": self.render_enabled, "resolution": [640, 288], "wall_target_hz": 10},
+            "performance": {"active_wall_s": self.wall_s, "compute_s": self.compute_s},
+            "neural": self.circuit.description(), "metrics": self.metrics, "trial": self.trial,
+            "body_joint_order": [str(dof) for dof in self.body.fly.get_jointdofs_order()] if self.body is not None and self.config.engine == "flygym" else [],
+            "vision": {k: v for k, v in self.body.vision.items() if k not in {"left", "right"}} if self.body else {},
+            "events": [event.model_dump() for event in self.events],
+            "recorded_samples": len(self.records), "complete_from_reset": True,
+            "platform": platform.platform(), "python": platform.python_version(),
+            "dependencies": {name: version(name) for name in ["flygym", "mujoco", "numpy", "fastapi", "pydantic", "numba", "scipy"]},
+            "reproducibility": "Fixed seed and step-indexed stimulus/intervention schedule. Same pinned stack tested at absolute tolerance 1e-8; cross-device bitwise equality is not promised.",
+        }
+        (destination / "metadata.json").write_text(json.dumps(metadata, indent=2, allow_nan=False))
+        with (destination / "telemetry.csv").open("w", newline="") as output:
+            writer = csv.writer(output)
+            writer.writerow(["step", "time_s", "x_mm", "y_mm", "z_mm", "yaw_rad", "speed_mm_s", "sensor_l", "sensor_r", "raw_sensor_l", "raw_sensor_r", *["rate_" + n.lower().replace(" ", "_") for n in NAMES], "motor_l", "motor_r"])
+            for s in self.records:
+                writer.writerow([s.step, s.t, s.pose.x, s.pose.y, s.pose.z, s.pose.yaw, s.pose.velocity,
+                                 s.sensors.left, s.sensors.right, s.sensors.raw_left, s.sensors.raw_right, *s.rates, *s.motor])
+        with (destination / "body_signals.jsonl").open("w") as output:
+            for s in self.records:
+                if s.body_signals:
+                    output.write(json.dumps({"step": s.step, "t": s.t, **s.body_signals}, allow_nan=False)+"\n")
+        archive = destination.with_suffix(".zip")
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+            for file in destination.iterdir():
+                output.write(file, file.name)
+        return {"run_id": self.run_id, "samples": len(self.records), "path": str(destination),
+                "download_url": f"/api/exports/{archive.name}"}
+
+    def close(self):
+        if self.body is not None:
+            self.body.close()
