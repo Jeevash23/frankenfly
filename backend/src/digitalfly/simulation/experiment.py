@@ -100,7 +100,8 @@ class Experiment:
 
     def record(self):
         # Retain full pose in the latest sample only, avoiding repeated mesh/joint history.
-        sample = self.sample.model_copy(update={"pose": self.sample.pose.model_copy(update={"legs": []})}, deep=True)
+        # Samples are never mutated after creation, so shallow copies are safe here.
+        sample = self.sample.model_copy(update={"pose": self.sample.pose.model_copy(update={"legs": []})})
         self.records.append(sample)
         if self.step_index % 2 == 0:
             self.history.append(sample.model_copy(update={"body_signals": {
@@ -125,7 +126,7 @@ class Experiment:
                     if event.interventions is not None:
                         self.set_interventions(event.interventions, source="protocol")
                     self.protocol_applied.add(index)
-        previous = self.body.pose()
+        previous_x, previous_y, previous_yaw = self.body.planar()
         sensors = self.body.sensors(self.config.stimulus, self.interventions)
         for _ in range(round(CONTROL_DT / NEURAL_DT)):
             self.circuit.advance(sensors, self.interventions, NEURAL_DT)
@@ -137,8 +138,8 @@ class Experiment:
                              sensors=sensors, rates=self.circuit.rates.tolist(), motor=motor.tolist(),
                              body_signals=self.body.body_signals())
         pose = self.sample.pose
-        self.path_length += float(np.hypot(pose.x-previous.x, pose.y-previous.y))
-        self.turning += float(np.arctan2(np.sin(pose.yaw-previous.yaw), np.cos(pose.yaw-previous.yaw)))
+        self.path_length += float(np.hypot(pose.x-previous_x, pose.y-previous_y))
+        self.turning += float(np.arctan2(np.sin(pose.yaw-previous_yaw), np.cos(pose.yaw-previous_yaw)))
         self.speed_sum += pose.velocity
         contacts = self.sample.body_signals.get("contact")
         if contacts is not None:
