@@ -33,6 +33,7 @@ __pycache__/
 !/data/README.md
 !/data/atlas/
 !/data/examples/
+!/data/circuits/
 
 # Execution evidence can contain local paths, device details and session IDs.
 # Only the generic instructions belong in the public repository.

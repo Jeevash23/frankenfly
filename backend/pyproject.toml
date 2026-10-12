@@ -13,12 +13,15 @@ dependencies = [
   "uvicorn==0.53.0",
   "pydantic==2.13.5",
   "numpy>=2.0,<3",
+  "scipy>=1.11,<2",
   "websockets==17.1",
   "psutil==7.2.2",
 ]
 
 [project.optional-dependencies]
 test = ["pytest==9.1.1", "httpx==0.28.1"]
+# Build scripts only (scripts/build_circuit.py); the app never imports these.
+data = ["pyarrow==25.0.1"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

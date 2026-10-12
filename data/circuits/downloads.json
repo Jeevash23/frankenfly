@@ -1,0 +1,42 @@
+[
+  {
+    "name": "fafb_783_meta.feather",
+    "url": "https://storage.googleapis.com/lee-lab_brain-and-nerve-cord-fly-connectome/compiled_data/fafb_783/fafb_783_meta.feather",
+    "release": "FAFB / FlyWire v783, harmonized to the BANC schema",
+    "provider": "Bates/Lee lab compiled connectome data (github.com/sjcabs/fly_connectome_data_tutorial)",
+    "documentation": "https://github.com/sjcabs/fly_connectome_data_tutorial/blob/main/data/dataset_documentation/fafb_data.md",
+    "gcs_generation": "1787944265562460",
+    "license": "CC BY-NC 4.0 (FlyWire public-release terms): non-commercial use only; the compilation's code is MIT",
+    "content": "Per-neuron cell type, super class, side and predicted neurotransmitter",
+    "download": "whole file",
+    "bytes": 13539866,
+    "sha256": "5e248762d5308bf31e77b0ec5a6acd91ad11a22213b8cd985229c5917acd1823",
+    "rows": 144837,
+    "retrieved_utc": "2026-10-12"
+  },
+  {
+    "name": "Connectivity_783.parquet",
+    "url": "https://raw.githubusercontent.com/philshiu/Drosophila_brain_model/61555bc764aebab90e37a56fa1f312269fa4dde1/Connectivity_783.parquet",
+    "release": "FlyWire v783 connectivity shipped with Shiu et al. 2024 (Nature 634:210-219)",
+    "provider": "github.com/philshiu/Drosophila_brain_model",
+    "git_commit": "61555bc764aebab90e37a56fa1f312269fa4dde1",
+    "git_blob_sha1": "d386555d1a5f40ebfa1380bcb05b1fab044855fd",
+    "upstream_bytes": 100804642,
+    "license": "CC BY-NC 4.0 (FlyWire public-release terms): non-commercial use only; the repository's code is MIT",
+    "content": "Synapse counts for every connected neuron pair; Shiu et al.'s own excitatory/inhibitory sign",
+    "columns": [
+      "Presynaptic_ID",
+      "Postsynaptic_ID",
+      "Connectivity",
+      "Excitatory"
+    ],
+    "download": "Parquet footer plus the column chunks of the listed columns, by HTTP range requests",
+    "bytes": 47365136,
+    "sha256": "95bbc483f09c664750bb46cca240bdede9727bb76cc88937b4d2768ccdafbec0",
+    "ranges": 61,
+    "rows": 15091983,
+    "row_groups": 15,
+    "hash_scope": "SHA-256 of the downloaded byte ranges (footer and listed column chunks) in file order",
+    "retrieved_utc": "2026-10-12"
+  }
+]

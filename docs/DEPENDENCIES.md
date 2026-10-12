@@ -31,6 +31,7 @@ Reference validation covers macOS/ARM64. Linux/EGL and other environments have n
 | psutil | 7.2.2 |
 | pytest / httpx | 9.1.1 / 0.28.1 |
 | pip-tools | 7.5.3 |
+| pyarrow (circuit build only, not the app) | 25.0.1 |
 | Node requirement | 22.12–26 |
 | React / React DOM | 19.3.0 |
 | Vite / React plugin | 7.3.6 / 5.2.0 |
@@ -48,6 +49,21 @@ PIP_CACHE_DIR="$PWD/.cache/pip" PIP_TOOLS_CACHE_DIR="$PWD/.cache/pip-tools" \
 ```
 
 Do not hand-maintain an additional requirements file. Setup installs from the lock using `--require-hashes`, then installs the local source without resolving dependencies again.
+
+The circuit builder (`scripts/build_circuit.py`) needs pyarrow, which the app itself never imports. It lives in the optional `data` extra and its own lock, `backend/requirements-data.lock`: the runtime lock plus pyarrow, with hashes for every published wheel (macOS and Linux included). Install it only to rebuild `data/circuits/`:
+
+```sh
+backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-data.lock
+```
+
+After regenerating the runtime lock, regenerate this one from it, so shared pins stay identical:
+
+```sh
+cp backend/requirements.lock backend/requirements-data.lock
+PIP_CACHE_DIR="$PWD/.cache/pip" PIP_TOOLS_CACHE_DIR="$PWD/.cache/pip-tools" \
+  backend/.venv/bin/pip-compile --extra test --extra data --generate-hashes \
+  --output-file backend/requirements-data.lock backend/pyproject.toml
+```
 
 ## Official references checked
 
