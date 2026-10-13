@@ -11,6 +11,7 @@ spec = importlib.util.spec_from_file_location("build_circuit", ROOT / "scripts/b
 builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
 CIRCUIT = ROOT / "data/circuits/fafb783-dna02.json"
+STEERING = ROOT / "data/circuits/fafb783-steering.json"
 
 # A hand-checkable graph. Seeds 1 and 2 stand in for the two DNa02 neurons.
 EDGES = [
@@ -223,3 +224,28 @@ def test_general_builder_reproduces_the_committed_circuit(tmp_path, monkeypatch)
     dropped = built["provenance"]["cap_report"]["dropped_top_cell_types"]
     for cell_type, count in committed["provenance"]["cap_report"]["dropped_top_cell_types"].items():
         assert cell_type == "untyped" or dropped[cell_type] == count, cell_type
+
+
+def test_committed_steering_circuit_records_its_seeds_and_sources():
+    raw = STEERING.read_bytes()
+    assert len(raw) < 5_000_000
+    data = json.loads(raw)
+    prov = data["provenance"]
+    assert data["version"] == 2 and data["defaults"]["readout_types"] == ["DNa01", "DNa02", "DNp09"]
+    assert prov["build"]["seeds"] == ["DNa01", "DNa02", "DNp09"] and prov["build"]["neuron_cap"] == 4000
+    assert [(s["seed"], len(s["left"]), len(s["right"])) for s in prov["seeds"]] == [("DNa01", 1, 1), ("DNa02", 1, 1), ("DNp09", 1, 1)]
+    assert prov["seeds"][1]["left"] == ["720575940629327659"] and prov["seeds"][1]["right"] == ["720575940604737708"]
+    assert prov["non_commercial"] and "CC BY-NC 4.0" in prov["license"]
+    assert prov["sources"] == json.loads((ROOT / "data/circuits/downloads.json").read_text())
+    neurons, edges = data["neurons"], data["edges"]
+    assert len(neurons["id"]) == prov["counts"]["neurons"] == 4000 and len(edges["pre"]) == prov["counts"]["connections"]
+    assert min(edges["synapses"]) >= 5 and neurons["hop"][:6] == [0] * 6
+
+
+@pytest.mark.skipif(not (ROOT / ".cache/circuits/fafb783-connectome.npz").is_file(),
+                    reason="needs the prepared FlyWire archive (scripts/build_circuit.py prepare)")
+def test_committed_steering_circuit_rebuilds_byte_for_byte(tmp_path, monkeypatch):
+    monkeypatch.setattr(builder, "OUT_DIR", tmp_path)
+    (tmp_path / "fafb783-steering.json").unlink(missing_ok=True)
+    built = build("fafb783-steering", ["DNa01", "DNa02", "DNp09"], cap=4000, committed=True)
+    assert built.read_bytes() == STEERING.read_bytes()

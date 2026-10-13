@@ -608,6 +608,11 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
     if not committed and any((OUT_DIR / f"{name}{suffix}").exists() for suffix in (".json", ".npz")):
         sys.exit(f"{name} is a built-in circuit. Choose another name for a local build.")
     data = load_prepared()
+    # Retrieval dates come from the recorded downloads when the hashes match.
+    recorded_sources = {item["name"]: item for item in json.loads(DOWNLOADS.read_text())} if DOWNLOADS.is_file() else {}
+    sources = [{**source, **({"retrieved_utc": recorded_sources[source["name"]]["retrieved_utc"]}
+                             if recorded_sources.get(source["name"], {}).get("sha256") == source.get("sha256") else {})}
+               for source in data["header"]["sources"]]
     seeds, records = resolve_seeds(data, tokens)
     n = len(data["neuron_id"])
     chosen = select_indices(data["pre"], data["post"], data["synapses"], seeds, n, threshold, hops, cap, whole)
@@ -654,7 +659,7 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
                          if whole else f"{seed_text} and their presynaptic partners up to {hops} hops back, connections "
                          f"with at least {threshold} synapses, at most {cap} neurons"),
             "license": FLYWIRE_LICENSE, "non_commercial": True, "attribution": ATTRIBUTION, "citations": CITATIONS,
-            "sources": data["header"]["sources"],
+            "sources": sources,
             "build": {"script": "scripts/build_circuit.py", "command": "build", "seeds": [r["seed"] for r in records],
                       "synapse_threshold": threshold, "hops": None if whole else hops,
                       "neuron_cap": None if whole else cap, "whole_brain": whole,
