@@ -14,6 +14,7 @@ from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, St
     ConnectomeParameters, BatchRequest, check_cell_types, silenced_types)
 from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
 from digitalfly.neural.model import RateCircuit
+from digitalfly.data.builds import BuildManager, BuildRequest, catalog
 from digitalfly.simulation.experiment import APPLICATION_VERSION
 from digitalfly.data.research import ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs, run_detail
 from digitalfly.simulation.engines import ROOT
@@ -28,6 +29,7 @@ def _summary(parameters_json: str, sha256: str):
 
 def create_app(config: RunConfig | None = None, render: bool = True):
     worker = SimulationWorker(config, render)
+    builds = BuildManager()
     port = int(os.environ.get("DIGITALFLY_PORT", "8000"))
     allowed_origins = {f"http://{host}:{p}" for host in ["127.0.0.1", "localhost"] for p in [port, 5173]}
 
@@ -37,6 +39,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         try:
             yield
         finally:
+            await asyncio.to_thread(builds.close)
             await asyncio.to_thread(worker.close)
 
     app = FastAPI(title="DigitalFly", version=APPLICATION_VERSION, lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
@@ -113,6 +116,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 "biological_connectome": model == "connectome",
                 "whole_brain_connectome": model == "connectome" and bool(circuit.get("build", {}).get("whole_brain")),
                 "connectome_circuit": circuit, "connectome_circuits_available": len(list_circuits()),
+                "circuit_builder_ready": catalog() is not None,
                 "body_morphology_sex": "female", "male_body_available": False,
                 "shutdown_available": app.state.shutdown_callback is not None,
                 "neural_units": 6 if model == "engineered" else circuit.get("neurons"),
@@ -194,6 +198,27 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             return trace_paths(current_parameters(), source, target, max_hops, limit)
         except (OSError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/connectome/catalog")
+    def connectome_catalog():
+        data = catalog()
+        if data is None:
+            raise HTTPException(404, "The FlyWire cell-type catalog is not prepared yet. Run: "
+                                     "backend/.venv/bin/python scripts/build_circuit.py prepare")
+        return data
+
+    @app.get("/api/connectome/build")
+    def build_status():
+        return builds.status()
+
+    @app.post("/api/connectome/build")
+    def build_start(body: BuildRequest):
+        try:
+            return builds.start(body)
+        except FileNotFoundError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.post("/api/batch/start")
     async def batch_start(body: BatchRequest):

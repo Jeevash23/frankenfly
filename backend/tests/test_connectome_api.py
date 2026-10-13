@@ -182,3 +182,35 @@ def test_spiking_runs_export_and_replay_exactly(client):
     report = json.loads(replay.stdout)
     assert report["passed"] and report["maximum_absolute_error"] == 0
 
+
+def test_build_jobs_validate_and_report(client, tmp_path, monkeypatch):
+    from digitalfly.data import builds
+    monkeypatch.setattr(builds, "PREPARED", tmp_path / "missing.npz")
+    monkeypatch.setattr(builds, "CATALOG", tmp_path / "missing.json")
+    assert client.get("/api/connectome/catalog").status_code == 404
+    assert not client.get("/api/capabilities").json()["circuit_builder_ready"]
+    good = {"name": "my-circuit", "seeds": ["DNa01", "DNa02"]}
+    for bad in [{**good, "name": "Bad Name"}, {**good, "seeds": []}, {**good, "hops": 0}, {**good, "cap": 5},
+                {**good, "threshold": 0}, {**good, "seeds": ["bad\nseed"]}, {**good, "extra": 1}]:
+        assert client.post("/api/connectome/build", json=bad).status_code == 422, bad
+    assert client.post("/api/connectome/build", json=good).status_code == 409  # not prepared yet
+    builds.PREPARED.write_bytes(b"")
+    builds.CATALOG.write_text(json.dumps({"release": "test", "cell_types": [{"cell_type": "DNa02"}]}))
+    assert client.get("/api/connectome/catalog").json()["cell_types"] == [{"cell_type": "DNa02"}]
+    assert client.post("/api/connectome/build", json={**good, "name": "fafb783-dna02"}).status_code == 409
+    seen, real = [], builds.BuildManager.command
+
+    def fake(request):
+        seen.append(real(request))
+        script = "import json, time; print('selecting', flush=True); time.sleep(.5); print(json.dumps({'name': 'my-circuit', 'neurons': 12}))"
+        return [sys.executable, "-c", script]
+    monkeypatch.setattr(builds.BuildManager, "command", staticmethod(fake))
+    started = client.post("/api/connectome/build", json={**good, "whole_brain": True}).json()
+    assert started["status"] == "running" and started["name"] == "my-circuit"
+    assert seen[0][-1] == "--whole-brain" and seen[0][seen[0].index("--name") + 1] == "my-circuit"
+    assert client.post("/api/connectome/build", json=good).status_code == 409  # one build at a time
+    deadline = time.monotonic() + 10
+    while (status := client.get("/api/connectome/build").json())["status"] == "running" and time.monotonic() < deadline:
+        time.sleep(.05)
+    assert status["status"] == "done" and status["result"] == {"name": "my-circuit", "neurons": 12}
+    assert status["log"][0] == "selecting"
