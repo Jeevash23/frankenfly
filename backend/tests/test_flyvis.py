@@ -140,3 +140,17 @@ def test_flyvis_eyes_drive_the_circuit_and_replay_exactly(tmp_path):
                             timeout=600)
     assert replay.returncode == 0, replay.stderr
     assert json.loads(replay.stdout)["maximum_absolute_error"] == 0
+
+
+def test_without_flyvis_the_reason_names_the_install_command(monkeypatch, tmp_path):
+    import importlib.util
+    from digitalfly.vision import flyvis_eyes
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a: None if name in ("flyvis", "torch") else real(name, *a))
+    ok, reason = flyvis_eyes.available()
+    assert not ok and "requirements-vision.lock" in reason
+    monkeypatch.setattr(importlib.util, "find_spec", real)
+    monkeypatch.setattr(flyvis_eyes, "FLYVIS_ROOT", tmp_path)
+    if real("flyvis") is not None:
+        ok, reason = flyvis_eyes.available()
+        assert not ok and "fetch_flyvis.py" in reason
