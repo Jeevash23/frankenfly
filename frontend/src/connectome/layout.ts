@@ -1,7 +1,9 @@
-// Pure helpers for the connectome circuit view. Positions encode hop distance to DNa02
-// and laterality, not anatomy.
+// Pure helpers for the connectome circuit view. Positions encode hop distance to the
+// circuit's seeds and laterality, not anatomy.
 
 export type CircuitType = {
+  // The type's index in the circuit; large circuits send only a subset of types.
+  index: number;
   name: string;
   count: number;
   layer: number;
@@ -21,38 +23,65 @@ export type TypeEdges = {
   connections: number[];
 };
 export type SideEdges = {pre: number[]; sign: number[]; synapses: number[]};
+// A cell type read out as the steering signal: its left and right neurons and their inputs.
+export type Readout = {
+  cell_type: string;
+  type_index: number;
+  left: string[];
+  right: string[];
+  inputs: {left: SideEdges; right: SideEdges};
+};
 export type CircuitSummary = {
   name: string;
+  title: string;
   sha256: string;
   neurons: number;
   connections_active: number;
-  parameters: Record<string, number | string>;
-  dna02: {left: string; right: string; type_index: number};
+  types_total: number;
+  types_shown: number;
+  parameters: Record<string, unknown>;
+  readouts: Readout[];
   provenance: Record<string, string>;
   citations: string[];
   types: CircuitType[];
   edges: TypeEdges;
-  dna02_inputs: {left: SideEdges; right: SideEdges};
 };
 export type Node = {x: number; y: number; r: number};
 
 export const VIEW = {width: 1000, height: 560, top: 58, bottom: 512};
 const BANDS: Record<number, [number, number]> = {2: [36, 486], 1: [532, 812]};
-export const DNA02_X = 912;
+export const READOUT_X = 912;
 
-// Left-dominant types first, so they sit above right-dominant ones, like DNa02 L above R.
+// Hop 1 and closer share the right band; hop 2, deeper and unreached types (-1) the left one.
+export function band(layer: number): 1 | 2 {
+  return layer >= 0 && layer <= 1 ? 1 : 2;
+}
+
+// Left-dominant types first, so they sit above right-dominant ones, like a readout's L above R.
 export function laterality(type: CircuitType): number {
   const sided = type.left + type.right;
   return sided ? type.right / sided : 0.5;
 }
 
-export function layoutTypes(types: CircuitType[], dna02Index: number): Map<number, Node> {
+// Vertical centres of the readout neurons: each type's left neuron above its right one.
+export function readoutRows(count: number): {left: number; right: number}[] {
+  const span = VIEW.bottom - 70 - VIEW.top;
+  const slot = span / Math.max(1, count);
+  return Array.from({length: count}, (_, k) => {
+    const middle = VIEW.top + slot * (k + 0.5);
+    const gap = Math.min(90, slot * 0.3);
+    return {left: middle - gap, right: middle + gap};
+  });
+}
+
+// Positions keyed by each type's circuit index. Readout types are drawn separately.
+export function layoutTypes(types: CircuitType[], excluded: Set<number>): Map<number, Node> {
   const positions = new Map<number, Node>();
   const largest = Math.max(1, ...types.map((t) => t.count));
   for (const layer of [1, 2]) {
     const members = types
-      .map((type, index) => ({type, index}))
-      .filter(({type, index}) => index !== dna02Index && Math.min(type.layer, 2) === layer)
+      .map((type) => ({type, index: type.index}))
+      .filter(({type, index}) => !excluded.has(index) && band(type.layer) === layer)
       .sort(
         (a, b) =>
           laterality(a.type) - laterality(b.type) ||

@@ -1,5 +1,5 @@
 export type Engine = 'flygym' | 'toy';
-export type NeuralModel = 'engineered' | 'connectome_dna02';
+export type NeuralModel = 'engineered' | 'connectome';
 export type Stimulus = {x: number; y: number; intensity: number};
 export type Intervention = {
   zero_left: boolean;
@@ -16,8 +16,18 @@ export type NeuralParameters = {
   tonic_drive: number;
   time_scale: number;
 };
+export type Dynamics = 'rate' | 'spiking';
+// Spiking constants follow Shiu et al. 2024; these are the closed-loop input and readout settings.
+export type SpikingParameters = {
+  synapse_weight_mv: number;
+  input_rate_hz: number;
+  rate_window_ms: number;
+  rate_scale_hz: number;
+};
 // Global settings of the connectome model; nothing addresses a single neuron or synapse.
 export type ConnectomeParameters = {
+  circuit: string;
+  dynamics: Dynamics;
   synapse_threshold: number;
   global_gain: number;
   input_gain: number;
@@ -25,6 +35,42 @@ export type ConnectomeParameters = {
   tonic_drive: number;
   tau_ms: number;
   other_transmitters: 'excluded' | 'excitatory';
+  // Populations by cell type; null means the circuit's default readout or every visual projection neuron.
+  readout_types: string[] | null;
+  input_types: string[] | null;
+  speed_types: string[];
+  speed_gain: number;
+  spiking: SpikingParameters;
+};
+// One entry of /api/connectome/circuits.
+export type CircuitInfo = {
+  name: string;
+  title?: string;
+  committed?: boolean;
+  format?: string;
+  neurons?: number;
+  connections?: number;
+  cell_types?: number;
+  seeds?: string[];
+  readout_types?: string[];
+  build?: {
+    synapse_threshold?: number;
+    hops?: number | null;
+    neuron_cap?: number | null;
+    whole_brain?: boolean | null;
+  };
+  coverage?: string;
+  license?: string;
+  bytes?: number;
+  sha256?: string;
+  error?: string;
+};
+export type BuildStatus = {
+  status: 'idle' | 'running' | 'done' | 'failed';
+  name?: string;
+  exit_code?: number;
+  result?: {name: string; neurons: number; connections: number; cell_types: number} | null;
+  log: string[];
 };
 export type ProtocolEvent = {
   step: number;
@@ -104,6 +150,10 @@ export type Batch = {
 };
 // Live, display-only activity of the connectome model (not recorded).
 export type ConnectomeLive = {
+  circuit: string;
+  dynamics: Dynamics;
+  unit_names: string[];
+  readout_types: string[];
   type_rates: number[];
   turn: number;
   silenced_neurons: number;

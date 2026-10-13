@@ -9,7 +9,7 @@
 
 No GPU or CUDA installation is required. Setup creates a project-local `backend/.venv`; it does not install drivers or change system settings. Each checkout should create its own environment and frontend dependencies.
 
-Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL rendering (v0.3). Other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
+Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL rendering (v0.3 and v0.4). Other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
 
 ## Chosen stack
 
@@ -37,6 +37,8 @@ Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL renderi
 | Vite / React plugin | 7.3.6 / 5.2.0 |
 | TypeScript | 5.9.3 |
 | Prettier (formatting) | 3.9.9 |
+
+v0.4 adds no dependencies: spiking dynamics, the general circuit builder, the research toolkit and the fly comparison use NumPy and SciPy, which were already installed. Only `scripts/build_circuit.py prepare` (and the default rebuild of the DNa02 circuit) needs pyarrow from the build-only data lock; `build` reads the prepared NumPy archive.
 
 Full transitive versions and hashes: `backend/requirements.lock`, generated from `backend/pyproject.toml` with pip-tools. The lock includes the test extra. Frontend versions/integrity hashes: `frontend/package-lock.json`. All direct frontend imports are local packages. No PyTorch, JAX, Brian2, CUDA or Warp stack is installed. `jaxtyping`, IPython, imageio, ffmpeg and Matplotlib are upstream FlyGym transitives; they are not speculative extra model stacks.
 

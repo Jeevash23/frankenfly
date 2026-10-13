@@ -3,6 +3,7 @@ import {ChevronDown} from 'lucide-react';
 import type {State} from '../types';
 import {trace} from '../plot';
 import {fmt} from '../format';
+import {groupIndex, type TraceGroup as Group} from '../models';
 
 const engineeredNames = [
   'Sensory L',
@@ -12,11 +13,10 @@ const engineeredNames = [
   'Descending L',
   'Descending R',
 ];
+// The v0.3 connectome units, for states sent before unit names were included.
 const connectomeNames = ['DNa02 L', 'DNa02 R', 'Visual input L', 'Visual input R', 'Circuit mean'];
 const typeColors = ['#416a55', '#bc9452', '#7f7fae', '#a26e67', '#5f8f8a'];
 const typeDashes = [undefined, '6 4', '2 3', '8 3 2 3', '1 4'];
-
-type Group = 'descending' | 'sensory' | 'steering' | 'dna02' | 'input' | 'types';
 
 // Left is a solid line, right a dashed one, so the two never differ by color alone.
 function LineKey({color, dash}: {color: string; dash?: string}) {
@@ -28,26 +28,29 @@ function LineKey({color, dash}: {color: string; dash?: string}) {
 }
 
 export function Signals({state}: {state: State | null}) {
-  const connectome = state?.config.neural_model === 'connectome_dna02';
+  const connectome = state?.config.neural_model === 'connectome';
+  const readouts = state?.connectome?.readout_types ?? ['DNa02'];
+  const spiking = connectome && state?.config.connectome_parameters.dynamics === 'spiking';
+  const scale = spiking ? 3 : 1.4;
   const [chosen, setGroup] = useState<Group>('descending');
-  const group: Group = connectome
-    ? ['dna02', 'input', 'types'].includes(chosen)
-      ? chosen
-      : 'dna02'
-    : ['descending', 'sensory', 'steering'].includes(chosen)
-      ? chosen
-      : 'descending';
-  const index = {sensory: 0, steering: 2, descending: 4, dna02: 0, input: 2, types: 0}[group];
+  const choices: Group[] = connectome
+    ? [...readouts.map((_, k) => `readout:${k}` as Group), 'input', 'types']
+    : ['descending', 'sensory', 'steering'];
+  const group: Group = choices.includes(chosen) ? chosen : choices[0];
+  const index = groupIndex(group, readouts.length);
   const history = state?.history ?? [];
   const end = Math.max(2, state?.sample?.t ?? 0);
   const start = Math.max(0, end - 4);
-  const names = connectome ? connectomeNames : engineeredNames;
+  const names = connectome ? (state?.connectome?.unit_names ?? connectomeNames) : engineeredNames;
   const top = state?.connectome?.top_types ?? [];
   const times = state?.connectome?.trace_t ?? [];
   const typeTraces = top.map((type) =>
     trace(
       times.map((t, i) => ({t, rate: type.trace[i] ?? 0})),
       (point) => point.rate,
+      600,
+      110,
+      scale,
     ),
   );
   return (
@@ -66,8 +69,12 @@ export function Signals({state}: {state: State | null}) {
           >
             {connectome ? (
               <>
-                <option value="dna02">DNa02 left & right</option>
-                <option value="input">Visual input left & right</option>
+                {readouts.map((name, k) => (
+                  <option key={name} value={`readout:${k}`}>
+                    {name} left & right
+                  </option>
+                ))}
+                <option value="input">Sensor input left & right</option>
                 <option value="types">Most active cell types</option>
               </>
             ) : (
@@ -103,12 +110,12 @@ export function Signals({state}: {state: State | null}) {
                 </span>
               </>
             )}
-            <span className="unit">Rate · a.u.</span>
+            <span className="unit">{spiking ? 'Firing rate ÷ rate scale' : 'Rate · a.u.'}</span>
           </div>
           <div className="chart">
             <div className="y-labels">
-              <span>1.4</span>
-              <span>0.7</span>
+              <span>{fmt(scale, 1)}</span>
+              <span>{fmt(scale / 2, 1)}</span>
               <span>0.0</span>
             </div>
             <svg
@@ -138,14 +145,14 @@ export function Signals({state}: {state: State | null}) {
               ) : (
                 <>
                   <path
-                    d={trace(history, (s) => s.rates[index] ?? 0)}
+                    d={trace(history, (s) => s.rates[index] ?? 0, 600, 110, scale)}
                     fill="none"
                     stroke="#416a55"
                     strokeWidth="2"
                     vectorEffect="non-scaling-stroke"
                   />
                   <path
-                    d={trace(history, (s) => s.rates[index + 1] ?? 0)}
+                    d={trace(history, (s) => s.rates[index + 1] ?? 0, 600, 110, scale)}
                     fill="none"
                     stroke="#bc9452"
                     strokeWidth="2"
@@ -184,7 +191,7 @@ export function Signals({state}: {state: State | null}) {
       <div className="panel-footnote">
         <span className="tiny-dot" />
         {connectome
-          ? `${(state?.connectome?.type_rates.length ?? 0).toLocaleString()} cell types from FlyWire v783 · data-derived wiring, assumed signs, engineered dynamics`
+          ? `${(state?.connectome?.type_rates.length ?? 0).toLocaleString()} cell types from FlyWire v783 (${state?.connectome?.circuit ?? 'circuit'}) · data-derived wiring, assumed signs, ${spiking ? 'Shiu et al. 2024 spiking neurons' : 'engineered rate dynamics'}`
           : '6 engineered rate units · hand-chosen weights'}
         <span>Simulation time, not wall time</span>
       </div>

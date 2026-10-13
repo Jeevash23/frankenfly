@@ -9,7 +9,8 @@ selected sensor encoder (geometric or rendered compound eye) ← stimulus
         ↓                          ← sensory channel interventions
 selected neural model              ← silencing (groups, or DNa02 / cell types)
   · engineered: six leaky rate units (default)
-  · connectome_dna02: 3,000-neuron FlyWire v783 DNa02 subcircuit
+  · connectome: a FlyWire v783 circuit (committed or built locally),
+    rate units or Shiu et al. 2024 spiking neurons
         ↓
 left/right descending command
         ↓
@@ -24,8 +25,8 @@ The browser sends validated commands and plots Python samples. It never integrat
 
 - Body pose: world position `[x,y,z]` in **mm**, yaw in **radians**, speed in **mm/s**. Right-handed frame, `+z` upward, yaw counterclockwise from `+x`. The thorax's local `+x` determines forward heading.
 - Sensor encoder: geometric pose/stimulus features or rendered eye pixels → dimensionless bilateral intensities in `[0,1]`, followed by input interventions. Raw intensities, geometric bearing and distance are retained as diagnostics. Neural and motor code receive no target coordinates.
-- Neural circuit: declared two sensor values + silencing mask → dimensionless continuous rates (six for the engineered model; 3,000 for the connectome model, of which five readouts are recorded). No privileged target-coordinate shortcut reaches neural or motor code.
-- Motor interface: engineered descending rates × 1.4, clipped to `[0,1.4]`, or for the connectome model `1.4 × clip([tonic + turn, tonic − turn], 0, 1)` with `turn = output gain × (DNa02 R − DNa02 L)` → upstream CPG amplitudes `[left legs, right legs]`. The explicit baseline returns `[1,1]` regardless of rates and is labeled as a bypass.
+- Neural circuit: declared two sensor values + silencing mask → dimensionless continuous rates (six for the engineered model; one per neuron for the connectome model, of which the readout pairs, the mean input per side, the circuit mean and an optional speed drive are recorded; spiking activity is firing rate ÷ the rate scale). No privileged target-coordinate shortcut reaches neural or motor code.
+- Motor interface: engineered descending rates × 1.4, clipped to `[0,1.4]`, or for the connectome model `1.4 × clip([forward + turn, forward − turn], 0, 1)` with `turn = output gain × Σ (readout R − readout L)` over the readout cell types and `forward = tonic (+ speed gain × speed population)` → upstream CPG amplitudes `[left legs, right legs]`. The explicit baseline returns `[1,1]` regardless of rates and is labeled as a bypass.
 - Body adapter: descending command → 100 upstream controller/physics updates per control interval → finite body state. Controller proprioception uses FlyGym's supported `HybridControllerObservation.from_sim`.
 - The target also appears as a non-colliding green landmark in the MuJoCo world. The optional vision adapter pools actual eye-camera pixels through the upstream retina and an engineered contrast encoder. See `RESEARCH.md` for exact rates, units and assumptions.
 
@@ -114,3 +115,14 @@ Complete methods, data licensing and limitations are in [RESEARCH.md](RESEARCH.m
 
 The connectome view in the browser lays cell types out by hop distance to DNa02 and laterality, never anatomy; it draws the 140 strongest type-to-type connections plus every connection of the selected type. In the atlas, the two female DNa02 skeletons are tinted with the live readout, labeled as model output.
 
+## v0.4 circuits, spiking dynamics and research tools
+
+`neural_model` is now `connectome` (`connectome_dna02` is accepted as an alias). `ConnectomeParameters` adds `circuit` (a name), `dynamics` (`rate` or `spiking`), the `readout_types`, `input_types` and `speed_types` populations, `speed_gain` and the `spiking` settings. Circuit, dynamics and populations are fixed for a run: they decide which rates are recorded, so changing them through `/api/connectome/parameters` returns 409 and needs a Reset.
+
+- **Circuits.** `connectome.circuit_path` resolves a name to `data/circuits/` first and `data/circuits/local/` second, accepting only plain files with names matching `[a-z0-9][a-z0-9._-]{0,63}`. `CircuitData` reads format 1 (v0.3) and format 2 (JSON, or an NPZ archive with a JSON header and `neuron_*`/`edge_*` arrays), validates array lengths, indices and synapse counts, and is cached by path and modification time. `list_circuits` reads only headers.
+- **Spiking.** `SpikingState` keeps membrane potential, synaptic conductance, a refractory countdown and a ring buffer of 19 delayed-input slots for every neuron, with the weights as a CSC matrix so each spike adds its column to the slot due 1.8 ms later. Ten 0.1 ms substeps per neural step follow Brian2's schedule (update, threshold, delayed and Poisson input, reset). The random generator is seeded from the run seed, so spiking runs repeat and replay exactly. Updates use masked arithmetic rather than boolean indexing.
+- **Builds.** `data/builds.py` runs `scripts/build_circuit.py build` as one subprocess at a time, with arguments validated by `BuildRequest` and passed as a list (never a shell), in its own session; a reader thread keeps the last 200 log lines and parses the final JSON line as the result. Building needs the prepared archive in the ignored cache and no network; built-in names are refused; the lifespan terminates a running build on shutdown.
+- **API.** `GET /api/connectome/circuits` (list and active circuit), `GET /api/connectome/paths` (strongest cell-type paths, 1–6 hops), `GET /api/connectome/catalog` (the FlyWire cell-type catalog, 404 until prepared), `GET`/`POST /api/connectome/build`. `/api/connectome/circuit` is cached by parameters and the circuit's hash, includes each readout's sided inputs, and sends at most 1,500 cell types (those nearest the readout) with their circuit indices. `/api/capabilities` reports the active dynamics, the circuit summary, whether it is a whole-brain build and whether the builder is ready.
+- **State and exports.** The live `connectome` block adds the circuit name, dynamics, unit names and readout types. Exports record the circuit name, file and hash, dynamics, populations, spiking constants and labels; rate columns follow the unit names. Replay handles both dynamics.
+- **Toolkit.** `digitalfly/toolkit.py` builds trials from validated `RunConfig`s and runs them serially or in spawned processes, each worker keeping one `Experiment` per body engine and resetting it for every trial, so results do not depend on the worker count. Open-loop analyses (`hold`, `bias_curve`, `ablation_scan`) drive a `ConnectomeCircuit` directly. `digitalfly/compare.py` resamples recordings and runs to 10 ms bins and fits turning to the readout difference. `scripts/toolkit.py` is the command line for both; outputs go to the ignored `runs/toolkit/`.
+- **Interface.** The Workbench adds circuit and dynamics selectors; the live circuit view is keyed by circuit type index, draws every readout pair, traces paths and edits populations; **Build a circuit** drives the build endpoints.

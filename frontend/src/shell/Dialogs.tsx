@@ -46,24 +46,30 @@ export function ModelDialog({state, close}: {state: State | null; close: () => v
           ))}
       </dl>
       <h3>What is actually computed?</h3>
-      {state?.config.neural_model === 'connectome_dna02' ? (
+      {state?.config.neural_model === 'connectome' ? (
         <>
           <p>
             The selected sensor uses geometric target bearing or rendered compound-eye pixels. Each
-            side's value drives the visual projection neurons on that side of a 3,000-neuron FlyWire
-            v783 subcircuit: both DNa02 neurons and their presynaptic partners up to two hops back.
-            Leaky rate units update every 1 ms. The right − left difference of the two DNa02 rates
-            sets the turn; forward drive is a constant tonic term. Physics advances every 0.1 ms; a
-            Step advances 10 ms.
+            side's value drives the input neurons on that side of the FlyWire v783 circuit{' '}
+            <b>{state.config.connectome_parameters.circuit}</b>
+            {state.connectome
+              ? ` (readout: ${state.connectome.readout_types.join(', ')})`
+              : ''}.{' '}
+            {state.config.connectome_parameters.dynamics === 'spiking'
+              ? 'Leaky integrate-and-fire neurons with the constants of Shiu et al. 2024 update every 0.1 ms; sensor values set Poisson input rates.'
+              : 'Leaky rate units update every 1 ms.'}{' '}
+            The right − left difference of the readout cell types, summed, sets the turn; forward
+            drive is a tonic term. Physics advances every 0.1 ms; a Step advances 10 ms.
           </p>
           <p>
             Which neurons connect, and with how many synapses, is data-derived. Each connection's
-            sign is assumed from its predicted transmitter, the dynamics and gains are engineered,
-            and so is the sensor-to-neuron input mapping. This is a small, connectome-constrained
-            model, not a whole brain and not biologically validated.
+            sign is assumed from its predicted transmitter. The gains, the sensor-to-neuron input
+            and the readout are engineered. This is a connectome-constrained model, not an uploaded
+            brain and not biologically validated.
           </p>
           <div className="model-notice">
-            Connectome-constrained circuit · data-derived wiring, assumed signs, engineered dynamics
+            Connectome-constrained circuit · data-derived wiring, assumed signs, engineered input
+            and readout
           </div>
         </>
       ) : (

@@ -28,9 +28,10 @@ Extra browser tabs on the same computer share one simulation: Run, Reset, interv
 | Arena | Labeled top-down map from the simulated body poses; click to place the target |
 | Target X/Y, intensity | Moves the stimulus and its rendered landmark; press Enter or leave the field to apply coordinates |
 | Sensor model | Geometric bearing or rendered compound eyes; switching starts a fresh experiment |
-| Neural model | The engineered six-unit loop (default) or the connectome DNa02 circuit; switching starts a fresh experiment |
+| Neural model | The engineered six-unit loop (default) or the connectome circuit; switching starts a fresh experiment |
+| Circuit, Dynamics | With the connectome model: which FlyWire circuit (committed or built on this computer) and whether its neurons are rate units or spiking neurons (Shiu et al. 2024). Either change starts a fresh experiment |
 | Sensor switches | Zero the corresponding input to the neural circuit |
-| Neural silencing | Engineered model: clamps a group of units to zero. Connectome model: silences the left, right or both DNa02 neurons, or any cell type in the circuit |
+| Neural silencing | Engineered model: clamps a group of units to zero. Connectome model: silences the left, right or both DNa02 neurons (when the circuit has them), or any cell type in the circuit |
 | Body engine | Starts a new experiment with FlyGym physics or the separately labeled toy demo |
 | Control mode | Neural loop, or the controller-only `[1, 1]` baseline that bypasses the neurons; starts a fresh experiment |
 | Export | Saves a folder and ZIP with CSV telemetry, configuration, provenance and the input schedule |
@@ -41,7 +42,30 @@ The **geometric** sensor uses the target's bearing and distance. The **compound-
 
 Neural traces show continuous firing rates, not spikes. Silencing the descending units does not stop the body instantly, because the walking controller and the body keep their own dynamics.
 
-**Driving the fly**, under the world view, names the model that currently drives the body. With the connectome model, **Inside the loop** shows DNa02 left and right, the mean visual input on each side, or the five most active cell types, and **Neural atlas → Live circuit** shows the circuit by cell type: layers are hop distance to DNa02 (not anatomy), node size is the number of neurons, fill is the live mean rate, solid lines are excitatory and dashed, capped lines inhibitory connections. Click a type, or find it by name, to see its transmitter, partners and activity, or to silence it. In **Male & female anatomy**, the two female DNa02 skeletons are then tinted by the model's computed activity. That tint is model output, not recorded neural data.
+**Driving the fly**, under the world view, names the model that currently drives the body. With the connectome model, **Inside the loop** shows each readout cell type's left and right neurons, the mean input on each side, or the five most active cell types. With spiking dynamics the traces show firing rate ÷ the rate scale (100 spikes/s by default), so they can exceed 1.
+
+**Neural atlas → Live circuit** shows the circuit by cell type: layers are hop distance to the circuit's seeds (not anatomy), node size is the number of neurons, fill is the live mean activity, solid lines are excitatory and dashed, capped lines inhibitory connections, and the readout neurons sit on the right. Click a type, or find it by name, to see its transmitter, partners and activity, trace its strongest paths to a readout type, or silence it. Large circuits show the 1,500 cell types nearest the readout. Below the diagram, **Global parameters** change the running model (recorded for replay), and **Populations by cell type** choose the steering readout, the neurons that receive the sensors and an optional speed drive; names are separated by semicolons, and applying them starts a fresh run.
+
+In **Male & female anatomy**, the two female DNa02 skeletons are tinted by the model's computed DNa02 activity when DNa02 is a readout. That tint is model output, not recorded neural data.
+
+## Building a circuit
+
+**Neural atlas → Build a circuit** selects a new circuit from FlyWire v783 on your computer. Name it, add seeds (cell types, with suggestions from the full catalog, or FlyWire root IDs), and set the hops back from the seeds, the minimum synapses per connection and the neuron cap, or tick **Whole brain**. **Build circuit** runs the builder in the background and shows its log; a 3,000-neuron circuit takes a few seconds. **Use this circuit** (or **Use** in the list of available circuits) starts a fresh run on it. Built circuits are saved in `data/circuits/local/`, which git ignores, and keep the FlyWire license: non-commercial use only.
+
+The builder needs the FlyWire data prepared once (see [the research guide](RESEARCH.md#building-your-own-circuits)); until then the tab shows the command to run. Building never downloads anything. The same builder runs from the command line as `scripts/build_circuit.py build`.
+
+## Batch experiments and analysis
+
+`scripts/toolkit.py` runs experiments without the web app, in parallel processes, and saves CSV and JSON under `runs/toolkit/`:
+
+```sh
+backend/.venv/bin/python scripts/toolkit.py trials --set neural_model=connectome --workers 8
+backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
+backend/.venv/bin/python scripts/toolkit.py ablation --workers 8
+backend/.venv/bin/python scripts/toolkit.py compare --run runs/YOUR_RUN_FOLDER
+```
+
+Run `scripts/toolkit.py COMMAND --help` for every option, and see the [research guide](RESEARCH.md#the-research-toolkit) for what each analysis measures and for the Python API.
 
 When the real-time factor drops below 1×, a note under the controls says how long one simulated second takes and whether that is the speed you requested or more than the computer can keep up with.
 
@@ -80,6 +104,10 @@ backend/.venv/bin/python scripts/benchmark.py --vision
 
 **Linux rendering:** in a desktop session MuJoCo's default GLFW context works. Without a display (SSH, containers), DigitalFly selects EGL automatically. To choose explicitly, start with `MUJOCO_GL=egl ./scripts/start.sh`, or `MUJOCO_GL=osmesa` if your system still ships OSMesa (recent Mesa releases do not). Setup never installs drivers or system packages.
 
-**Connectome circuit unavailable:** the connectome model reads `data/circuits/fafb783-dna02.json`, which ships with the repository. If it is missing or edited, restore it from version control or rebuild it with `scripts/build_circuit.py` (see the [research guide](RESEARCH.md#building-the-subcircuit)).
+**Connectome circuit unavailable:** the committed circuits are `data/circuits/fafb783-dna02.json` and `fafb783-steering.json`. If one is missing or edited, restore it from version control or rebuild it with `scripts/build_circuit.py` (see the [research guide](RESEARCH.md#building-the-subcircuit)). A local circuit that no longer loads appears in the circuit list with its error; delete or rebuild it.
+
+**Builder not ready:** the **Build a circuit** tab and `build_circuit.py build` need the prepared FlyWire archive in `.cache/circuits/`. Run `backend/.venv/bin/python scripts/build_circuit.py prepare` once (it needs the build-only data lock; see the research guide).
+
+**Spiking or whole-brain runs are slow:** the spiking 3,000-neuron circuit runs faster than real time on the reference laptop, but the whole brain takes about 7 ms of computing per 1 ms of neural time with spiking neurons and 3 ms with rate units, before the body's own cost. Use the toy body or the toolkit's parallel workers for long experiments.
 
 **Connection lost:** controls disable, the last received state stays on screen with a label, and the page reconnects automatically. The app talks only to your own computer, fonts and meshes included; there are no analytics, accounts or cloud services.

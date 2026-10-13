@@ -260,18 +260,19 @@ export function AnatomyPanel({state}: {state: State | null}) {
   const [includeCord, setIncludeCord] = useState(true);
   const data = cache[sex];
   const {circuit} = useCircuit(state);
-  // Only the female FAFB skeletons are the same neurons as the connectome model's DNa02.
-  const leftRate = Math.round((state?.sample?.rates[0] ?? 0) * 100) / 100;
-  const rightRate = Math.round((state?.sample?.rates[1] ?? 0) * 100) / 100;
+  // Only the female FAFB skeletons are the same neurons as the connectome model's DNa02,
+  // and only when DNa02 is one of the circuit's readouts.
+  const k = circuit?.readouts.findIndex((r) => r.cell_type === 'DNa02') ?? -1;
+  const dna02 = k >= 0 ? circuit!.readouts[k] : null;
+  const leftRate = Math.round((state?.sample?.rates[2 * k] ?? 0) * 100) / 100;
+  const rightRate = Math.round((state?.sample?.rates[2 * k + 1] ?? 0) * 100) / 100;
   const tint = useMemo(
     () =>
-      circuit && sex === 'female'
-        ? {[circuit.dna02.left]: leftRate, [circuit.dna02.right]: rightRate}
-        : null,
-    [circuit, sex, leftRate, rightRate],
+      dna02 && sex === 'female' ? {[dna02.left[0]]: leftRate, [dna02.right[0]]: rightRate} : null,
+    [dna02, sex, leftRate, rightRate],
   );
   const sideOf = (id: string) =>
-    circuit?.dna02.left === id ? 'left' : circuit?.dna02.right === id ? 'right' : null;
+    dna02?.left.includes(id) ? 'left' : dna02?.right.includes(id) ? 'right' : null;
   useEffect(() => {
     setSelected(null);
     setType('all');

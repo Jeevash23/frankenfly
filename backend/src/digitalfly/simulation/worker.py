@@ -102,7 +102,7 @@ class SimulationWorker:
         config.seed = seed
         config.controller = "baseline" if condition == "baseline" else "neural"
         if condition in {"engineered_model", "connectome_model"}:
-            config.neural_model = "engineered" if condition == "engineered_model" else "connectome_dna02"
+            config.neural_model = "engineered" if condition == "engineered_model" else "connectome"
         config.initial_interventions = Interventions(zero_left=condition == "left_sensor_off",
             silence="descending" if condition == "descending_off" else "none",
             silence_dna02={"dna02_left_off": "left", "dna02_right_off": "right",

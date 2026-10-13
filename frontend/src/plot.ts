@@ -1,9 +1,10 @@
-// Any time-stamped series: telemetry samples or derived traces.
+// Any time-stamped series: telemetry samples or derived traces. Values are clamped to 0..top.
 export function trace<T extends {t: number}>(
   samples: T[],
   pick: (sample: T) => number,
   width = 600,
   height = 110,
+  top = 1.4,
 ): string {
   if (!samples.length) return '';
   const end = Math.max(2, samples[samples.length - 1].t);
@@ -12,7 +13,7 @@ export function trace<T extends {t: number}>(
     .filter((s) => s.t >= start)
     .map(
       (s, i) =>
-        `${i ? 'L' : 'M'}${(((s.t - start) / (end - start)) * width).toFixed(2)},${(height - (Math.max(0, Math.min(1.4, pick(s))) / 1.4) * height).toFixed(2)}`,
+        `${i ? 'L' : 'M'}${(((s.t - start) / (end - start)) * width).toFixed(2)},${(height - (Math.max(0, Math.min(top, pick(s))) / top) * height).toFixed(2)}`,
     )
     .join(' ');
 }

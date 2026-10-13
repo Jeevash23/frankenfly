@@ -1,4 +1,4 @@
-"""The connectome_dna02 rate model: signs, threshold, silencing, direction and determinism."""
+"""The connectome model: signs, threshold, silencing, direction, determinism and the v0.3 name."""
 import json
 import numpy as np
 import pytest
@@ -58,7 +58,7 @@ def test_threshold_only_removes_weaker_connections(tmp_path):
     assert W[1, 4] == 0 and W[1, 2] == 0 and W[0, 2] != 0 and W[0, 5] != 0
     assert model.counts["excluded_below_threshold"] == 2
     with pytest.raises(ValidationError):
-        ConnectomeParameters(synapse_threshold=4)
+        ConnectomeParameters(synapse_threshold=0)
 
 
 def run(model, left, right, interventions=Interventions(), steps=400):
@@ -94,7 +94,10 @@ def test_left_input_turns_left_and_silencing_clamps(tmp_path):
 
 def test_real_circuit_is_finite_deterministic_and_silenceable():
     data = load_circuit()
-    assert data.path == CIRCUIT_PATH and len(data.input_left) and len(data.input_right)
+    assert data.path == CIRCUIT_PATH
+    probe = ConnectomeCircuit()
+    assert len(probe.input_left) == 250 and len(probe.input_right) == 227
+    right_dna02 = probe.readouts[0][2]
     rng = np.random.default_rng(3)
     sensors = rng.uniform(0, 1, size=(300, 2))
     results = []
@@ -110,24 +113,25 @@ def test_real_circuit_is_finite_deterministic_and_silenceable():
     model = ConnectomeCircuit()
     for left, right in sensors[:100]:
         model.advance(SensorState(left=left, right=right), Interventions(silence_dna02="right"))
-    assert model.rates[data.right] == 0
+    assert model.rates[right_dna02] == 0
     readout = model.readout()
     assert len(readout) == len(model.unit_names) == 5 and readout[1] == 0
 
 
 def test_run_config_validates_model_and_interventions():
     assert RunConfig().neural_model == "engineered"
+    assert RunConfig(neural_model="connectome_dna02").neural_model == "connectome"  # the v0.3 name
     with pytest.raises(ValidationError):
         RunConfig(neural_model="whole_brain")
     with pytest.raises(ValidationError, match="connectome"):
         RunConfig(initial_interventions=Interventions(silence_dna02="left"))
     with pytest.raises(ValidationError, match="engineered"):
-        RunConfig(neural_model="connectome_dna02", initial_interventions=Interventions(silence="descending"))
+        RunConfig(neural_model="connectome", initial_interventions=Interventions(silence="descending"))
     with pytest.raises(ValidationError):
         Interventions(silence_types=["DNa02", "DNa02"])
     with pytest.raises(ValidationError):
-        RunConfig(neural_model="connectome_dna02", initial_interventions=Interventions(silence_types=["Not-a-type"]))
-    config = RunConfig(neural_model="connectome_dna02", initial_interventions=Interventions(silence_types=["DNa02"]))
+        RunConfig(neural_model="connectome", initial_interventions=Interventions(silence_types=["Not-a-type"]))
+    config = RunConfig(neural_model="connectome", initial_interventions=Interventions(silence_types=["DNa02"]))
     assert config.initial_interventions.silence_types == ["DNa02"]
     for bad in [{"global_gain": -1}, {"tau_ms": 1}, {"output_gain": float("nan")}, {"other_transmitters": "inhibitory"}]:
         with pytest.raises(ValidationError):

@@ -20,7 +20,7 @@ EVENT_LIMIT = 10000
 
 
 def make_circuit(config: RunConfig):
-    if config.neural_model == "connectome_dna02":
+    if config.neural_model == "connectome":
         return ConnectomeCircuit(config.connectome_parameters)
     return RateCircuit(config.neural_parameters)
 
@@ -60,11 +60,11 @@ class Experiment:
         try:
             if self.circuit.kind != config.neural_model:
                 self.circuit = make_circuit(config)
-            elif config.neural_model == "connectome_dna02":
+            elif config.neural_model == "connectome":
                 self.circuit.configure(config.connectome_parameters)
             else:
                 self.circuit.configure(config.neural_parameters)
-            self.circuit.reset()
+            self.circuit.reset(config.seed)
             if self.body is not None and self.body.name == config.engine and self.body.sensor_model == config.sensor_model:
                 self.body.reset(config.seed)
             else:
@@ -120,7 +120,7 @@ class Experiment:
         if self.step_index % 2 == 0:
             self.history.append(sample.model_copy(update={"body_signals": {
                 k: v for k, v in sample.body_signals.items() if k != "joint_position_rad"}}))
-            if self.circuit.kind == "connectome_dna02":
+            if self.circuit.kind == "connectome":
                 self.type_history.append(self.circuit.type_means().astype(np.float32))
         self.trail.append([sample.pose.x, sample.pose.y])
 
@@ -181,7 +181,7 @@ class Experiment:
         self.interventions = interventions
         if self.body is not None and self.status != "error":
             self.observe()
-        if self.config.neural_model == "connectome_dna02":
+        if self.config.neural_model == "connectome":
             silenced = ", ".join([f"DNa02 {interventions.silence_dna02}"] * (interventions.silence_dna02 != "none")
                                  + interventions.silence_types) or "none"
         else:
@@ -196,26 +196,35 @@ class Experiment:
         self.event("parameters", "Neural parameters updated", parameters.model_dump())
 
     def set_connectome_parameters(self, parameters: ConnectomeParameters):
-        if self.config.neural_model != "connectome_dna02":
+        if self.config.neural_model != "connectome":
             raise ValueError("Connectome parameters apply when the connectome model is selected.")
+        current = self.config.connectome_parameters
+        fixed = ["circuit", "dynamics", "readout_types", "input_types", "speed_types"]
+        if [getattr(parameters, k) for k in fixed] != [getattr(current, k) for k in fixed]:
+            # These change what is recorded (the rate columns), so they belong to a new run.
+            raise ValueError("Changing the circuit, dynamics or populations starts a fresh run: "
+                             "use Reset with the new settings.")
+        parameters.check_against_circuit()
         self.config.connectome_parameters = parameters
         self.circuit.configure(parameters)
         self.event("connectome_parameters", "Connectome parameters updated", parameters.model_dump())
 
     def connectome_snapshot(self):
         """Live, display-only activity summary for the connectome model; not recorded."""
-        if self.circuit.kind != "connectome_dna02":
+        if self.circuit.kind != "connectome":
             return None
         circuit = self.circuit
         means = circuit.type_means()
-        dna02 = circuit.data.type_names.index("DNa02")
-        order = [int(i) for i in np.argsort(-means, kind="stable") if i != dna02][:TRACE_TYPES]
-        history = np.array(self.type_history) if self.type_history else np.zeros((0, len(means)))
-        return {"type_rates": np.round(means, 4).tolist(), "turn": circuit.turn(),
+        readout = {circuit.data.type_names.index(name) for name, _, _ in circuit.readouts}
+        order = [int(i) for i in np.argsort(-means, kind="stable") if i not in readout][:TRACE_TYPES]
+        traces = np.array([row[order] for row in self.type_history]) if self.type_history else np.zeros((0, len(order)))
+        return {"circuit": circuit.data.key, "dynamics": circuit.parameters.dynamics, "unit_names": circuit.unit_names,
+                "readout_types": [name for name, _, _ in circuit.readouts],
+                "type_rates": np.round(means, 4).tolist(), "turn": circuit.turn(),
                 "silenced_neurons": int(len(circuit.silenced(self.interventions))),
-                "trace_t": [s.t for s in self.history][-len(history):] if len(history) else [],
+                "trace_t": [s.t for s in self.history][-len(traces):] if len(traces) else [],
                 "top_types": [{"index": i, "name": circuit.data.type_names[i],
-                               "trace": np.round(history[:, i], 4).tolist()} for i in order]}
+                               "trace": np.round(traces[:, k], 4).tolist()} for k, i in enumerate(order)]}
 
     @property
     def metrics(self):
@@ -239,16 +248,22 @@ class Experiment:
 
     @property
     def provenance(self):
-        connectome = self.config.neural_model == "connectome_dna02"
+        connectome = self.config.neural_model == "connectome"
         if connectome:
             info = self.circuit.description()
-            neural = (f"Connectome-constrained rate model · {info['neurons']:,} neurons and {info['connections_active']:,} "
-                      "connections around DNa02 · structure data-derived, signs assumed, dynamics engineered")
-            wiring = (f"{info['dataset']} DNa02 input subcircuit · {info['license']} · "
-                      f"circuit sha256 {info['circuit_sha256'][:12]}")
+            readout = ", ".join(item["cell_type"] for item in info["readout"])
+            dynamics = ("spiking (leaky integrate-and-fire, Shiu et al. 2024 parameters)" if info["dynamics"] == "spiking"
+                        else "rate")
+            source = ("neuron model and constants from Shiu et al. 2024" if info["dynamics"] == "spiking"
+                      else "dynamics engineered")
+            neural = (f"Connectome-constrained {dynamics} model · {info['neurons']:,} neurons and {info['connections_active']:,} "
+                      f"connections ({info['circuit']}) · structure data-derived, signs assumed, {source}")
+            wiring = (f"{info['dataset']} · circuit {info['circuit']} · {info['license']} · "
+                      f"sha256 {info['circuit_sha256'][:12]}")
+            speed = (f"forward drive = tonic + speed gain × {', '.join(info['speed_population'])}" if info["speed_population"]
+                     else "forward drive is an engineered tonic term")
             mode = ("Controller-only baseline; neural output bypassed" if self.config.controller == "baseline" else
-                    "Connectome closed loop: turning from DNa02 right − left (direction from Rayshubskiy et al. 2025); "
-                    "forward drive is an engineered tonic term")
+                    f"Connectome closed loop: turning from right − left of {readout} (direction from Rayshubskiy et al. 2025); {speed}")
         else:
             neural = "Six engineered leaky rate units · v1 · hand-chosen weights"
             wiring = "No biological connectome loaded"
@@ -259,12 +274,12 @@ class Experiment:
             "neural_model": neural,
             "motor_controller": "FlyGym hybrid turning controller · engineered" if self.config.engine == "flygym" else "Differential kinematic controller · engineered",
             "connectivity_source": wiring,
-            "input_mapping": ("Engineered: each sensor drives every visual projection neuron on its side" if connectome
+            "input_mapping": (self.circuit.description()["input_mapping"] if connectome
                               else "Engineered: each sensor drives its sensory unit"),
             "controller_mode": mode,
             "viewport": "MuJoCo rendered body / pose-synchronized arena schematic",
             "body_sex": "Female-derived NeuroMechFly morphology; no separate male biomechanics" if self.config.engine == "flygym" else "Unspecified; kinematic demonstration",
-            "anatomy_atlas": ("Female DNa02 skeletons are tinted with this model's output; other anatomy is display-only" if connectome
+            "anatomy_atlas": ("Female DNa02 skeletons are tinted with this model's DNa02 output when it has one; other anatomy is display-only" if connectome
                               else "Published male/female anatomical samples are separate from this controller"),
         }
 

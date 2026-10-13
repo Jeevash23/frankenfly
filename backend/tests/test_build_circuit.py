@@ -11,6 +11,7 @@ spec = importlib.util.spec_from_file_location("build_circuit", ROOT / "scripts/b
 builder = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(builder)
 CIRCUIT = ROOT / "data/circuits/fafb783-dna02.json"
+STEERING = ROOT / "data/circuits/fafb783-steering.json"
 
 # A hand-checkable graph. Seeds 1 and 2 stand in for the two DNa02 neurons.
 EDGES = [
@@ -90,3 +91,161 @@ def test_committed_circuit_records_complete_provenance():
     assert neurons["hop"][:2] == [0, 0] and max(neurons["hop"]) <= 2
     assert all(isinstance(i, str) for i in neurons["id"])
     assert hashlib.sha256(raw).hexdigest()  # recorded in every export by the model
+
+
+# A twelve-neuron "brain" for the general builder, run through the builder's own prepare step.
+# DNx is the seed pair; LCa feeds it, Inh inhibits it, an untyped neuron feeds LCa, DAx feeds that.
+# Weak → DNx is below threshold, Lonely has no connections, the Pair is strong but unreachable,
+# and neuron 999 has connections but no metadata.
+BRAIN = {
+    101: ("DNx", "descending", "left", "acetylcholine"), 102: ("DNx", "descending", "right", "acetylcholine"),
+    201: ("LCa", "visual_projection", "left", "acetylcholine"), 202: ("LCa", "visual_projection", "right", "acetylcholine"),
+    301: ("Inh", "central", "left", "gaba"), 302: ("Inh", "central", "right", "glutamate"),
+    401: ("", "central", "", "acetylcholine"), 501: ("DAx", "central", "center", "dopamine"),
+    601: ("Lonely", "central", "left", "acetylcholine"), 701: ("Weak", "central", "left", "acetylcholine"),
+    801: ("Pair", "central", "left", "acetylcholine"), 802: ("Pair", "central", "right", "acetylcholine"),
+}
+BRAIN_EDGES = [(201, 101, 10, 1), (202, 102, 12, 1), (301, 102, 6, -1), (302, 101, 7, -1), (401, 201, 8, 1),
+               (401, 202, 9, 1), (501, 401, 20, 1), (701, 101, 2, 1), (999, 101, 30, 1), (101, 301, 5, 1),
+               (801, 802, 15, 1)]
+
+
+@pytest.fixture
+def brain(tmp_path, monkeypatch):
+    for name, path in {"PREPARED": "cache/prepared.npz", "CATALOG": "cache/catalog.json",
+                       "OUT_DIR": "circuits", "LOCAL_DIR": "circuits/local"}.items():
+        monkeypatch.setattr(builder, name, tmp_path / path)
+    ids = sorted(BRAIN, reverse=True)  # the prepare step must sort by ID itself
+    meta = {"id": np.array(ids, dtype=np.int64),
+            "cell_type": np.array([BRAIN[i][0] for i in ids], dtype=object),
+            "super_class": np.array([BRAIN[i][1] for i in ids], dtype=object),
+            "cell_class": np.array(["deep" if i == 401 else "" for i in ids], dtype=object),
+            "cell_sub_class": np.array([""] * len(ids), dtype=object),
+            "side": np.array([BRAIN[i][2] for i in ids], dtype=object),
+            "neurotransmitter_predicted": np.array([BRAIN[i][3] for i in ids], dtype=object),
+            "neurotransmitter_score": np.linspace(.5, .9, len(ids))}
+    pre, post, count, sign = (np.array(c) for c in zip(*BRAIN_EDGES))
+    columns = {"Presynaptic_ID": pre, "Postsynaptic_ID": post, "Connectivity": count, "Excitatory": sign}
+    builder.save_prepared(meta, columns, [{"name": "synthetic", "sha256": "0" * 64}])
+    return tmp_path
+
+
+def build(name, seeds, fmt="auto", hops=2, threshold=5, cap=100, whole=False, committed=False):
+    builder.build_custom(name, seeds, hops, threshold, cap, whole, fmt, committed)
+    folder = builder.OUT_DIR if committed else builder.LOCAL_DIR
+    return next(folder.glob(f"{name}.*"))
+
+
+def test_prepare_sorts_neurons_and_writes_a_catalog(brain):
+    data = builder.load_prepared()
+    assert data["neuron_id"].tolist() == sorted(BRAIN)
+    assert data["header"]["connections"] == 10 and data["header"]["unmatched_connections"] == 1
+    catalog = {c["cell_type"]: c for c in json.loads(builder.CATALOG.read_text())["cell_types"]}
+    assert catalog["DNx"] == {"cell_type": "DNx", "neurons": 2, "left": 1, "right": 1, "super_class": "descending"}
+    assert "deep (untyped)" in catalog and catalog["DAx"]["left"] == catalog["DAx"]["right"] == 0
+
+
+def test_build_writes_format_2_with_provenance_and_default_readout(brain):
+    from digitalfly.neural.connectome import CircuitData
+    path = build("test-dnx", ["DNx"])
+    assert path.suffix == ".json" and path.parent == builder.LOCAL_DIR
+    header = json.loads(path.read_text())
+    prov = header["provenance"]
+    assert header["version"] == 2 and header["defaults"] == {"readout_types": ["DNx"], "input": "visual_projection"}
+    assert prov["seeds"] == [{"seed": "DNx", "cell_types": ["DNx"], "left": ["101"], "right": ["102"], "other": []}]
+    assert prov["counts"]["by_hop"] == [2, 4, 1] and prov["counts"]["synapses"] == 57
+    assert prov["non_commercial"] is True and prov["sources"] == [{"name": "synthetic", "sha256": "0" * 64}]
+    data = CircuitData(path)
+    assert data.ids == ["101", "102", "201", "202", "301", "302", "401"]
+    assert data.hop.tolist() == [0, 0, 1, 1, 1, 1, 2]
+    assert [data.type_names[t] for t in data.type_index] == ["DNx", "DNx", "LCa", "LCa", "Inh", "Inh", "deep (untyped)"]
+    assert data.transmitter.tolist()[4:6] == ["gaba", "glutamate"] and data.side[6] == "unknown"
+    pairs = {(data.ids[a], data.ids[b]): s for a, b, s in zip(data.pre, data.post, data.synapses)}
+    assert pairs == {("201", "101"): 10, ("202", "102"): 12, ("301", "102"): 6, ("302", "101"): 7,
+                     ("401", "201"): 8, ("401", "202"): 9, ("101", "301"): 5}
+    # The same graph through the identifier-based selection used by the committed build.
+    pre, post, count, _ = (np.array(c) for c in zip(*BRAIN_EDGES))
+    reference = builder.select_subcircuit(pre, post, count, [101, 102], 5, 2, 100)
+    assert sorted(map(str, reference["kept"])) == sorted(data.ids + ["999"])  # 999 has no metadata
+
+
+def test_json_and_npz_builds_load_identically(brain):
+    from digitalfly.neural.connectome import CircuitData
+    a, b = CircuitData(build("as-json", ["DNx"], "json")), CircuitData(build("as-npz", ["DNx"], "npz"))
+    assert b.path.suffix == ".npz"
+    assert a.ids == b.ids and a.type_names == b.type_names and a.seeds == b.seeds and a.defaults == b.defaults
+    for field in ["type_index", "super_class", "transmitter", "side", "hop", "pre", "post", "synapses"]:
+        assert np.array_equal(getattr(a, field), getattr(b, field)), field
+
+
+def test_seeds_by_id_cap_and_whole_brain(brain):
+    from digitalfly.neural.connectome import CircuitData
+    header = json.loads(build("by-id", ["102", "101"]).read_text())
+    assert [s["seed"] for s in header["provenance"]["seeds"]] == ["102", "101"]
+    assert header["neurons"]["id"][:2] == ["102", "101"]
+    assert header["defaults"]["readout_types"] == ["DNx"]  # the two seeds cover both sides
+    assert json.loads(build("one-side", ["101"]).read_text())["defaults"]["readout_types"] == []
+    capped = json.loads(build("capped", ["DNx"], cap=5).read_text())["provenance"]["cap_report"]
+    assert capped["binding"] and capped["dropped"] == 1 and capped["kept"] == 6
+    whole = CircuitData(build("whole", ["DNx"], whole=True))
+    assert whole.ids == ["101", "102", "201", "202", "301", "302", "401", "501", "801", "802"]
+    assert whole.hop.tolist() == [0, 0, 1, 1, 1, 1, 2, 3, -1, -1]
+    assert whole.provenance["build"]["whole_brain"] and whole.provenance["counts"]["unreached"] == 2
+
+
+def test_builder_refuses_bad_names_unknown_seeds_and_built_in_names(brain):
+    for name, seeds in [("Bad Name", ["DNx"]), ("local", ["DNx"]), ("ok", ["Missing"]), ("ok", ["123"])]:
+        with pytest.raises(SystemExit):
+            build(name, seeds)
+    builder.OUT_DIR.mkdir(parents=True, exist_ok=True)
+    (builder.OUT_DIR / "fafb783-dna02.json").write_text("{}")
+    with pytest.raises(SystemExit, match="built-in"):
+        build("fafb783-dna02", ["DNx"])
+    assert build("fafb783-dna02", ["DNx"], committed=True).parent == builder.OUT_DIR
+
+
+@pytest.mark.skipif(not (ROOT / ".cache/circuits/fafb783-connectome.npz").is_file(),
+                    reason="needs the prepared FlyWire archive (scripts/build_circuit.py prepare)")
+def test_general_builder_reproduces_the_committed_circuit(tmp_path, monkeypatch):
+    monkeypatch.setattr(builder, "LOCAL_DIR", tmp_path)
+    built = json.loads(build("check-dna02", ["DNa02"], cap=3000).read_text())
+    committed = json.loads(CIRCUIT.read_text())
+    assert built["neurons"]["id"] == committed["neurons"]["id"]
+    assert built["edges"] == committed["edges"]
+    for field in ["hop", "path_strength", "shiu_sign", "transmitter_score"]:
+        assert built["neurons"][field] == committed["neurons"][field], field
+    for field in ["cell_type", "super_class", "cell_class", "transmitter", "side"]:
+        names = lambda d: [d["lookups"][field][i] for i in d["neurons"][field]]
+        assert names(built) == names(committed), field
+    for key in ["candidates", "kept", "dropped", "weakest_kept_path_strength", "strongest_dropped_path_strength",
+                "dropped_by_super_class"]:
+        assert built["provenance"]["cap_report"][key] == committed["provenance"]["cap_report"][key], key
+    # Format 2 names untyped neurons by class ("… (untyped)") instead of pooling them as "untyped".
+    dropped = built["provenance"]["cap_report"]["dropped_top_cell_types"]
+    for cell_type, count in committed["provenance"]["cap_report"]["dropped_top_cell_types"].items():
+        assert cell_type == "untyped" or dropped[cell_type] == count, cell_type
+
+
+def test_committed_steering_circuit_records_its_seeds_and_sources():
+    raw = STEERING.read_bytes()
+    assert len(raw) < 5_000_000
+    data = json.loads(raw)
+    prov = data["provenance"]
+    assert data["version"] == 2 and data["defaults"]["readout_types"] == ["DNa01", "DNa02", "DNp09"]
+    assert prov["build"]["seeds"] == ["DNa01", "DNa02", "DNp09"] and prov["build"]["neuron_cap"] == 4000
+    assert [(s["seed"], len(s["left"]), len(s["right"])) for s in prov["seeds"]] == [("DNa01", 1, 1), ("DNa02", 1, 1), ("DNp09", 1, 1)]
+    assert prov["seeds"][1]["left"] == ["720575940629327659"] and prov["seeds"][1]["right"] == ["720575940604737708"]
+    assert prov["non_commercial"] and "CC BY-NC 4.0" in prov["license"]
+    assert prov["sources"] == json.loads((ROOT / "data/circuits/downloads.json").read_text())
+    neurons, edges = data["neurons"], data["edges"]
+    assert len(neurons["id"]) == prov["counts"]["neurons"] == 4000 and len(edges["pre"]) == prov["counts"]["connections"]
+    assert min(edges["synapses"]) >= 5 and neurons["hop"][:6] == [0] * 6
+
+
+@pytest.mark.skipif(not (ROOT / ".cache/circuits/fafb783-connectome.npz").is_file(),
+                    reason="needs the prepared FlyWire archive (scripts/build_circuit.py prepare)")
+def test_committed_steering_circuit_rebuilds_byte_for_byte(tmp_path, monkeypatch):
+    monkeypatch.setattr(builder, "OUT_DIR", tmp_path)
+    (tmp_path / "fafb783-steering.json").unlink(missing_ok=True)
+    built = build("fafb783-steering", ["DNa01", "DNa02", "DNp09"], cap=4000, committed=True)
+    assert built.read_bytes() == STEERING.read_bytes()
