@@ -76,7 +76,8 @@ def test_a_model_run_turns_with_its_readout_by_construction(tmp_path):
     printed = subprocess.run([sys.executable, str(ROOT / "scripts/toolkit.py"), "compare", "--run", str(run),
                               "--out", str(out)], capture_output=True, text=True, timeout=120)
     assert printed.returncode == 0, printed.stderr
-    assert "| model:" in printed.stdout and json.loads(out.with_suffix(".json").read_text())["model"]["r2"] > .9
+    saved = json.loads(out.with_suffix(".json").read_text())
+    assert "| model:" in printed.stdout and saved["fits"]["model"]["r2"] > .9 and saved["filters"]["model"] is None  # 3 s: too short
 
 
 def test_steering_curve_bins_turning_by_target_bearing():
@@ -86,3 +87,97 @@ def test_steering_curve_bins_turning_by_target_bearing():
     ahead = next(r for r in rows if r["bearing_from_deg"] == 0)
     assert ahead["samples"] == len(t) and ahead["mean_rightward_deg_s"] == 0
     assert sum(r["samples"] for r in rows) == len(t)
+
+
+def synthetic_dual_mat(path, seconds=60, fs=10000, lag_s=.15, gain=2.0, positive_yaw="right", seed=1):
+    """A labeled fixture in the layout of the Rayshubskiy et al. dual recordings: two voltage traces with
+    2.5 mV spikes at known Poisson times, and yaw following gain × (R − L true rate) after lag_s."""
+    import scipy.io
+    rng = np.random.default_rng(seed)
+    t_ephys = np.arange(seconds * fs) / fs
+    t_ball = np.arange(seconds * 100) / 100 + .005
+    rate = {"left": 40 + 30 * np.sin(2 * np.pi * .21 * t_ephys), "right": 40 + 30 * np.sin(2 * np.pi * .33 * t_ephys + 1)}
+    shape = 2.5 * np.exp(-.5 * (np.arange(-30, 31) / 6) ** 2)
+    traces, truth = {}, {}
+    for side, key in (("left", "ephys_A"), ("right", "ephys_B")):
+        spikes = np.flatnonzero(rng.random(len(t_ephys)) < rate[side] / fs)
+        spikes = spikes[np.concatenate([[True], np.diff(spikes) > 40])]  # no overlapping spikes
+        v = rng.normal(0, .05, len(t_ephys)) - 45  # spikes about 30 noise SDs tall, like the real recordings
+        for s in spikes[(spikes > 30) & (spikes < len(v) - 31)]:
+            v[s - 30:s + 31] += shape
+        traces[key], truth[side] = v, spikes
+    true_difference = np.interp(t_ball - lag_s, t_ephys, rate["right"] - rate["left"])
+    rightward = gain * true_difference + rng.normal(0, 5, len(t_ball))
+    yaw = (rightward if positive_yaw == "right" else -rightward) / compare.RAYSHUBSKIY_YAW_TO_DEG_S
+    scipy.io.savemat(path, {"ephys_A": traces["ephys_A"][:, None], "ephys_B": traces["ephys_B"][:, None],
+                            "ephys_SR": float(fs), "ball_SR": 100.0, "t_ephys": t_ephys[:, None], "t_ball": t_ball[:, None],
+                            "yaw": yaw[:, None], "fwd": np.zeros((len(t_ball), 1)), "lat": np.zeros((len(t_ball), 1)),
+                            "stim": np.zeros((1, len(t_ephys)), dtype=np.uint8)})
+    return truth
+
+
+def test_dual_recordings_convert_to_rates_and_rightward_turning(tmp_path):
+    path = tmp_path / "dual.mat"
+    truth = synthetic_dual_mat(path)
+    recording, summary = compare.rayshubskiy_recording(path)
+    for side in ("left", "right"):
+        assert summary["spikes"][side] == pytest.approx(len(truth[side]), rel=.05)
+    assert summary["conversion"]["left"] == "ephys_A" and summary["conversion"]["positive_yaw"] == "right"
+    for side, rates in (("left", recording.left), ("right", recording.right)):  # injected spikes per second
+        assert rates.mean() == pytest.approx(len(truth[side]) / 60, rel=.05)
+    fit = compare.fit_turning(recording)
+    # Rates estimated from ~40 spikes/s with 25 ms smoothing are noisy: that attenuates the fitted gain and
+    # flattens the lag optimum of these slow signals, but not the sign.
+    assert fit["correlation_sign"] == 1 and .03 <= fit["lag_s"] <= .25 and .4 * 2 < fit["gain"] <= 2.1
+    assert compare.fit_filter(recording)["heldout_r2"] > .5
+    flipped, _ = compare.rayshubskiy_recording(path, positive_yaw="left")
+    assert compare.fit_turning(flipped)["correlation_sign"] == -1
+    out = tmp_path / "dual.csv"
+    compare.save_recording(recording, out)
+    assert compare.fit_turning(compare.load_recording(out))["lag_s"] == fit["lag_s"]
+    with pytest.raises(ValueError):
+        compare.rayshubskiy_recording(path, positive_yaw="up")
+
+
+def test_the_linear_filter_predicts_held_out_turning():
+    recording = compare.Recording(*synthetic_fly())
+    filt = compare.fit_filter(recording, max_lag_s=.3)
+    assert filt["heldout_r2"] > .9 and filt["peak_lag_s"] == pytest.approx(.12, abs=.011)
+    assert filt["summed_gain"] == pytest.approx(2.5, rel=.05) and len(filt["kernel"]) == 31
+    noise = compare.Recording(*synthetic_fly(gain=0))
+    assert compare.fit_filter(noise, max_lag_s=.3)["heldout_r2"] < .05
+
+
+def test_jumping_target_runs_export_for_comparison(tmp_path):
+    config = toolkit.configure({"engine": "toy", "neural_model": "connectome", "seed": 2})
+    result = toolkit.jumping_target_run(config, duration_s=3, every_s=1, seed=5, export_dir=tmp_path)
+    run = Path(result["path"])
+    events = json.loads((run / "metadata.json").read_text())["events"]
+    assert sum(e["kind"] == "stimulus" for e in events) == 3 and result["samples"] == 301
+    assert compare.model_recording(run).readout == "DNa02"
+
+
+def test_recorded_downloads_are_complete_and_verified(tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fetch_recording", ROOT / "scripts/fetch_recording.py")
+    fetch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fetch)
+    for record in json.loads((ROOT / "data/recordings/downloads.json").read_text()):
+        assert record["url"].startswith("https://") and record["bytes"] > 0 and "CC0" in record["license"]
+        assert len(record["sha256"]) == 64 and len(record["md5"]) == 32 and record["retrieved_utc"]
+    sample = tmp_path / "sample.bin"
+    sample.write_bytes(b"fly")
+    import hashlib
+    good = {"bytes": 3, "md5": hashlib.md5(b"fly").hexdigest(), "sha256": hashlib.sha256(b"fly").hexdigest()}
+    assert fetch.verify(sample, good) == []
+    assert len(fetch.verify(sample, {**good, "bytes": 4, "sha256": "0" * 64})) == 2
+
+
+@pytest.mark.skipif(not (ROOT / ".cache/recordings/rayshubskiy2025-a2_d_13.mat").is_file(),
+                    reason="needs the downloaded recording (scripts/fetch_recording.py)")
+def test_the_downloaded_recording_converts_as_documented():
+    recording, summary = compare.rayshubskiy_recording(ROOT / ".cache/recordings/rayshubskiy2025-a2_d_13.mat")
+    assert summary["duration_s"] == 575 and summary["spikes"] == {"left": 571, "right": 1888}
+    fit = compare.fit_turning(recording)
+    assert fit["lag_s"] == pytest.approx(.18) and fit["gain"] == pytest.approx(3.359, abs=.001)
+    assert compare.fit_filter(recording)["heldout_r2"] == pytest.approx(.097, abs=.001)

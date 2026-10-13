@@ -100,7 +100,11 @@ export function Workbench({
             <span>World</span>
             <ArrowRight size={13} />
             <span>
-              {state?.config.sensor_model === 'vision' ? 'Compound eyes' : 'Geometric sensors'}
+              {
+                {vision: 'Compound eyes', flyvis: 'FlyVis eyes', geometric: 'Geometric sensors'}[
+                  state?.config.sensor_model ?? 'geometric'
+                ]
+              }
             </span>
             <ArrowRight size={13} />
             <span>6 rate units</span>

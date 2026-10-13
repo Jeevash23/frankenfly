@@ -2,7 +2,33 @@ import {ChevronDown, Crosshair} from 'lucide-react';
 import type {Config, Dynamics, NeuralModel, Sample, State, Stimulus} from '../types';
 import {configForCircuit, dynamicsNames, modelNames} from '../models';
 import {fmt} from '../format';
+import {useEffect, useState} from 'react';
 import {useCircuitList} from '../connectome/useCircuit';
+
+type FlyVisStatus = {
+  available: boolean;
+  reason: string;
+  circuit: string;
+  circuit_has_bridge: boolean;
+};
+
+// Whether FlyVis eyes can drive the current circuit; checked when the circuit changes.
+function useFlyVis(circuit: string | undefined): FlyVisStatus | null {
+  const [status, setStatus] = useState<FlyVisStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/vision/flyvis')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled) setStatus(data);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [circuit]);
+  return status;
+}
 import {Arena} from './Arena';
 
 // Circuit and dynamics of the connectome model. Either change starts a fresh run.
@@ -90,6 +116,19 @@ export function StimulusPanel({
 }) {
   const sample: Sample | undefined = state?.sample ?? undefined;
   const stimulus = state?.config.stimulus;
+  const flyvis = useFlyVis(state?.config.connectome_parameters.circuit);
+  const flyvisProblem =
+    state?.config.engine !== 'flygym'
+      ? 'needs the FlyGym body'
+      : state?.config.neural_model !== 'connectome'
+        ? 'needs the connectome model'
+        : !flyvis
+          ? 'checking…'
+          : !flyvis.available
+            ? 'not installed'
+            : !flyvis.circuit_has_bridge
+              ? 'this circuit has no FlyVis bridge'
+              : '';
   return (
     <section className="stimulus-panel panel">
       <div className="panel-heading">
@@ -98,7 +137,11 @@ export function StimulusPanel({
           <h2>Stimulus</h2>
         </div>
         <span className="mini-badge">
-          {state?.config.sensor_model === 'vision' ? 'COMPOUND EYE' : 'GEOMETRIC'}
+          {
+            {vision: 'COMPOUND EYE', flyvis: 'FLYVIS', geometric: 'GEOMETRIC'}[
+              state?.config.sensor_model ?? 'geometric'
+            ]
+          }
         </span>
       </div>
       <div className="inspector-body">
@@ -114,6 +157,9 @@ export function StimulusPanel({
               <option value="geometric">Geometric bearing</option>
               <option value="vision" disabled={state?.config.engine !== 'flygym'}>
                 Rendered compound eyes
+              </option>
+              <option value="flyvis" disabled={!!flyvisProblem}>
+                FlyVis eyes (optic-lobe network){flyvisProblem ? ` · ${flyvisProblem}` : ''}
               </option>
             </select>
             <ChevronDown size={14} />
@@ -218,7 +264,9 @@ export function StimulusPanel({
         <p className="microcopy">
           {state?.config.sensor_model === 'vision'
             ? 'Green contrast from rendered eye images.'
-            : 'Bearing + distance approximation. Select compound eyes for rendered visual input.'}{' '}
+            : state?.config.sensor_model === 'flyvis'
+              ? 'Rendered eye images run through FlyVis; its cell types drive the circuit’s visual neurons by FlyWire synapse counts.'
+              : 'Bearing + distance approximation. Select compound eyes for rendered visual input.'}{' '}
           Changing the sensor, neural model, circuit or dynamics starts a fresh run.
         </p>
       </div>

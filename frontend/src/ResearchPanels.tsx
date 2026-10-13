@@ -123,7 +123,9 @@ export function BodyMeasurements({state}: {state: State | null}) {
 }
 
 export function EyePanel({state}: {state: State | null}) {
-  if (state?.config.sensor_model !== 'vision') return null;
+  if (state?.config.sensor_model !== 'vision' && state?.config.sensor_model !== 'flyvis')
+    return null;
+  const flyvis = state.config.sensor_model === 'flyvis';
   return (
     <section className="panel eye-panel">
       <div className="panel-heading">
@@ -150,7 +152,7 @@ export function EyePanel({state}: {state: State | null}) {
                 viewBox="0 0 360 35"
                 preserveAspectRatio="none"
                 role="img"
-                aria-label={`${side} ommatidial contrast features`}
+                aria-label={`${side} ommatidial ${flyvis ? 'luminance' : 'contrast features'}`}
               >
                 <path
                   d={(state.vision[side] ?? [])
@@ -172,8 +174,9 @@ export function EyePanel({state}: {state: State | null}) {
         <p className="panel-copy">Preparing eye images…</p>
       )}
       <p className="panel-copy">
-        A green landmark is rendered in the world. An engineered contrast detector pools the eye
-        pixels into left/right inputs every 50 ms of simulation time.
+        {flyvis
+          ? 'Eye images are rendered every 50 ms. Each ommatidium’s luminance feeds FlyVis (Lappalainen et al. 2024), a connectome-constrained network of 64 optic-lobe cell types stepped every 10 ms. Each type’s strongest response in each eye drives the circuit’s visual projection neurons in proportion to their FlyWire synapses from that type. The traces show the luminance FlyVis receives.'
+          : 'A green landmark is rendered in the world. An engineered contrast detector pools the eye pixels into left/right inputs every 50 ms of simulation time.'}
       </p>
     </section>
   );

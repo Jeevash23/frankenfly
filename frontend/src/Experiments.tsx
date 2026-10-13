@@ -597,7 +597,10 @@ export default function Experiments({
                       <td>
                         {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
                         <small>
-                          {run.config.sensor_model === 'vision' ? 'Compound eye' : 'Geometric'} ·{' '}
+                          {{vision: 'Compound eye', flyvis: 'FlyVis eyes', geometric: 'Geometric'}[
+                            run.config.sensor_model
+                          ] ?? 'Geometric'}{' '}
+                          ·{' '}
                           {normalizeModel(run.config.neural_model) === 'connectome'
                             ? `connectome · ${run.config.connectome_parameters?.circuit ?? 'fafb783-dna02'}${run.config.connectome_parameters?.dynamics === 'spiking' ? ' · spiking' : ''}`
                             : 'engineered'}

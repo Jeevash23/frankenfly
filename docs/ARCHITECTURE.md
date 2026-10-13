@@ -5,7 +5,8 @@
 ```text
 Python world/body pose
         ↓
-selected sensor encoder (geometric or rendered compound eye) ← stimulus
+selected sensor encoder ← stimulus
+  (geometric, rendered compound eye, or FlyVis eyes → FlyWire bridge)
         ↓                          ← sensory channel interventions
 selected neural model              ← silencing (groups, or DNa02 / cell types)
   · engineered: six leaky rate units (default)
@@ -126,3 +127,9 @@ The connectome view in the browser lays cell types out by hop distance to DNa02 
 - **State and exports.** The live `connectome` block adds the circuit name, dynamics, unit names and readout types. Exports record the circuit name, file and hash, dynamics, populations, spiking constants and labels; rate columns follow the unit names. Replay handles both dynamics.
 - **Toolkit.** `digitalfly/toolkit.py` builds trials from validated `RunConfig`s and runs them serially or in spawned processes, each worker keeping one `Experiment` per body engine and resetting it for every trial, so results do not depend on the worker count. Open-loop analyses (`hold`, `bias_curve`, `ablation_scan`) drive a `ConnectomeCircuit` directly. `digitalfly/compare.py` resamples recordings and runs to 10 ms bins and fits turning to the readout difference. `scripts/toolkit.py` is the command line for both; outputs go to the ignored `runs/toolkit/`.
 - **Interface.** The Workbench adds circuit and dynamics selectors; the live circuit view is keyed by circuit type index, draws every readout pair, traces paths and edits populations; **Build a circuit** drives the build endpoints.
+
+## v0.5 FlyVis eyes and recorded flies
+
+- **FlyVis eyes.** `vision/flyvis_eyes.py` wraps one FlyVis network (batch of two eyes) built from its config and weights-only checkpoint. Sensor model `flyvis` makes `FlyGymBody` render the eyes every five control intervals, convert them to per-ommatidium luminance, and step FlyVis by 10 ms after every control interval with the latest frame; on the first observation after a reset it adapts for 0.5 s to the scene. `Experiment.sense()` passes the pooled responses (eyes × 65 types, with sensor silencing applied per eye) to `ConnectomeCircuit.set_visual`, which multiplies them by the circuit's bridge (a sparse neurons × 130 matrix) to give each input neuron its own drive in place of the side's sensor value, in rate and spiking dynamics. Samples record the mean drive per side as the sensor values. FlyVis is imported lazily; without it the app works and the option is unavailable.
+- **Bridges.** `<circuit>.flyvis.json`, next to its circuit, holds FlyWire v783 synapse fractions from FlyVis-modelled types onto the circuit's visual projection neurons, by eye, and the circuit's hash; `load_bridge` refuses a bridge built for another version of the circuit. Bridge files never appear as circuits.
+- **Recorded flies.** `compare.rayshubskiy_recording` converts the Rayshubskiy et al. dual recordings (spike detection, firing rates, yaw calibration and an explicit yaw-sign setting); `compare.fit_filter` adds a cross-validated linear filter; `toolkit.jumping_target_run` records comparison runs. `scripts/fetch_recording.py` and `scripts/fetch_flyvis.py` download into the ignored cache and verify hashes.

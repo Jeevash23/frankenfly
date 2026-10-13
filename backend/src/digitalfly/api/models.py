@@ -158,7 +158,8 @@ class RunConfig(StrictModel):
     controller: Literal["neural", "baseline"] = "neural"
     speed: float = Field(default=0.25, ge=0.05, le=2)
     stimulus: Stimulus = Field(default_factory=Stimulus)
-    sensor_model: Literal["geometric", "vision"] = "geometric"
+    # "flyvis": rendered eyes → FlyVis optic-lobe network → the circuit's visual neurons through FlyWire wiring.
+    sensor_model: Literal["geometric", "vision", "flyvis"] = "geometric"
     neural_model: Literal["engineered", "connectome"] = "engineered"
     neural_parameters: NeuralParameters = Field(default_factory=NeuralParameters)
     connectome_parameters: ConnectomeParameters = Field(default_factory=ConnectomeParameters)
@@ -172,8 +173,19 @@ class RunConfig(StrictModel):
 
     @model_validator(mode="after")
     def supported_sensor(self):
-        if self.engine == "toy" and self.sensor_model == "vision":
+        if self.engine == "toy" and self.sensor_model in ("vision", "flyvis"):
             raise ValueError("Compound-eye vision requires the FlyGym body and an OpenGL context.")
+        if self.sensor_model == "flyvis":
+            if self.neural_model != "connectome":
+                raise ValueError("FlyVis eyes drive the connectome model's visual neurons. Select the connectome model.")
+            from digitalfly.vision.flyvis_eyes import available
+            ok, reason = available()
+            if not ok:
+                raise ValueError(reason)
+            from digitalfly.neural.connectome import bridge_path, load_circuit
+            if not bridge_path(load_circuit(self.connectome_parameters.circuit)).is_file():
+                raise ValueError(f"The {self.connectome_parameters.circuit} circuit has no FlyVis bridge. Build it with "
+                                 f"scripts/build_circuit.py flyvis-bridge --circuit {self.connectome_parameters.circuit}")
         scheduled = [e.interventions for e in self.protocol.events if e.interventions is not None] if self.protocol else []
         for interventions in [self.initial_interventions] + scheduled:
             interventions.for_model(self.neural_model)

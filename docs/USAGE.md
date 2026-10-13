@@ -27,7 +27,7 @@ Extra browser tabs on the same computer share one simulation: Run, Reset, interv
 | Specimen | Live 640×288 MuJoCo rendering; the camera follows the body |
 | Arena | Labeled top-down map from the simulated body poses; click to place the target |
 | Target X/Y, intensity | Moves the stimulus and its rendered landmark; press Enter or leave the field to apply coordinates |
-| Sensor model | Geometric bearing or rendered compound eyes; switching starts a fresh experiment |
+| Sensor model | Geometric bearing, rendered compound eyes, or FlyVis eyes (the optional optic-lobe network; needs FlyGym, the connectome model and a circuit with a FlyVis bridge); switching starts a fresh experiment |
 | Neural model | The engineered six-unit loop (default) or the connectome circuit; switching starts a fresh experiment |
 | Circuit, Dynamics | With the connectome model: which FlyWire circuit (committed or built on this computer) and whether its neurons are rate units or spiking neurons (Shiu et al. 2024). Either change starts a fresh experiment |
 | Sensor switches | Zero the corresponding input to the neural circuit |
@@ -54,6 +54,10 @@ In **Male & female anatomy**, the two female DNa02 skeletons are tinted by the m
 
 The builder needs the FlyWire data prepared once (see [the research guide](RESEARCH.md#building-your-own-circuits)); until then the tab shows the command to run. Building never downloads anything. The same builder runs from the command line as `scripts/build_circuit.py build`.
 
+## FlyVis eyes
+
+With the optional vision install (see [dependencies](DEPENDENCIES.md#v05-optional-flyvis-vision-and-recorded-fly-data)), **Sensor model → FlyVis eyes** runs the rendered eye images through FlyVis, a connectome-constrained network of the fly's optic lobe, and lets its cell types drive the circuit's visual neurons through FlyWire wiring. It needs the FlyGym body and the connectome model, and the circuit needs a FlyVis bridge: the committed circuits have one; for a circuit you build, run `backend/.venv/bin/python scripts/build_circuit.py flyvis-bridge --circuit NAME`. The first start builds FlyVis's network cache (about 10 seconds). Runs are slow, about 0.1–0.15× real time, and replay exactly. **Through the eyes** then shows the luminance FlyVis receives.
+
 ## Batch experiments and analysis
 
 `scripts/toolkit.py` runs experiments without the web app, in parallel processes, and saves CSV and JSON under `runs/toolkit/`:
@@ -63,6 +67,13 @@ backend/.venv/bin/python scripts/toolkit.py trials --set neural_model=connectome
 backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
 backend/.venv/bin/python scripts/toolkit.py ablation --workers 8
 backend/.venv/bin/python scripts/toolkit.py compare --run runs/YOUR_RUN_FOLDER
+```
+
+To compare with a real fly, fetch the recorded DNa02 data once (71 MB) and compare it with an exported run:
+
+```sh
+backend/.venv/bin/python scripts/fetch_recording.py rayshubskiy2025-a2_d_13.mat
+backend/.venv/bin/python scripts/toolkit.py compare --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat --run runs/YOUR_RUN_FOLDER
 ```
 
 Run `scripts/toolkit.py COMMAND --help` for every option, and see the [research guide](RESEARCH.md#the-research-toolkit) for what each analysis measures and for the Python API.

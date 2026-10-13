@@ -40,7 +40,7 @@ Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL renderi
 
 v0.4 adds no dependencies: spiking dynamics, the general circuit builder, the research toolkit and the fly comparison use NumPy and SciPy, which were already installed. Only `scripts/build_circuit.py prepare` (and the default rebuild of the DNa02 circuit) needs pyarrow from the build-only data lock; `build` reads the prepared NumPy archive.
 
-Full transitive versions and hashes: `backend/requirements.lock`, generated from `backend/pyproject.toml` with pip-tools. The lock includes the test extra. Frontend versions/integrity hashes: `frontend/package-lock.json`. All direct frontend imports are local packages. No PyTorch, JAX, Brian2, CUDA or Warp stack is installed. `jaxtyping`, IPython, imageio, ffmpeg and Matplotlib are upstream FlyGym transitives; they are not speculative extra model stacks.
+Full transitive versions and hashes: `backend/requirements.lock`, generated from `backend/pyproject.toml` with pip-tools. The lock includes the test extra. Frontend versions/integrity hashes: `frontend/package-lock.json`. All direct frontend imports are local packages. The runtime installs no PyTorch, JAX, Brian2, CUDA or Warp stack; CPU-only PyTorch comes only with the optional vision lock below. `jaxtyping`, IPython, imageio, ffmpeg and Matplotlib are upstream FlyGym transitives; they are not speculative extra model stacks.
 
 To deliberately regenerate the Python lock after editing the project specification:
 
@@ -106,7 +106,7 @@ The FlyGym 2.1.0 wheel was approximately **3.16 MB** and includes simplified Neu
 
 Environment, package-cache and asset sizes vary by platform. They are excluded from the public repository and recreated locally during setup.
 
-Stretch investigation checked [FlyVis's official implementation](https://github.com/TuragaLab/flyvis), [installation instructions](https://turagalab.github.io/flyvis/install/), and its current package/downloader source. It adds PyTorch, TorchVision and a separate scientific stack; the upstream downloader uses Google Drive pretrained ZIP archives and an API-key workflow. No verified drop-in FlyGym 2.1 bridge was found in the installed release; the published NeuroMechFly integration referenced the older API. Archive sizes were not established from unauthenticated metadata, so **no optional model archive was downloaded**. Integration is deferred, not passed or silently replaced with invented wiring.
+v0.2 deferred FlyVis; v0.5 adds it as an optional install (below).
 
 
 ## v0.2 research dependencies
@@ -124,3 +124,25 @@ The connectome model needs no new runtime package: it uses NumPy and `scipy.spar
 The frontend's Node range is 22.12–26. Nothing needs Node 24: Vite 7 and its React plugin need 22.12 or newer, and CI runs on 22.12.0. Rollup's optional `@napi-rs/lzma` binary declares a newer Node, but it is a build-tool helper that rollup never loads at run time, and npm skips it on older Node versions.
 
 The continuous-integration workflow (`.github/workflows/ci.yml`) installs the hashed backend lock and the frontend lockfile on Ubuntu and runs everything except the FlyGym physics tests, which need an OpenGL context.
+
+## v0.5 optional FlyVis vision and recorded fly data
+
+FlyVis 1.2.0 needs PyTorch, so it lives in the optional `vision` extra and its own lock, `backend/requirements-vision.lock`. The app runs without it; the **FlyVis eyes** sensor appears only when it is installed. The lock is universal (Linux and macOS) and hashed for every file: on Linux, `torch 2.14.1+cpu` and `torchvision 0.29.1+cpu` from the PyTorch CPU index; on macOS, the same versions from PyPI (which are CPU builds there). The default PyPI build on Linux would pull about 3.0 GB of CUDA packages; the CPU route is about 261 MB of downloads on Linux x86-64 (PyTorch's wheel is 196,253,677 bytes), adding 54 packages including pandas, scikit-learn, h5py, xarray, Hydra and Google's API client (FlyVis declares them all). Install, then fetch the pretrained networks (3,417,042 bytes, SHA-256 checked against the value FlyVis's own downloader expects; MIT):
+
+```sh
+backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-vision.lock
+backend/.venv/bin/python scripts/fetch_flyvis.py
+```
+
+The networks unpack into the ignored `.cache/flyvis/`, which FlyVis also uses for its connectome cache. Checkpoints are loaded with PyTorch's weights-only mode. To regenerate the lock after changing the `vision` extra:
+
+```sh
+uv pip compile backend/pyproject.toml --extra test --extra vision --universal --python-version 3.12 \
+  --generate-hashes --emit-index-url --index-url https://pypi.org/simple \
+  --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match \
+  -c backend/requirements.lock -o backend/requirements-vision.lock
+```
+
+The vision lock was validated on x86-64 Linux only; the macOS entries are hashed but have not been installed.
+
+Recorded fly data needs no package: SciPy reads the MATLAB files. `scripts/fetch_recording.py` downloads a file listed in `data/recordings/downloads.json` into the ignored `.cache/recordings/` and keeps it only if its size, MD5 and SHA-256 match. The first entry is one paired DNa02 recording from Rayshubskiy et al. 2025 (71,381,032 bytes, CC0 1.0).

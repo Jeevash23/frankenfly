@@ -160,20 +160,41 @@ def paths(args):
 def compare(args):
     from digitalfly import compare as cmp
     model = cmp.model_recording(args.run, args.readout) if args.run else None
-    fly = cmp.load_recording(args.recording, args.readout or "DNa02") if args.recording else None
+    fly, conversion = None, None
+    if args.recording:
+        if args.recording.endswith(".mat"):
+            fly, conversion = cmp.rayshubskiy_recording(args.recording, args.readout or "DNa02",
+                                                        positive_yaw=args.positive_yaw)
+            print(f"Converted {conversion['source']}: {conversion['duration_s']:.0f} s, spikes left {conversion['spikes']['left']:,} "
+                  f"({conversion['mean_rate_hz']['left']:.1f}/s), right {conversion['spikes']['right']:,} "
+                  f"({conversion['mean_rate_hz']['right']:.1f}/s); the file's positive yaw taken as {args.positive_yaw}ward.\n")
+            if args.save_recording:
+                cmp.save_recording(fly, args.save_recording)
+        else:
+            fly = cmp.load_recording(args.recording, args.readout or "DNa02")
     if not model and not fly:
-        sys.exit("Give --recording (a fly recording CSV) and/or --run (an exported DigitalFly run folder).")
-    fits = {"fly": cmp.fit_turning(fly, args.max_lag) if fly else None,
-            "model": cmp.fit_turning(model, args.max_lag) if model else None}
-    print("| Source | Readout | Lag | Gain | Offset | r² |\n| --- | --- | --- | --- | --- | --- |")
-    for label, fit in fits.items():
+        sys.exit("Give --recording (a fly recording: CSV, NPZ or a Rayshubskiy .mat) and/or --run (an exported run folder).")
+    sources = {"fly": fly, "model": model}
+    fits = {k: cmp.fit_turning(r, args.max_lag) if r else None for k, r in sources.items()}
+    def filter_fit(recording):
+        try:
+            return cmp.fit_filter(recording, args.max_lag)
+        except ValueError:  # too short for a cross-validated filter
+            return None
+    filters = {k: filter_fit(r) if r else None for k, r in sources.items()}
+    print("| Source | Readout | Best single lag | Gain at that lag | r² | Linear filter: held-out r² |")
+    print("| --- | --- | --- | --- | --- | --- |")
+    for label in sources:
+        fit, filt = fits[label], filters[label]
         if fit:
+            held_out = f"{filt['heldout_r2']:.3f}" if filt else "too short"
             print(f"| {label}: {fit['source']} | {fit['readout']} | {fit['lag_s'] * 1000:.0f} ms | "
-                  f"{fit['gain']:.4g} {fit['gain_units']} | {fit['offset_deg_s']:+.2f} °/s | {fit['r2']:.3f} |")
-    result = cmp.compare(fly, model, args.max_lag) if fly and model else fits
+                  f"{fit['gain']:.4g} {fit['gain_units']} | {fit['r2']:.3f} | {held_out} |")
+    result = {"fits": fits, "filters": filters, "conversion": conversion}
     if fly and model:
-        print(f"\nSame sign: {result['same_sign']}. Model lag − fly lag: {result['lag_difference_s'] * 1000:+.0f} ms. "
-              f"{result['note']}")
+        result["comparison"] = cmp.compare(fly, model, args.max_lag)
+        c = result["comparison"]
+        print(f"\nSame sign: {c['same_sign']}. Model lag − fly lag: {c['lag_difference_s'] * 1000:+.0f} ms. {c['note']}")
     save("compare", [], {"command": "compare", "rotation": "rightward positive, deg/s", **result}, args.out)
 
 
@@ -221,7 +242,10 @@ def main():
     c = commands.add_parser("circuits", help="List committed and local circuits")
     c.set_defaults(handler=circuits)
     m = commands.add_parser("compare", help="Fit turning to right − left readout activity in a recording and/or a run")
-    m.add_argument("--recording", help="Fly recording CSV/NPZ (columns in digitalfly/compare.py)")
+    m.add_argument("--recording", help="Fly recording: CSV/NPZ (columns in digitalfly/compare.py) or a Rayshubskiy et al. 2025 dual .mat")
+    m.add_argument("--positive-yaw", choices=["right", "left"], default="right",
+                   help="Which way the .mat file's positive yaw turns (default right, inferred; see the research guide)")
+    m.add_argument("--save-recording", help="Also write the converted .mat recording as a CSV here")
     m.add_argument("--run", help="Exported DigitalFly run folder (runs/<id>)")
     m.add_argument("--readout", help="Readout cell type (default: the run's first readout, or DNa02)")
     m.add_argument("--max-lag", type=float, default=.5, help="Largest lag of turning behind the neurons, s")

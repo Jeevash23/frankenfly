@@ -16,6 +16,8 @@ Everything runs on your own computer, in your browser.</p>
 - **Build your own circuit.** Pick any FlyWire cell types or neurons as seeds, choose hops, synapse threshold and size (or the whole brain), and run the result: in the app or from the command line.
 - **Intervene.** Silence the left or right sensor, a group of units, either DNa02 neuron or any cell type in the circuit, and see how behavior changes.
 - **Run experiments.** Start from a one-click first experiment, script timed stimulus changes, compare conditions (including the two brains) across matched random seeds, and keep every trial. Export runs as CSV, JSON and ZIP, and replay them exactly.
+- **See through FlyVis eyes (optional).** Run the rendered eye images through FlyVis, a connectome-constrained model of the fly's optic lobe, and let its cell types drive the circuit's visual neurons through FlyWire wiring.
+- **Compare with a real fly.** Import a published recording of both DNa02 neurons in a walking fly and fit how its turning follows them, side by side with the model.
 - **Analyze at scale.** A research toolkit (Python and command line) runs batches of trials and parameter sweeps in parallel, measures a circuit's left/right bias, silences every cell type in turn to find what drives it, traces pathways, and fits turning against readout activity in runs or recorded flies.
 - **Explore real anatomy.** Rotate male and female fly brains with twelve published neuron reconstructions, or import your own small wiring diagram to inspect.
 
@@ -85,7 +87,7 @@ The backend is FastAPI with FlyGym and MuJoCo (`backend/`); the interface is Rea
 
 ## What it is not
 
-DigitalFly does not simulate the nerve cord, flight, learning, courtship or a male body, and it has not been tested against recorded flies. The six-unit controller has hand-chosen weights. The connectome model uses real wiring, but assumed signs and an engineered connection to the eyes and legs; the DNa02 circuit, and both committed circuits with spiking neurons, steer with a strong left-turn bias, and the whole brain can be built but runs far slower than real time. The compound-eye encoder is an engineered green-object detector. Results show what these models compute, not established fly biology. The [research guide](docs/RESEARCH.md#what-remains-before-biological-simulation-claims) describes what a biologically validated version would need.
+DigitalFly does not simulate the nerve cord, flight, learning, courtship or a male body, and it has been compared with only one recorded fly, not fitted or validated. The six-unit controller has hand-chosen weights. The connectome model uses real wiring, but assumed signs and an engineered connection to the eyes and legs; the DNa02 circuit, and both committed circuits with spiking neurons, steer with a strong left-turn bias, and the whole brain can be built but runs far slower than real time. The compound-eye encoder is an engineered green-object detector. Results show what these models compute, not established fly biology. The [research guide](docs/RESEARCH.md#what-remains-before-biological-simulation-claims) describes what a biologically validated version would need.
 
 ## License and credits
 
