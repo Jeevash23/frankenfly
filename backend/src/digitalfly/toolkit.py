@@ -161,6 +161,13 @@ def _run_in_worker(task):
     return run_trial(config, experiment=exp, **kwargs)
 
 
+def _limit_threads(threads: int):
+    # Before PyTorch (FlyVis) or BLAS start their thread pools in a worker process.
+    import os
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+        os.environ[name] = str(threads)
+
+
 def run_trials(configs: list[RunConfig | dict], workers: int = 1, **kwargs) -> list[dict]:
     """Many trials, in order. With workers > 1 they run in separate processes; every trial starts from its
     own reset, so the results do not depend on the number of workers."""
@@ -172,7 +179,10 @@ def run_trials(configs: list[RunConfig | dict], workers: int = 1, **kwargs) -> l
             for exp in _experiments.values():
                 exp.close()
             _experiments.clear()
-    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+    import os
+    threads = max(1, (os.cpu_count() or 1) // workers)
+    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+                             initializer=_limit_threads, initargs=(threads,)) as pool:
         return list(pool.map(_run_in_worker, tasks, chunksize=max(1, len(tasks) // (workers * 4))))
 
 
