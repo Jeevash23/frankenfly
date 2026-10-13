@@ -22,6 +22,14 @@ dependencies = [
 test = ["pytest==9.1.1", "httpx==0.28.1"]
 # Build scripts only (scripts/build_circuit.py); the app never imports these.
 data = ["pyarrow==25.0.1"]
+# Optional FlyVis vision front end. CPU-only PyTorch: the CUDA build is about 3 GB.
+vision = [
+  "flyvis==1.2.0",
+  "torch==2.14.1+cpu; sys_platform == 'linux'",
+  "torch==2.14.1; sys_platform == 'darwin'",
+  "torchvision==0.29.1+cpu; sys_platform == 'linux'",
+  "torchvision==0.29.1; sys_platform == 'darwin'",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -713,6 +713,75 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
                       "readout_types": readout, "bytes": path.stat().st_size, "sha256": sha256(path.read_bytes())}))
 
 
+# The 65 node types of FlyVis 1.2.0 (Lappalainen et al. 2024), and the FlyWire v783 types that stand for them.
+# CT1 has two compartments in FlyVis; its lobula compartment is the one that can reach lobula neurons.
+FLYVIS_TYPES = ["Am", "C2", "C3", "CT1(Lo1)", "CT1(M10)", "L1", "L2", "L3", "L4", "L5", "Lawf1", "Lawf2", "Mi1",
+                "Mi10", "Mi11", "Mi12", "Mi13", "Mi14", "Mi15", "Mi2", "Mi3", "Mi4", "Mi9", "R1", "R2", "R3", "R4",
+                "R5", "R6", "R7", "R8", "T1", "T2", "T2a", "T3", "T4a", "T4b", "T4c", "T4d", "T5a", "T5b", "T5c",
+                "T5d", "Tm1", "Tm16", "Tm2", "Tm20", "Tm28", "Tm3", "Tm30", "Tm4", "Tm5Y", "Tm5a", "Tm5b", "Tm5c",
+                "Tm9", "TmY10", "TmY13", "TmY14", "TmY15", "TmY18", "TmY3", "TmY4", "TmY5a", "TmY9"]
+FLYVIS_ALIASES = {"CT1(Lo1)": "CT1"}
+
+
+def flyvis_bridge(circuit_name):
+    """Synapses from FlyVis-modelled optic-lobe types onto each visual projection neuron of a circuit, by eye.
+
+    Data-derived (FlyWire v783 synapse counts); written next to the circuit as <name>.flyvis.json."""
+    sys.path.insert(0, str(ROOT / "backend/src"))
+    from digitalfly.neural.connectome import circuit_path, load_circuit
+    path = circuit_path(circuit_name)
+    circuit = load_circuit(path)
+    data = load_prepared()
+    labels = data["lookup_cell_type"]
+    names = {str(n): k for k, n in enumerate(labels)}
+    mapping = {t: FLYVIS_ALIASES.get(t, t) for t in FLYVIS_TYPES if FLYVIS_ALIASES.get(t, t) in names}
+    flyvis_of_label = np.full(len(labels), -1)
+    for t, flywire in mapping.items():
+        flyvis_of_label[names[flywire]] = FLYVIS_TYPES.index(t)
+    ids = data["neuron_id"]
+    targets = np.flatnonzero(circuit.super_class == "visual_projection")
+    position = np.searchsorted(ids, np.array([int(circuit.ids[i]) for i in targets]))
+    if not np.array_equal(ids[position], np.array([int(circuit.ids[i]) for i in targets])):
+        sys.exit("The circuit's neurons are missing from the prepared archive.")
+    row = np.full(len(ids), -1)
+    row[position] = np.arange(len(targets))
+    onto = row[data["post"]] >= 0
+    total = np.bincount(row[data["post"][onto]], weights=data["synapses"][onto], minlength=len(targets))
+    pre = data["pre"][onto]
+    flyvis_type = flyvis_of_label[data["cell_type"][pre]]
+    sides = data["lookup_side"][data["side"][pre]]
+    eye = np.where(sides == "left", 0, np.where(sides == "right", 1, -1))
+    keep = (flyvis_type >= 0) & (eye >= 0)
+    key = (row[data["post"][onto]][keep] * len(FLYVIS_TYPES) + flyvis_type[keep]) * 2 + eye[keep]
+    unique, inverse = np.unique(key, return_inverse=True)
+    synapses = np.bincount(inverse, weights=data["synapses"][onto][keep])
+    neuron, rest = np.divmod(unique, len(FLYVIS_TYPES) * 2)
+    ftype, eyes = np.divmod(rest, 2)
+    covered = np.bincount(neuron, weights=synapses, minlength=len(targets))
+    weight = synapses / covered[neuron]
+    bridge = {
+        "format": "digitalfly-flyvis-bridge", "version": 1, "circuit": path.stem, "circuit_sha256": circuit.sha256,
+        "kind": "Data-derived: FlyWire v783 synapse counts from optic-lobe types that FlyVis models onto the "
+                "circuit's visual projection neurons, by the presynaptic neuron's side (eye).",
+        "flyvis": {"release": "1.2.0", "types": FLYVIS_TYPES, "flywire_names": mapping,
+                   "unmapped": [t for t in FLYVIS_TYPES if t not in mapping]},
+        "rule": "weight = synapses from that type and eye ÷ the neuron's synapses from all mapped types; "
+                "coverage = mapped synapses ÷ all of the neuron's input synapses in FlyWire v783",
+        "license": FLYWIRE_LICENSE, "non_commercial": True, "attribution": ATTRIBUTION,
+        "sources": data["header"]["sources"],
+        "neurons": [int(i) for i in targets],
+        "coverage": [round(float(c / t), 6) if t else 0.0 for c, t in zip(covered, total)],
+        "entries": {"neuron": neuron.astype(int).tolist(), "type": ftype.astype(int).tolist(),
+                    "eye": eyes.astype(int).tolist(), "weight": [round(float(w), 6) for w in weight]},
+    }
+    out = path.with_name(f"{path.stem}.flyvis.json")
+    out.write_text(json.dumps(bridge, separators=(",", ":")))
+    print(json.dumps({"bridge": str(shown(out)), "input_neurons": len(targets),
+                      "with_flyvis_input": int((covered > 0).sum()), "entries": len(weight),
+                      "median_coverage": float(np.median(covered / np.maximum(total, 1))),
+                      "mapped_types": len(mapping), "bytes": out.stat().st_size}))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--threshold", type=int, default=5, help="Minimum synapses per connection (default 5)")
@@ -732,7 +801,12 @@ if __name__ == "__main__":
     custom.add_argument("--whole-brain", action="store_true", help="Every connected neuron; seeds set hop distances")
     custom.add_argument("--format", choices=["auto", "json", "npz"], default="auto")
     custom.add_argument("--committed", action="store_true", help="Write to data/circuits/ (maintainers) instead of data/circuits/local/")
+    bridge = commands.add_parser("flyvis-bridge", help="Wire FlyVis cell types to a circuit's visual projection neurons")
+    bridge.add_argument("--circuit", required=True, help="Circuit name, committed or local")
     args = parser.parse_args()
+    if args.command == "flyvis-bridge":
+        flyvis_bridge(args.circuit)
+        sys.exit(0)
     if args.command == "build":
         if not 1 <= args.threshold <= 1000 or not 1 <= args.hops <= 6 or not 1 <= args.cap <= 200_000:
             sys.exit("Choose a threshold of 1-1000 synapses, 1-6 hops and a cap of 1-200,000 neurons.")
