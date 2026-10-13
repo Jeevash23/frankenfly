@@ -259,8 +259,8 @@ def soma_x(neuron_id):
     return float(rows[rows[:, 6] == -1][0, 2] / 1000)
 
 
-def select_subcircuit(pre, post, count, seeds, threshold, hops, cap):
-    """Choose the neurons and connections. A pure function of the full edge list.
+def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False):
+    """Choose neurons and connections on integer neuron indices 0..n-1. Vectorised.
 
     Hop h holds the presynaptic partners (connections with at least `threshold` synapses) of
     hop h-1 that are not already included. Every seed and hop-1 neuron is kept. If more
@@ -268,61 +268,74 @@ def select_subcircuit(pre, post, count, seeds, threshold, hops, cap):
     strongest path to a seed, where a path's strength multiplies the input fractions of its
     connections (synapses on the connection / all synapses onto the postsynaptic neuron).
     The connections are the induced subgraph: every kept pair with at least `threshold`.
+
+    With `whole`, hops run until no new neuron is reached, nothing is capped, and every other
+    neuron with a strong connection is appended (hop -1: no path to a seed).
     """
-    pre, post, count = (np.asarray(a, dtype=np.int64) for a in (pre, post, count))
-    seeds = np.asarray(seeds, dtype=np.int64)
-    unique_post, inverse_post = np.unique(post, return_inverse=True)
-    total_in = np.bincount(inverse_post, weights=count)
-
-    def input_total(ids):
-        position = np.searchsorted(unique_post, ids)
-        position[position >= len(unique_post)] = 0
-        return np.where(unique_post[position] == ids, total_in[position], 0.)
-
+    pre, post, seeds = (np.asarray(a, dtype=np.int64) for a in (pre, post, seeds))
+    count = np.asarray(count, dtype=np.float64)
+    total_in = np.bincount(post, weights=count, minlength=n)
     strong = count >= threshold
-    s_pre, s_post, s_count = pre[strong], post[strong], count[strong]
+    s_pre, s_post = pre[strong], post[strong]
+    fraction = count[strong] / total_in[s_post]
+    strength = np.zeros(n)
+    strength[seeds] = 1.0
+    known = np.zeros(n, dtype=bool)
+    known[seeds] = True
+    frontier = known.copy()
     layers = [seeds]
-    strength = {int(i): 1.0 for i in seeds}
-    for _ in range(hops):
-        mask = np.isin(s_post, layers[-1])
-        e_pre, e_post, e_count = s_pre[mask], s_post[mask], s_count[mask]
-        fraction = e_count / input_total(e_post)
-        best = {}
-        for a, b, f in zip(e_pre.tolist(), e_post.tolist(), fraction.tolist()):
-            if a in strength:
-                continue
-            value = f * strength[b]
-            if value > best.get(a, 0.):
-                best[a] = value
-        strength.update(best)
-        layers.append(np.array(sorted(best), dtype=np.int64))
+    for _ in range(n if whole else hops):
+        edge = frontier[s_post] & ~known[s_pre]
+        best = np.zeros(n)
+        np.maximum.at(best, s_pre[edge], fraction[edge] * strength[s_post[edge]])
+        frontier = best > 0
+        if not frontier.any():
+            break
+        strength[frontier] = best[frontier]
+        known |= frontier
+        layers.append(np.flatnonzero(frontier))
 
-    kept_layers, dropped, budget = [seeds], [], cap - len(seeds)
+    kept_layers, dropped, budget = [seeds], np.array([], dtype=np.int64), (n if whole else cap) - len(seeds)
     for depth, layer in enumerate(layers[1:], start=1):
         if len(layer) <= budget or depth == 1:
             kept_layers.append(layer)
             budget -= len(layer)
             continue
-        ranked = sorted(layer.tolist(), key=lambda i: (-strength[i], i))
+        ranked = layer[np.lexsort((layer, -strength[layer]))]
         keep = max(budget, 0)
-        kept_layers.append(np.array(sorted(ranked[:keep]), dtype=np.int64))
-        dropped.extend(ranked[keep:])
+        kept_layers.append(np.sort(ranked[:keep]))
+        dropped = np.concatenate([dropped, ranked[keep:]])
         budget -= keep
+    hop = np.concatenate([np.full(len(l), h) for h, l in enumerate(kept_layers)])
     kept = np.concatenate(kept_layers)
-    position = {int(i): k for k, i in enumerate(kept)}
-    mask = strong & np.isin(pre, kept) & np.isin(post, kept)
-    e_pre = np.array([position[int(i)] for i in pre[mask]], dtype=np.int64)
-    e_post = np.array([position[int(i)] for i in post[mask]], dtype=np.int64)
-    e_count = count[mask]
+    if whole:
+        connected = np.zeros(n, dtype=bool)
+        connected[s_pre] = connected[s_post] = True
+        connected[kept] = False
+        rest = np.flatnonzero(connected)
+        kept, hop = np.concatenate([kept, rest]), np.concatenate([hop, np.full(len(rest), -1)])
+    position = np.full(n, -1, dtype=np.int64)
+    position[kept] = np.arange(len(kept))
+    mask = strong & (position[pre] >= 0) & (position[post] >= 0)
+    e_pre, e_post, e_count = position[pre[mask]], position[post[mask]], count[mask].astype(np.int64)
     order = np.lexsort((e_pre, e_post))
-    weakest = min((strength[int(i)] for i in kept_layers[-1]), default=None) if dropped else None
-    return {"kept": kept, "hop": np.concatenate([np.full(len(l), h) for h, l in enumerate(kept_layers)]),
-            "strength": np.array([strength[int(i)] for i in kept]),
+    weakest = float(strength[kept_layers[-1]].min()) if len(dropped) and len(kept_layers[-1]) else None
+    return {"kept": kept, "hop": hop, "strength": strength[kept],
             "by_hop": [int(len(l)) for l in kept_layers],
-            "candidates": int(sum(len(l) for l in layers)), "dropped": np.array(dropped, dtype=np.int64),
-            "dropped_strength": np.array([strength[int(i)] for i in dropped]),
-            "weakest_kept_strength": weakest,
+            "candidates": int(sum(len(l) for l in layers)), "dropped": dropped,
+            "dropped_strength": strength[dropped], "weakest_kept_strength": weakest,
             "edges": (e_pre[order], e_post[order], e_count[order])}
+
+
+def select_subcircuit(pre, post, count, seeds, threshold, hops, cap, whole=False):
+    """`select_indices` on neuron identifiers instead of indices; kept/dropped are identifiers."""
+    pre, post, seeds = (np.asarray(a, dtype=np.int64) for a in (pre, post, seeds))
+    ids, inverse = np.unique(np.concatenate([seeds, pre, post]), return_inverse=True)
+    k, m = len(seeds), len(pre)
+    chosen = select_indices(inverse[k:k + m], inverse[k + m:], count, inverse[:k], len(ids),
+                            threshold, hops, cap, whole)
+    chosen["kept"], chosen["dropped"] = ids[chosen["kept"]], ids[chosen["dropped"]]
+    return chosen
 
 
 def build(threshold, hops, cap, offline):
@@ -475,16 +488,260 @@ def build(threshold, hops, cap, offline):
     print(f"wrote {OUTPUT.relative_to(ROOT)} ({OUTPUT.stat().st_size / 1e6:.2f} MB), sha256 {sha256(OUTPUT.read_bytes())}")
 
 
+PREPARED = CACHE / "fafb783-connectome.npz"
+CATALOG = CACHE / "fafb783-catalog.json"
+LOCAL_DIR = OUT_DIR / "local"
+NAME_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
+JSON_EDGE_LIMIT = 200_000  # larger circuits are written as compressed NumPy archives
+
+
+def neuron_labels(meta):
+    """A neuron's cell type, or its class marked as untyped: the label cell-type groups use."""
+    return np.array([t or f"{sub or cls or sup or 'unannotated'} (untyped)" for t, sub, cls, sup in
+                     zip(meta["cell_type"], meta["cell_sub_class"], meta["cell_class"], meta["super_class"])],
+                    dtype=object)
+
+
+def encode(values):
+    table, index = np.unique(np.asarray(values, dtype=str), return_inverse=True)
+    return table, index.astype(np.int32)
+
+
+def shown(path):
+    return path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+
+
+def prepare(offline):
+    """Convert the cached downloads into one NumPy archive that `build` reads without pyarrow."""
+    meta_path, meta_record = meta_file(offline)
+    columns, conn_record = connectivity_columns(offline)
+    meta, meta_rows = load_meta(meta_path)
+    save_prepared(meta, columns, [{**meta_record, "rows": meta_rows}, conn_record])
+
+
+def save_prepared(meta, columns, sources):
+    """Write the prepared archive and the cell-type catalog from metadata and connectivity columns."""
+    # Index neurons in ID order, so hop layers and ties order by FlyWire ID as in the default build.
+    order = np.argsort(meta["id"])
+    meta = {key: values[order] for key, values in meta.items()}
+    ids = meta["id"]
+
+    def index_of(values):
+        position = np.searchsorted(ids, values)
+        position[position >= len(ids)] = 0
+        return np.where(ids[position] == values, position, -1)
+
+    pre = index_of(columns["Presynaptic_ID"].astype(np.int64))
+    post = index_of(columns["Postsynaptic_ID"].astype(np.int64))
+    matched = (pre >= 0) & (post >= 0)
+    types, type_index = encode(neuron_labels(meta))
+    supers, super_index = encode(np.where(meta["super_class"] == "", "unknown", meta["super_class"]))
+    classes, class_index = encode(meta["cell_class"])
+    sides, side_index = encode(np.where(meta["side"] == "", "unknown", meta["side"]))
+    nts, nt_index = encode([transmitter(v) for v in meta["neurotransmitter_predicted"]])
+    header = {"sources": sources, "neurons": int(len(ids)),
+              "connections": int(matched.sum()), "unmatched_connections": int((~matched).sum())}
+    PREPARED.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        PREPARED, header=np.array(json.dumps(header)), neuron_id=ids, cell_type=type_index,
+        super_class=super_index, cell_class=class_index, side=side_index, transmitter=nt_index,
+        transmitter_score=meta["neurotransmitter_score"].astype(np.float32),
+        pre=pre[matched].astype(np.int32), post=post[matched].astype(np.int32),
+        synapses=columns["Connectivity"][matched].astype(np.int32),
+        shiu_sign=columns["Excitatory"][matched].astype(np.int8),
+        lookup_cell_type=types, lookup_super_class=supers, lookup_cell_class=classes,
+        lookup_side=sides, lookup_transmitter=nts)
+    counts = np.bincount(type_index, minlength=len(types))
+    left = np.bincount(type_index, weights=sides[side_index] == "left", minlength=len(types))
+    right = np.bincount(type_index, weights=sides[side_index] == "right", minlength=len(types))
+    first_super = np.zeros(len(types), dtype=np.int64)
+    first_super[type_index[::-1]] = super_index[::-1]
+    catalog = [{"cell_type": str(t), "neurons": int(c), "left": int(l), "right": int(r),
+                "super_class": str(supers[sc])} for t, c, l, r, sc in zip(types, counts, left, right, first_super)]
+    CATALOG.write_text(json.dumps({"release": "FlyWire FAFB v783", "cell_types": catalog}, separators=(",", ":")))
+    print(f"prepared {shown(PREPARED)}: {len(ids):,} neurons, {int(matched.sum()):,} connections "
+          f"({int((~matched).sum()):,} without metadata left out), {len(types):,} cell types")
+
+
+def load_prepared():
+    if not PREPARED.is_file():
+        sys.exit(f"Missing {shown(PREPARED)}. Run `scripts/build_circuit.py prepare` first "
+                 "(it needs the build-only data lock and the FlyWire downloads, about 61 MB).")
+    with np.load(PREPARED, allow_pickle=False) as archive:
+        data = {key: archive[key] for key in archive.files}
+    data["header"] = json.loads(str(data["header"]))
+    return data
+
+
+def resolve_seeds(data, tokens):
+    """Seeds by FlyWire root ID or exact cell-type name, in the given order, left before right."""
+    ids, labels, sides = data["neuron_id"], data["lookup_cell_type"], data["lookup_side"]
+    side_rank = {"left": 0, "right": 1}
+    seeds, records = [], []
+    for token in tokens:
+        token = token.strip()
+        if token.isdigit():
+            members = np.flatnonzero(ids == int(token))
+            if not len(members):
+                sys.exit(f"Neuron {token} is not in the FlyWire v783 metadata.")
+        else:
+            matches = np.flatnonzero(labels == token)
+            if not len(matches):
+                sys.exit(f"No cell type is named {token!r}. Names are case-sensitive; see {CATALOG.name}.")
+            members = np.flatnonzero(data["cell_type"] == matches[0])
+        members = sorted(members.tolist(), key=lambda i: (side_rank.get(str(sides[data["side"][i]]), 2), int(ids[i])))
+        members = [m for m in members if m not in seeds]
+        seeds.extend(members)
+        record = {"seed": token, "cell_types": sorted({str(labels[data["cell_type"][m]]) for m in members})}
+        for side in ["left", "right"]:
+            record[side] = [str(ids[m]) for m in members if str(sides[data["side"][m]]) == side]
+        record["other"] = [str(ids[m]) for m in members if str(sides[data["side"][m]]) not in side_rank]
+        records.append(record)
+    return np.array(seeds, dtype=np.int64), records
+
+
+def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
+    """Select a circuit around any seeds from the prepared archive (NumPy only) and write format 2."""
+    import re
+    if not re.fullmatch(NAME_PATTERN, name) or name == "local":
+        sys.exit("Use a circuit name of lower-case letters, digits, dots, dashes or underscores.")
+    if not committed and any((OUT_DIR / f"{name}{suffix}").exists() for suffix in (".json", ".npz")):
+        sys.exit(f"{name} is a built-in circuit. Choose another name for a local build.")
+    data = load_prepared()
+    seeds, records = resolve_seeds(data, tokens)
+    n = len(data["neuron_id"])
+    chosen = select_indices(data["pre"], data["post"], data["synapses"], seeds, n, threshold, hops, cap, whole)
+    kept = chosen["kept"]
+    e_pre, e_post, e_count = chosen["edges"]
+    position = np.full(n, -1, dtype=np.int64)
+    position[kept] = np.arange(len(kept))
+    lookups, columns = {}, {}
+    for key in ["cell_type", "super_class", "cell_class", "transmitter", "side"]:
+        table, index = np.unique(data[key][kept], return_inverse=True)
+        lookups[key] = [str(v) for v in data["lookup_" + key][table]]
+        columns[key] = index.astype(np.int32)
+    # Shiu et al.'s own sign per presynaptic neuron (0 when mixed or absent), for comparison only.
+    outgoing = position[data["pre"]] >= 0
+    low, high = np.full(len(kept), 2, dtype=np.int64), np.full(len(kept), -2, dtype=np.int64)
+    np.minimum.at(low, position[data["pre"][outgoing]], data["shiu_sign"][outgoing])
+    np.maximum.at(high, position[data["pre"][outgoing]], data["shiu_sign"][outgoing])
+    shiu = np.where(low == high, low, 0)
+    nts = np.array(lookups["transmitter"])[columns["transmitter"]]
+    supers = np.array(lookups["super_class"])[columns["super_class"]]
+    sides = np.array(lookups["side"])[columns["side"]]
+    rule = {"acetylcholine": 1, "gaba": -1, "glutamate": -1, "dopamine": 1, "serotonin": 1, "octopamine": 1}
+    expected = np.array([rule.get(nt, 0) for nt in nts])
+    compared = (shiu != 0) & (expected != 0)
+    dropped = chosen["dropped"]
+    dropped_super = {str(k): int(v) for k, v in zip(*np.unique(data["lookup_super_class"][data["super_class"][dropped]], return_counts=True))} if len(dropped) else {}
+    dropped_types = {}
+    if len(dropped):
+        names, counts = np.unique(data["lookup_cell_type"][data["cell_type"][dropped]], return_counts=True)
+        dropped_types = {str(k): int(v) for k, v in sorted(zip(names, counts), key=lambda x: -x[1])[:25]}
+    # Default steering readout: the seeds' cell types that have seed neurons on both sides.
+    seed_labels = data["lookup_cell_type"][data["cell_type"][seeds]]
+    seed_sides = data["lookup_side"][data["side"][seeds]]
+    readout = [str(t) for t in dict.fromkeys(seed_labels.tolist())
+               if {"left", "right"} <= set(seed_sides[seed_labels == t].tolist())]
+    seed_text = ", ".join(r["seed"] for r in records)
+    header = {
+        "format": "digitalfly-circuit", "version": 2, "name": name,
+        "kind": "Data-derived structure: identities, types, sides, predicted transmitters and synapse counts. "
+                "Signs, gains and dynamics are runtime assumptions of the model that loads it.",
+        "provenance": {
+            "dataset": "FlyWire FAFB", "release": "v783", "specimen": "FAFB, one adult female brain", "sex": "female",
+            "coverage": (f"Every neuron with a connection of at least {threshold} synapses; hop distances from {seed_text}"
+                         if whole else f"{seed_text} and their presynaptic partners up to {hops} hops back, connections "
+                         f"with at least {threshold} synapses, at most {cap} neurons"),
+            "license": FLYWIRE_LICENSE, "non_commercial": True, "attribution": ATTRIBUTION, "citations": CITATIONS,
+            "sources": data["header"]["sources"],
+            "build": {"script": "scripts/build_circuit.py", "command": "build", "seeds": [r["seed"] for r in records],
+                      "synapse_threshold": threshold, "hops": None if whole else hops,
+                      "neuron_cap": None if whole else cap, "whole_brain": whole,
+                      "connections": "induced subgraph: every kept pair with at least the threshold",
+                      "numpy": np.__version__},
+            "seeds": records,
+            "counts": {"neurons": int(len(kept)), "connections": int(len(e_count)), "synapses": int(e_count.sum()),
+                       "cell_types": len(lookups["cell_type"]), "by_hop": chosen["by_hop"],
+                       "unreached": int((chosen["hop"] < 0).sum()),
+                       "visual_projection_inputs": {side: int(((supers == "visual_projection") & (sides == side)).sum())
+                                                    for side in ["left", "right"]}},
+            "cap_report": {"cap": None if whole else cap, "candidates": chosen["candidates"], "kept": int(len(kept)),
+                           "dropped": int(len(dropped)), "binding": bool(len(dropped)),
+                           "weakest_kept_path_strength": chosen["weakest_kept_strength"],
+                           "strongest_dropped_path_strength": float(chosen["dropped_strength"].max()) if len(dropped) else None,
+                           "dropped_by_super_class": dict(sorted(dropped_super.items(), key=lambda x: -x[1])),
+                           "dropped_top_cell_types": dropped_types},
+            "transmitters": {"source": "neurotransmitter_predicted in the harmonized metadata (Eckstein et al. 2024 predictions)",
+                             "counts": {nt: int((nts == nt).sum()) for nt in lookups["transmitter"]},
+                             "shiu_sign_comparison": {"neurons_compared": int(compared.sum()),
+                                                      "agree": int((compared & (shiu == expected)).sum())}},
+        },
+        "defaults": {"readout_types": readout, "input": "visual_projection"},
+        "lookups": lookups,
+    }
+    folder = OUT_DIR if committed else LOCAL_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    fmt = fmt if fmt != "auto" else ("json" if len(e_count) <= JSON_EDGE_LIMIT else "npz")
+    for old in folder.glob(f"{name}.*"):
+        if old.suffix in {".json", ".npz"}:
+            old.unlink()
+    path = folder / f"{name}.{fmt}"
+    score = data["transmitter_score"][kept]
+    if fmt == "json":
+        payload = {**header, "neurons": {
+            "id": [str(i) for i in data["neuron_id"][kept]], **{k: columns[k].tolist() for k in columns},
+            "transmitter_score": [None if not np.isfinite(v) else round(float(v), 3) for v in score],
+            "hop": chosen["hop"].tolist(), "path_strength": [float(f"{v:.6g}") for v in chosen["strength"]],
+            "shiu_sign": shiu.tolist()},
+            "edges": {"pre": e_pre.tolist(), "post": e_post.tolist(), "synapses": e_count.tolist()}}
+        path.write_text(json.dumps(payload, separators=(",", ":")))
+    else:
+        np.savez_compressed(path, header=np.array(json.dumps(header)), neuron_id=data["neuron_id"][kept],
+                            **{f"neuron_{k}": v for k, v in columns.items()},
+                            neuron_transmitter_score=score, neuron_hop=chosen["hop"].astype(np.int32),
+                            neuron_path_strength=chosen["strength"].astype(np.float64),
+                            neuron_shiu_sign=shiu.astype(np.int8), edge_pre=e_pre.astype(np.int32),
+                            edge_post=e_post.astype(np.int32), edge_synapses=e_count.astype(np.int32))
+    counts = header["provenance"]["counts"]
+    print(json.dumps({"name": name, "path": str(shown(path)), **{k: counts[k] for k in ["neurons", "connections", "cell_types", "by_hop"]},
+                      "readout_types": readout, "bytes": path.stat().st_size, "sha256": sha256(path.read_bytes())}))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--threshold", type=int, default=5, help="Minimum synapses per connection (default 5)")
     parser.add_argument("--hops", type=int, default=2, help="Presynaptic hops back from DNa02 (default 2)")
     parser.add_argument("--cap", type=int, default=3000, help="Maximum neurons, DNa02 included (default 3000)")
     parser.add_argument("--offline", action="store_true", help="Use cached downloads only")
+    commands = parser.add_subparsers(dest="command", help="Without a command: rebuild the committed DNa02 circuit")
+    prep = commands.add_parser("prepare", help="Convert the cached downloads for `build` (needs pyarrow once)")
+    prep.add_argument("--offline", action="store_true", help="Use cached downloads only")
+    custom = commands.add_parser("build", help="Build a circuit around any seeds from the prepared archive (NumPy only)")
+    custom.add_argument("--name", required=True, help="Circuit name: lower-case letters, digits, '.', '-', '_'")
+    custom.add_argument("--seeds", default="", help="Comma-separated cell types or FlyWire root IDs, e.g. DNa01,DNa02")
+    custom.add_argument("--seed", action="append", default=[], help="One seed; repeat it, and use it for names with commas")
+    custom.add_argument("--hops", type=int, default=2, help="Presynaptic hops back from the seeds (default 2)")
+    custom.add_argument("--threshold", type=int, default=5, help="Minimum synapses per connection (default 5)")
+    custom.add_argument("--cap", type=int, default=3000, help="Maximum neurons, seeds included (default 3000)")
+    custom.add_argument("--whole-brain", action="store_true", help="Every connected neuron; seeds set hop distances")
+    custom.add_argument("--format", choices=["auto", "json", "npz"], default="auto")
+    custom.add_argument("--committed", action="store_true", help="Write to data/circuits/ (maintainers) instead of data/circuits/local/")
     args = parser.parse_args()
+    if args.command == "build":
+        if not 1 <= args.threshold <= 1000 or not 1 <= args.hops <= 6 or not 1 <= args.cap <= 200_000:
+            sys.exit("Choose a threshold of 1-1000 synapses, 1-6 hops and a cap of 1-200,000 neurons.")
+        seeds = [t for t in args.seeds.split(",") if t.strip()] + args.seed
+        if not seeds:
+            sys.exit("Give at least one seed with --seeds or --seed.")
+        build_custom(args.name, seeds, args.hops, args.threshold, args.cap, args.whole_brain, args.format, args.committed)
+        sys.exit(0)
     try:
         import pyarrow  # noqa: F401
     except ImportError:
         sys.exit("pyarrow is missing. Install the build-only dependencies: "
                  "backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-data.lock")
-    build(args.threshold, args.hops, args.cap, args.offline)
+    if args.command == "prepare":
+        prepare(args.offline)
+    else:
+        build(args.threshold, args.hops, args.cap, args.offline)

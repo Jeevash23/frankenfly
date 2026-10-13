@@ -34,6 +34,8 @@ __pycache__/
 !/data/atlas/
 !/data/examples/
 !/data/circuits/
+# Circuits built locally from the app or the builder's `build` command stay on this machine.
+/data/circuits/local/
 
 # Execution evidence can contain local paths, device details and session IDs.
 # Only the generic instructions belong in the public repository.
