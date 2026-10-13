@@ -273,13 +273,13 @@ class SpikingState:
         """One 1 ms neural step: ten 0.1 ms substeps. Returns the number of spikes. With `drive` (one value per
         neuron, from FlyVis), each neuron's Poisson rate follows its own drive instead of its side's sensor."""
         p = self.parameters
-        scale = p.input_gain * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000
-        if drive is None:
-            chances = [min(1., scale * value) for value in (left, right)]
+        if drive is None:  # the v0.4 arithmetic, unchanged, so recorded spiking runs replay exactly
+            chances = [min(1., p.input_gain * value * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000) for value in (left, right)]
             inputs = self.inputs
         else:
             targets = np.flatnonzero(drive > 0)
-            inputs, chances = [targets], [np.minimum(1., scale * drive[targets])]
+            inputs = [targets]
+            chances = [np.minimum(1., p.input_gain * drive[targets] * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000)]
         v, g, blocked = self.v, self.g, self.blocked
         total = 0
         for _ in range(self.substeps):
@@ -307,7 +307,7 @@ class SpikingState:
             g += self.queue[slot]
             self.queue[slot] = 0
             for population, chance in zip(inputs, chances):
-                if np.any(chance > 0):
+                if np.any(chance > 0):  # a scalar per side, or one value per neuron (FlyVis)
                     v[population[self.rng.random(len(population)) < chance]] += self.kick
             v[spikes], g[spikes] = LIF["v_reset_mv"], 0
             blocked[spikes] = self.refractory[spikes]

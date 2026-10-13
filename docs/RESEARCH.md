@@ -1,4 +1,4 @@
-# DigitalFly research workspace — v0.4
+# DigitalFly research workspace — v0.5
 
 This is an experimental sensorimotor workbench with explicit modeling assumptions. Its tests establish computational behavior and repeatability, not biological validity. See the [setup instructions](../README.md#quick-start) and [validation summary](../STATUS.md).
 
@@ -7,12 +7,12 @@ This is an experimental sensorimotor workbench with explicit modeling assumption
 | Area | Implemented | Scope |
 | --- | --- | --- |
 | Embodied experiment | Actual FlyGym 2.1 / MuJoCo body, joints, contact and adhesion | Female-derived morphology; engineered walking/turning controller |
-| Vision | Two actual rendered eye images, upstream fisheye correction and 721 ommatidia per eye | Engineered green-contrast feature encoder; no learned visual network |
+| Vision | Two actual rendered eye images, upstream fisheye correction and 721 ommatidia per eye; optionally FlyVis eyes, an optic-lobe network wired to the circuits through FlyWire | Default: engineered green-contrast feature encoder. FlyVis: published connectome-constrained network, engineered column mapping and pooling; it does not steer the circuits toward targets |
 | Neural models | The engineered six-unit graph (default), or the connectome model on any FlyWire v783 circuit, with rate or spiking (Shiu et al. 2024) dynamics: the 3,000-neuron DNa02 circuit (default), a 4,000-neuron steering circuit around DNa01, DNa02 and DNp09, or a circuit you build, up to the whole brain; live activity, parameters, populations, silencing, path tracing and a circuit view | Engineered model: explicit rate units, not identified neurons. Connectome model: data-derived wiring, assumed signs, engineered input and readout; not an uploaded brain, not biologically validated |
 | Anatomy | Rotatable male/female surfaces and twelve published neuron skeletons | Structural anatomy, separate from dynamics |
 | Connectivity | Build circuits around any FlyWire v783 cell types or neurons, in the app or with the builder; separately, import, validate, save, search and inspect a small directed graph | Builds need the prepared FlyWire archive (once, from the cached downloads). Imports: up to 300 neurons / 3,000 edges / 2 MB; imports never drive the body |
 | Experiments | Timed stimuli, finite protocols, matched-seed comparisons, pause/resume/cancel and automatic trial export | Sequential, one body at a time |
-| Analysis | Path length, displacement, mean speed, net turn, final target distance, contact occupancy, trajectory overlays; a research toolkit (Python and command line) for batch trials, parameter sweeps, bias curves, ablation scans, path tracing and fits of turning against readout activity in runs or fly recordings | Descriptive outcomes; no significance or biological-effect claims |
+| Analysis | Path length, displacement, mean speed, net turn, final target distance, contact occupancy, trajectory overlays; a research toolkit (Python and command line) for batch trials, parameter sweeps, bias curves, ablation scans, path tracing and fits of turning against readout activity; one recorded fly (paired DNa02 with ball tracking) to compare against | Descriptive outcomes from one fly and simulations; no significance or biological-effect claims |
 | Records | Local run library, configuration restoration, CSV/JSON/ZIP and replay | Same pinned software stack; no cross-device guarantee |
 | Closing | Quit and Save current run & quit | Requests graceful shutdown of this launcher’s server and its worker |
 
@@ -360,18 +360,65 @@ backend/.venv/bin/python scripts/toolkit.py compare --recording fly.csv --run ru
 
 It reports each fit's sign, lag, gain, offset and r², side by side. Gains only compare directly when both are in spikes/s; the model's turning follows its readout by construction, so a matching fit is not validation. A steering curve (mean turning rate by the target's bearing) is also available for trajectories toward targets. The fitting is tested on labeled synthetic recordings with a known gain, lag and offset.
 
-No fly data is bundled or downloaded. Candidate public datasets, checked from their metadata only:
+#### One recorded fly
+
+`scripts/fetch_recording.py rayshubskiy2025-a2_d_13.mat` downloads one recording from Rayshubskiy et al. 2025 (Harvard Dataverse [doi:10.7910/DVN/0NCLP1](https://doi.org/10.7910/DVN/0NCLP1), version 1.2, CC0 1.0; 71,381,032 bytes, MD5 and SHA-256 checked; the raw file stays in the ignored cache). It holds a simultaneous whole-cell recording of the left and the right DNa02 in one walking fly, 575 s at 10 kHz, with ball-tracked forward, rotational and sideways velocity at 100 Hz; an optogenetic stimulus channel was on for 4.3% of the time. `compare.rayshubskiy_recording` converts it as the authors' MIT-licensed analysis code does (their channel assignment, spike detection and parameters for this fly, 12.5 ms bins smoothed with a 25 ms Gaussian, and their yaw calibration). It finds 571 spikes on the left DNa02 and 1,888 on the right: 1.0 and 3.3 spikes/s on average, a median of 0 and a 99th percentile of 36 spikes/s.
+
+**The sign of yaw is an inference.** The files do not document it. One of the authors' MATLAB scripts, working from their raw data, labels positive yaw as left turns; in this file, positive yaw follows right − left DNa02 firing, which the paper's central result (the left DNa02 bursts, then the fly turns left) makes rightward. The converter defaults to that reading and takes `--positive-yaw left` for the other. The direction of the fit below therefore cannot test the paper's result; its lag, size and shape can.
+
+Fits of rightward turning to the right − left DNa02 rate (`scripts/toolkit.py compare`, saved under `runs/toolkit/`):
+
+| Source | Best single lag | Turning per spike/s of R − L | r² at that lag | Linear filter: held-out r² (5-fold) |
+| --- | --- | --- | --- | --- |
+| Fly (575 s) | 180 ms | 3.36 °/s | 0.044 | 0.097 |
+| Model, DNa02 circuit, spiking, FlyGym (30 s) | 20 ms | 2.70 °/s | 0.375 | 0.419 |
+| Model, steering circuit, spiking, FlyGym (30 s) | 10 ms | 1.18 °/s | 0.086 | 0.074 |
+| Model, DNa02 circuit, spiking, toy body (60 s) | 0 ms | 4.18 °/s | 0.858 | 0.711 |
+| Model, steering circuit, spiking, toy body (60 s) | 0 ms | 1.79 °/s | 0.325 | 0.273 |
+
+The model runs come from `toolkit.jumping_target_run` (the target jumps to a random side every 2 s, seed 11, model seed 3). The fly's filter is biphasic, as the paper reports for DNa02: turning one way about 150–180 ms after the right − left difference, after a smaller opposite lobe at short lags.
+
+What this says about the model:
+
+- **Turning per spike.** On the FlyGym body the DNa02 circuit turns 2.7 °/s per spike/s of DNa02 difference, near the fly's 3.4 °/s (single-lag fits; noise in the fly's rate estimate lowers its value).
+- **Timing.** The fly turns about 180 ms after its DNa02 difference; the model within 10–20 ms. The model has no delay between descending neurons and the legs beyond the body's own.
+- **How much DNa02 explains.** In the fly, DNa02 predicts about 10% of held-out turning. In the DNa02 circuit it predicts 42% on FlyGym and 71% on the toy body, because the model's turning is wired to DNa02 by construction. In the steering circuit, where DNp09 does most of the steering, DNa02 predicts 7%, close to the fly, for that reason rather than a biological one.
+- **Firing rates.** The spiking model's DNa02 fire far more than the recorded ones: means of 52–143 spikes/s against 1–3, and 99th percentiles of 212–230 spikes/s against 36 (`runs/toolkit/dna02-rates-fly-vs-model.json`). The Poisson input (150 Hz at full sensor value, Shiu et al.'s default) drives the network much harder than walking drives this fly.
+
+One fly is one sample: none of these numbers has been checked on other recordings. The dataset holds four paired DNa02 recordings and more single ones (5.5 GB of electrophysiology in all).
+
+Other public datasets checked from their metadata:
 
 | Dataset | What it holds | License | Smallest useful download |
 | --- | --- | --- | --- |
-| Rayshubskiy et al. 2025, Harvard Dataverse [doi:10.7910/DVN/0NCLP1](https://doi.org/10.7910/DVN/0NCLP1) | DNa01 and DNa02 whole-cell recordings with ball-tracked forward, rotational and sideways velocity (MATLAB files); 380 files, 157.9 GB in all, mostly imaging | CC0 1.0 | One paired left/right DNa02 recording, 71,381,032 bytes |
+| Rayshubskiy et al. 2025, other files | Paired and single DNa01 and DNa02 recordings with ball tracking; 380 files, 157.9 GB in all, mostly central-complex imaging | CC0 1.0 | 63–873 MB per recording |
 | Mussells Pires et al. 2024 ([Nature 626:808](https://doi.org/10.1038/s41586-023-07006-3)), Zenodo [doi:10.5281/zenodo.10145317](https://doi.org/10.5281/zenodo.10145317) | Tethered walking flies orienting to a closed-loop visual landmark, with landmark jumps that provoke corrective turns | CC BY 4.0 | Figure source data, 526,695 bytes |
 
-A converter for the Rayshubskiy files (spike detection from raw membrane voltage and the ball-velocity calibration) will be written and tested once that 71 MB file has been downloaded with your approval.
+### FlyVis eyes
 
-### Vision: what FlyVis would add
+FlyVis (Lappalainen et al. 2024, [Nature 634:1132](https://doi.org/10.1038/s41586-024-07939-3), MIT) is a connectome-constrained network of 64 optic-lobe cell types, from photoreceptors to T4/T5 and the Tm/TmY layer: 45,669 neurons per eye on a hexagonal lattice of 721 columns, the same count as FlyGym's ommatidia. Its connectivity comes from the FIB-25 and FIB-19 medulla reconstructions, not FlyWire, and its unknown neuron and synapse parameters were trained on a motion-detection task. It sees luminance only. With the optional vision install (`backend/requirements-vision.lock`, then `scripts/fetch_flyvis.py` for the pretrained networks), **Sensor model → FlyVis eyes** puts it between the rendered eyes and the connectome circuits.
 
-FlyVis (Lappalainen et al. 2024, [Nature 634:1132](https://doi.org/10.1038/s41586-024-07939-3)) models 64 optic-lobe cell types from photoreceptors to T4/T5, on the same 721-column hexagonal lattice as FlyGym's eyes (MIT license; Python up to 3.12). It would replace the engineered green detector with a connectome-constrained early visual system. Its limits for this app: it has no lobula columnar or other visual projection neurons, so a FlyWire layer would still have to connect it to the circuits here; it sees luminance only; and FlyGym 2.x no longer ships the integration that FlyGym 1.x had. Installing it needs PyTorch: the CPU-only wheel is 196,253,677 bytes (about 240–265 MB of downloads in all, an estimate), against about 3.0 GB for the default CUDA build, plus 3.4 MB of pretrained models. Nothing has been installed.
+| Part | Status | What it is |
+| --- | --- | --- |
+| FlyVis network | Published model | The best-ranked of FlyVis's 50 pretrained networks (`flow/0000/000`), stepped every 10 ms; 0.5 s of adaptation to the starting scene |
+| Eye images → FlyVis columns | Engineered | Each ommatidium's mean RGB luminance; FlyGym ommatidia matched to FlyVis columns by nearest centroid after an anchored affine fit (after FlyGym 1.x's RetinaMapper) |
+| Eye orientation | Checked against biology | The right eye is mirrored onto FlyVis's layout, chosen so that T4a and T5a prefer front-to-back and T4c upward motion, as in flies (Maisak et al. 2013); tested with moving edges |
+| FlyVis → circuit | Data-derived wiring, engineered pooling | Each cell type's strongest rectified response in each eye (above its grey steady state) drives each visual projection neuron in proportion to its FlyWire v783 synapses from that type and eye (`<circuit>.flyvis.json`, built by `build_circuit.py flyvis-bridge`) |
+
+The bridge maps 51 of FlyVis's 65 node types to FlyWire names (CT1's lobula compartment to CT1; Mi3, Mi11, Mi12, Tm28, Tm30, Tm5Y, TmY13 and the photoreceptors have no direct match or no synapses onto these neurons). It feeds 464 of the DNa02 circuit's 477 visual projection neurons and 641 of the steering circuit's 649; FlyVis types supply a median 12% and 15% of those neurons' input synapses. The steering circuit's strongest such inputs are T2a and T3, the small-object pathway into LC10 and LC11.
+
+**What FlyVis sees.** With the target appearing 45° to one side, FlyVis's OFF-pathway types respond more in the eye that sees it (Tm9, Mi9 and Tm2 by up to 0.13, mirror-symmetric for the two sides, and still visible with the target 25 mm away). In closed loop with the fly held still, the target raises its side's mean drive to the circuit by 0.003–0.004, while the scene itself drives both sides at about 0.22 and already pushes the left side 0.027 harder than the right.
+
+**Closed loop: FlyVis eyes do not steer these circuits toward the target.** Headless FlyGym, 3 seeds, 12 mm targets at the six bearings, 6 simulated seconds (`scripts/toolkit.py trials --engine flygym --set sensor_model=flyvis …`, saved in `runs/toolkit/eval-flyvis.json`):
+
+| Circuit | Reached ≤2 mm | First turn toward lateral targets | Turning over the first 2 s, any target | Median final distance |
+| --- | --- | --- | --- | --- |
+| DNa02 circuit | 0/18 | 6/12 | +14 to +20 °/s (always left) | 33.5 mm |
+| Steering circuit | 3/18 (the three targets 45° to the right) | 6/12 | −20 to −45 °/s (always right) | 24.5 mm |
+
+Each circuit turns to its own side whatever the target does; a first turn goes toward the target only when the target happens to lie on that side. The target changes turning only slightly (steering circuit: −40 °/s with the target 45° to the right against −36 °/s with it 45° to the left, averaged over seeds). With FlyVis, the circuits' side biases decide the turn; with the geometric sensor, which reports nothing but the target's bearing and distance, the steering circuit reached 18/18 on the same body. FlyVis would need to tell the circuit where in the eye something is, through a retinotopic bridge (which columns each visual projection neuron sees) or object-selective visual projection neurons, to steer here; neither is modeled. These defaults were not changed to make FlyVis steer.
+
+FlyVis runs at about the speed of real time on its own (10 ms of computing per 10 ms step for both eyes); with rendering and physics, FlyVis-eye runs take 0.11–0.15× real time. They replay exactly.
 
 ### A known quirk of the engineered model
 
@@ -396,6 +443,7 @@ With the target directly behind, the engineered model's left and right inputs ar
 - Rayshubskiy A. et al. (2025) Neural circuit mechanisms for steering control in walking *Drosophila*. *eLife* 13:RP102230. [doi:10.7554/eLife.102230](https://doi.org/10.7554/eLife.102230)
 - Bidaye S.S. et al. (2020) Two brain pathways initiate distinct forward walking programs in *Drosophila*. *Neuron* 108:469–485. [doi:10.1016/j.neuron.2020.07.032](https://doi.org/10.1016/j.neuron.2020.07.032)
 - Lappalainen J.K. et al. (2024) Connectome-constrained networks predict neural activity across the fly visual system. *Nature* 634:1132–1140. [doi:10.1038/s41586-024-07939-3](https://doi.org/10.1038/s41586-024-07939-3)
+- Maisak M.S. et al. (2013) A directional tuning map of *Drosophila* elementary motion detectors. *Nature* 500:212–216. [doi:10.1038/nature12320](https://doi.org/10.1038/nature12320)
 - Mussells Pires P. et al. (2024) Converting an allocentric goal into an egocentric steering signal. *Nature* 626:808–818. [doi:10.1038/s41586-023-07006-3](https://doi.org/10.1038/s41586-023-07006-3)
 - Zheng Z. et al. (2018) A complete electron microscopy volume of the brain of adult *Drosophila melanogaster*. *Cell* 174:730–743. [doi:10.1016/j.cell.2018.06.019](https://doi.org/10.1016/j.cell.2018.06.019)
 - Lobato-Rios V. et al. (2022) NeuroMechFly, a neuromechanical model of adult *Drosophila melanogaster*. *Nature Methods* 19:620–627. [doi:10.1038/s41592-022-01466-7](https://doi.org/10.1038/s41592-022-01466-7)
@@ -462,8 +510,8 @@ Replace `YOUR_RUN_FOLDER` with the name of a run you exported locally. Reference
 
 ## What remains before biological simulation claims
 
-v0.3 added real connectivity with documented transmitter/sign assumptions; v0.4 adds any circuit up to the whole brain, published spiking dynamics, a steering circuit that reaches targets and tools to analyze and compare them. The sensory encoding and the motor readout are still engineered, the side biases are unexplained beyond the sampling effects above, and nothing has been fitted to or tested against fly data. The next scientific step is a **validated circuit**: dynamics fitted to recorded activity, a sensory encoding grounded in the visual projection neurons' measured responses, a descending-to-motor mapping that includes the other steering neurons, and predictions tested against measured fly behavior and neural data, including held-out interventions. A larger neuron count alone does not provide this validation.
+v0.3 added real connectivity with documented transmitter/sign assumptions; v0.4 added any circuit up to the whole brain, published spiking dynamics, a steering circuit that reaches targets and tools to analyze them; v0.5 adds FlyVis eyes and a comparison with one recorded fly. The motor readout is still engineered, the side biases are unexplained beyond the sampling effects above, FlyVis does not yet tell the circuits where a target is, and nothing has been fitted to fly data: one recording shows the model's turning following its DNa02 activity far faster, and its spiking DNa02 firing far more, than in the fly. The next scientific step is a **validated circuit**: dynamics fitted to recorded activity, a sensory encoding grounded in the visual projection neurons' measured responses, a descending-to-motor mapping that includes the other steering neurons, and predictions tested against measured fly behavior and neural data, including held-out interventions. A larger neuron count alone does not provide this validation.
 
-The app does not simulate the nerve cord, sex-specific behavior, flight, feeding, learning, courtship or mating. The real body supports walking and turning under the upstream leg controller. FlyVis integration, converters for recorded fly data, measured male biomechanics, odor sensing and multi-animal experiments remain future work.
+The app does not simulate the nerve cord, sex-specific behavior, flight, feeding, learning, courtship or mating. The real body supports walking and turning under the upstream leg controller. A retinotopic FlyVis bridge, fits to more recordings, measured male biomechanics, odor sensing and multi-animal experiments remain future work.
 
 The official MaleCNS download list gives about **1.1 GB** for the full wiring table, **12.7 GB** for synapse locations and **6.8 GB** for partner records. These optional datasets are outside the bundled sample's scope. The published resources linked from the atlas remain available for inspecting broader data externally; the app never downloads them automatically.
