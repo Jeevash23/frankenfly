@@ -1,0 +1,19 @@
+[
+  {
+    "name": "rayshubskiy2025-a2_d_13.mat",
+    "dataset": "Rayshubskiy A. et al. (2025) data for 'Neural circuit mechanisms for steering control in walking Drosophila'",
+    "dataset_doi": "doi:10.7910/DVN/0NCLP1",
+    "release": "Harvard Dataverse dataset version 1.2",
+    "provider": "Harvard Dataverse",
+    "url": "https://dataverse.harvard.edu/api/access/datafile/11634640",
+    "dataverse_file_id": 11634640,
+    "upstream_name": "rayshubskiy_elife_102230/ephys_data_a2_d_13/180501_gfp_3G_ss730_dual_13_data_for_SH_with_lat_vel.mat",
+    "content": "Dual whole-cell recording of the left (ephys_A) and right (ephys_B) DNa02 at 10 kHz with ball-tracked forward, yaw and lateral velocity at 100 Hz, 575 s, from one walking fly",
+    "bytes": 71381032,
+    "md5": "c3f95c76e9efc1a5b2277e7ee958143e",
+    "sha256": "a460eb313b503b039b3eeec554efd902b54119aadfd783c72210efaee2daee24",
+    "license": "CC0 1.0 (public domain dedication)",
+    "citation": "Rayshubskiy A. et al. (2025) eLife 13:RP102230. doi:10.7554/eLife.102230",
+    "retrieved_utc": "2026-10-13"
+  }
+]

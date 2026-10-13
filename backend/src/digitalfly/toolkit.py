@@ -123,6 +123,31 @@ def run_trial(config: RunConfig | dict, duration_s: float = 10.0, reach_mm: floa
             exp.close()
 
 
+def jumping_target_run(config: RunConfig | dict, duration_s: float = 60.0, every_s: float = 2.0, distance_mm: float = 10.0,
+                       max_bearing_deg: float = 120.0, seed: int = 0, export_dir=None) -> dict:
+    """A run whose target jumps to a new random bearing (±max_bearing_deg from the current heading) every
+    `every_s` seconds, so turning varies in both directions; exported like an app run (for `compare`)."""
+    from digitalfly.simulation.experiment import Experiment
+    config = config if isinstance(config, RunConfig) else RunConfig.model_validate(config)
+    rng = np.random.default_rng(seed)
+    exp = Experiment(config, render=False)
+    try:
+        if exp.status != "paused":
+            raise RuntimeError(exp.error or "The experiment did not start.")
+        steps_per_jump = max(1, round(every_s / CONTROL_DT))
+        for step in range(round(duration_s / CONTROL_DT)):
+            if step % steps_per_jump == 0:
+                pose = exp.sample.pose
+                angle = pose.yaw + math.radians(rng.uniform(-max_bearing_deg, max_bearing_deg))
+                x, y = pose.x + distance_mm * math.cos(angle), pose.y + distance_mm * math.sin(angle)
+                exp.set_stimulus(Stimulus(x=round(min(40, max(-40, x)), 3), y=round(min(40, max(-40, y)), 3),
+                                          intensity=config.stimulus.intensity))
+            exp.advance()
+        return exp.export(export_dir)
+    finally:
+        exp.close()
+
+
 _experiments = {}
 
 

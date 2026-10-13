@@ -34,6 +34,7 @@ __pycache__/
 !/data/atlas/
 !/data/examples/
 !/data/circuits/
+!/data/recordings/
 # Circuits built locally from the app or the builder's `build` command stay on this machine.
 /data/circuits/local/
 
