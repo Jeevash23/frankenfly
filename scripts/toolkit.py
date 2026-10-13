@@ -4,6 +4,7 @@
     backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
     backend/.venv/bin/python scripts/toolkit.py ablation --top 20 --workers 8
     backend/.venv/bin/python scripts/toolkit.py paths --source LC10a --target DNa02
+    backend/.venv/bin/python scripts/toolkit.py compare --recording fly.csv --run runs/<run folder>
     backend/.venv/bin/python scripts/toolkit.py circuits
 
 --set and --vary take dotted RunConfig names (for bias, ablation and paths: ConnectomeParameters names,
@@ -156,6 +157,26 @@ def paths(args):
     print(f"\n{result['rule']}")
 
 
+def compare(args):
+    from digitalfly import compare as cmp
+    model = cmp.model_recording(args.run, args.readout) if args.run else None
+    fly = cmp.load_recording(args.recording, args.readout or "DNa02") if args.recording else None
+    if not model and not fly:
+        sys.exit("Give --recording (a fly recording CSV) and/or --run (an exported DigitalFly run folder).")
+    fits = {"fly": cmp.fit_turning(fly, args.max_lag) if fly else None,
+            "model": cmp.fit_turning(model, args.max_lag) if model else None}
+    print("| Source | Readout | Lag | Gain | Offset | r² |\n| --- | --- | --- | --- | --- | --- |")
+    for label, fit in fits.items():
+        if fit:
+            print(f"| {label}: {fit['source']} | {fit['readout']} | {fit['lag_s'] * 1000:.0f} ms | "
+                  f"{fit['gain']:.4g} {fit['gain_units']} | {fit['offset_deg_s']:+.2f} °/s | {fit['r2']:.3f} |")
+    result = cmp.compare(fly, model, args.max_lag) if fly and model else fits
+    if fly and model:
+        print(f"\nSame sign: {result['same_sign']}. Model lag − fly lag: {result['lag_difference_s'] * 1000:+.0f} ms. "
+              f"{result['note']}")
+    save("compare", [], {"command": "compare", "rotation": "rightward positive, deg/s", **result}, args.out)
+
+
 def circuits(args):
     print("| Circuit | Where | Neurons | Connections | Cell types | Seeds | Readout |\n| --- | --- | --- | --- | --- | --- | --- |")
     for c in list_circuits():
@@ -176,17 +197,17 @@ def main():
     t.add_argument("--distances", default="12,30", help="Target distances in mm")
     t.add_argument("--seeds", default="1-5", help="Seeds, e.g. 1-5 or 1,7,9")
     t.add_argument("--vary", action="append", default=[], help="KEY=V1,V2: one grid axis (repeatable)")
-    t.set_defaults(run=trials)
+    t.set_defaults(handler=trials)
     b = commands.add_parser("bias", help="Open-loop turn commands over sensor inputs, and the mirror test")
     b.add_argument("--levels", default=".25,.5,.75,1")
     b.add_argument("--differences", default="-.4,-.2,0,.2,.4", help="Right − left sensor values; write --differences=-.2,0,.2")
-    b.set_defaults(run=bias)
+    b.set_defaults(handler=bias)
     a = commands.add_parser("ablation", help="Silence each cell type in turn and rank the change in turning")
     a.add_argument("--left", type=float, default=.5)
     a.add_argument("--right", type=float, default=.5)
     a.add_argument("--types", help="Comma-separated cell types to scan (default: all except the readout)")
     a.add_argument("--top", type=int, default=25)
-    a.set_defaults(run=ablation)
+    a.set_defaults(handler=ablation)
     for sub in (b, a):
         sub.add_argument("--ms", type=int, default=500, help="Milliseconds of clamped input before reading the turn")
         sub.add_argument("--average-ms", type=int, default=0, help="Average the turn over this final window (spiking)")
@@ -196,9 +217,16 @@ def main():
     p.add_argument("--target", required=True)
     p.add_argument("--hops", type=int, default=4)
     p.add_argument("--limit", type=int, default=10)
-    p.set_defaults(run=paths)
+    p.set_defaults(handler=paths)
     c = commands.add_parser("circuits", help="List committed and local circuits")
-    c.set_defaults(run=circuits)
+    c.set_defaults(handler=circuits)
+    m = commands.add_parser("compare", help="Fit turning to right − left readout activity in a recording and/or a run")
+    m.add_argument("--recording", help="Fly recording CSV/NPZ (columns in digitalfly/compare.py)")
+    m.add_argument("--run", help="Exported DigitalFly run folder (runs/<id>)")
+    m.add_argument("--readout", help="Readout cell type (default: the run's first readout, or DNa02)")
+    m.add_argument("--max-lag", type=float, default=.5, help="Largest lag of turning behind the neurons, s")
+    m.add_argument("--out", help="Output file stem (.json is written)")
+    m.set_defaults(handler=compare)
     for sub in (t, b, a, p):
         sub.add_argument("--set", action="append", default=[], help="KEY=VALUE setting (repeatable)")
     for sub in (t, a):
@@ -207,7 +235,7 @@ def main():
         sub.add_argument("--out", help="Output file stem (.csv and .json are written)")
     args = parser.parse_args()
     try:
-        args.run(args)
+        args.handler(args)
     except (ValueError, FileNotFoundError) as exc:
         sys.exit(f"{type(exc).__name__}: {exc}")
 
