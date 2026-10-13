@@ -30,6 +30,8 @@ def test_state_capabilities_and_circuit_describe_the_connectome_model(client):
     state = client.post("/api/step", json={}).json()
     assert state["config"]["neural_model"] == "connectome"
     assert len(state["sample"]["rates"]) == 5 and state["connectome"]["type_rates"]
+    assert state["connectome"]["unit_names"][:2] == ["DNa02 L", "DNa02 R"] and state["connectome"]["readout_types"] == ["DNa02"]
+    assert state["connectome"]["circuit"] == "fafb783-dna02" and state["connectome"]["dynamics"] == "rate"
     assert "data-derived" in state["provenance"]["neural_model"]
     assert "CC BY-NC 4.0" in state["provenance"]["connectivity_source"]
     capabilities = client.get("/api/capabilities").json()
@@ -157,6 +159,7 @@ def test_circuit_list_paths_and_dynamics_switching(client):
     assert client.get("/api/connectome/paths", params={"source": "DNa03", "target": "DNa02", "max_hops": 9}).status_code == 422
     # Dynamics and circuit are fixed for a run; switching them takes a reset.
     assert client.post("/api/connectome/parameters", json={"dynamics": "spiking"}).status_code == 409
+    assert client.post("/api/connectome/parameters", json={"readout_types": ["DNa02", "DNa03"]}).status_code == 409
     state = client.post("/api/reset", json={**CONNECTOME.model_dump(), "connectome_parameters": {"dynamics": "spiking"}}).json()
     assert state["config"]["connectome_parameters"]["dynamics"] == "spiking"
     assert client.get("/api/capabilities").json()["active_dynamics"] == "spiking"

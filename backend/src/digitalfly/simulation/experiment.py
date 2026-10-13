@@ -199,8 +199,11 @@ class Experiment:
         if self.config.neural_model != "connectome":
             raise ValueError("Connectome parameters apply when the connectome model is selected.")
         current = self.config.connectome_parameters
-        if (parameters.circuit, parameters.dynamics) != (current.circuit, current.dynamics):
-            raise ValueError("Changing the circuit or the dynamics starts a fresh run: use Reset with the new settings.")
+        fixed = ["circuit", "dynamics", "readout_types", "input_types", "speed_types"]
+        if [getattr(parameters, k) for k in fixed] != [getattr(current, k) for k in fixed]:
+            # These change what is recorded (the rate columns), so they belong to a new run.
+            raise ValueError("Changing the circuit, dynamics or populations starts a fresh run: "
+                             "use Reset with the new settings.")
         parameters.check_against_circuit()
         self.config.connectome_parameters = parameters
         self.circuit.configure(parameters)
@@ -215,7 +218,9 @@ class Experiment:
         readout = {circuit.data.type_names.index(name) for name, _, _ in circuit.readouts}
         order = [int(i) for i in np.argsort(-means, kind="stable") if i not in readout][:TRACE_TYPES]
         traces = np.array([row[order] for row in self.type_history]) if self.type_history else np.zeros((0, len(order)))
-        return {"type_rates": np.round(means, 4).tolist(), "turn": circuit.turn(),
+        return {"circuit": circuit.data.key, "dynamics": circuit.parameters.dynamics, "unit_names": circuit.unit_names,
+                "readout_types": [name for name, _, _ in circuit.readouts],
+                "type_rates": np.round(means, 4).tolist(), "turn": circuit.turn(),
                 "silenced_neurons": int(len(circuit.silenced(self.interventions))),
                 "trace_t": [s.t for s in self.history][-len(traces):] if len(traces) else [],
                 "top_types": [{"index": i, "name": circuit.data.type_names[i],
