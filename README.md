@@ -1,19 +1,22 @@
 <h1 align="center">DigitalFly</h1>
 
 <p align="center"><b>A virtual fruit fly you can poke.</b><br>
-A physics-simulated fly walks toward what it sees, steered by a brain you can inspect, silence and tune:<br>six hand-built units, or 3,000 neurons wired from the FlyWire connectome around its steering neurons.<br>
+A physics-simulated fly walks toward what it sees, steered by a brain you can inspect, silence and tune:<br>six hand-built units, or circuits wired from the FlyWire connectome, with rate or spiking neurons.<br>
+Build your own circuit around any cell type, run batch experiments, and compare with recorded flies.<br>
 Everything runs on your own computer, in your browser.</p>
 
 <p align="center"><img src="docs/images/demo.gif" width="560" alt="The simulated fly walks to a green target, turns to follow it when the target jumps, and stops short once its descending neurons are silenced"></p>
 
-> **Why is the repo called frankenfly?** Because this fly is stitched together from parts: a female fly's physics body ([NeuroMechFly](https://neuromechfly.org/)), brain scans of two *different* flies (one female, one male), and a choice of two brains. The default is six hand-built "rate units". The other is a 3,000-neuron patch of the female fly's connectome ([FlyWire](https://flywire.ai/) v783): the two DNa02 steering neurons and the cells that feed them, up to two synaptic steps back. The body and physics are real. In the connectome brain, who connects to whom, and how strongly, is real data, but each connection's sign is assumed from its predicted transmitter, and the dynamics and the wiring to the eyes and legs are engineered. It is not an uploaded fly brain and it is not biologically validated: on its own it holds the target at its side and circles it rather than walking up to it.
+> **Why is the repo called frankenfly?** Because this fly is stitched together from parts: a female fly's physics body ([NeuroMechFly](https://neuromechfly.org/)), brain scans of two *different* flies (one female, one male), and a choice of brains. The default is six hand-built "rate units". The others are patches of the female fly's connectome ([FlyWire](https://flywire.ai/) v783): 3,000 neurons around the DNa02 steering neurons, a 4,000-neuron circuit around three descending neuron types (DNa01, DNa02 and DNp09), or any circuit you build, up to the whole brain. The body and physics are real. In the connectome brains, who connects to whom, and how strongly, is real data, but each connection's sign is assumed from its predicted transmitter, and the wiring to the eyes and legs is engineered. They are not an uploaded fly brain and not biologically validated. The DNa02 circuit circles the target instead of reaching it; the three-type circuit reaches it, because one of its readouts, DNp09, turns toward it.
 
 ## What you can do
 
 - **Run the closed loop.** Move the green target and watch the fly turn and walk toward it. Neural activity, leg contacts and walking rhythm update live, and you can look through the fly's own compound eyes (721 facets per eye).
-- **Swap the brain.** Drive the body with the engineered six-unit controller or the connectome DNa02 circuit, and inspect the circuit cell type by cell type while it runs.
+- **Swap the brain.** Drive the body with the engineered six-unit controller or a connectome circuit, with rate units or the spiking neurons of Shiu et al. 2024, and inspect it cell type by cell type while it runs, including the strongest pathways into its steering neurons.
+- **Build your own circuit.** Pick any FlyWire cell types or neurons as seeds, choose hops, synapse threshold and size (or the whole brain), and run the result: in the app or from the command line.
 - **Intervene.** Silence the left or right sensor, a group of units, either DNa02 neuron or any cell type in the circuit, and see how behavior changes.
 - **Run experiments.** Start from a one-click first experiment, script timed stimulus changes, compare conditions (including the two brains) across matched random seeds, and keep every trial. Export runs as CSV, JSON and ZIP, and replay them exactly.
+- **Analyze at scale.** A research toolkit (Python and command line) runs batches of trials and parameter sweeps in parallel, measures a circuit's left/right bias, silences every cell type in turn to find what drives it, traces pathways, and fits turning against readout activity in runs or recorded flies.
 - **Explore real anatomy.** Rotate male and female fly brains with twelve published neuron reconstructions, or import your own small wiring diagram to inspect.
 
 <img src="docs/images/workbench.jpg" alt="The workbench: a live MuJoCo render of the fly, stimulus controls, interventions and neural activity traces">
@@ -51,7 +54,7 @@ PYTHON_BIN=/path/to/python3.12 ./scripts/setup.sh
 target ─► sensors: target bearing, or rendered compound-eye pixels
        ─► neural model, either
             six leaky rate units: sensory ─► steering ─► descending, or
-            3,000 FlyWire neurons: visual projection neurons ─► … ─► DNa02 left/right
+            a FlyWire circuit (rate or spiking): visual projection neurons ─► … ─► readout neurons left/right
        ─► left/right descending command
        ─► FlyGym walking controller: joint and adhesion targets
        ─► MuJoCo physics ─► new body pose ─► back to the sensors
@@ -76,13 +79,13 @@ All simulation runs in Python; the browser only displays it. Physics advances ev
 npm --prefix frontend run format   # format the frontend with Prettier
 ```
 
-GitHub Actions runs the fast checks and the frontend checks on Ubuntu for every pull request. To rebuild the connectome circuit from FlyWire data (about 61 MB of downloads plus a 50 MB build-only dependency), see the [research guide](docs/RESEARCH.md#building-the-subcircuit).
+GitHub Actions runs the fast checks and the frontend checks on Ubuntu for every pull request. To rebuild the connectome circuits or build your own from FlyWire data (about 61 MB of downloads plus a 50 MB build-only dependency, once), see the [research guide](docs/RESEARCH.md#building-your-own-circuits). The research toolkit is `scripts/toolkit.py` ([examples](docs/RESEARCH.md#the-research-toolkit)).
 
 The backend is FastAPI with FlyGym and MuJoCo (`backend/`); the interface is React with Vite (`frontend/`). Restart `dev.sh` after Python changes. To regenerate the demo animation above, run `backend/.venv/bin/python scripts/make_demo_gif.py`.
 
 ## What it is not
 
-DigitalFly does not simulate a whole fly brain, spiking neurons, flight, learning or a male body. The six-unit controller has hand-chosen weights. The connectome model uses real wiring for 3,000 neurons, but assumed signs and engineered dynamics, and it steers with a strong left-turn bias. The compound-eye encoder is an engineered green-object detector. Results show what these models compute, not established fly biology. The [research guide](docs/RESEARCH.md#what-remains-before-biological-simulation-claims) describes what a biologically validated version would need.
+DigitalFly does not simulate the nerve cord, flight, learning, courtship or a male body, and it has not been tested against recorded flies. The six-unit controller has hand-chosen weights. The connectome model uses real wiring, but assumed signs and an engineered connection to the eyes and legs; the DNa02 circuit, and both committed circuits with spiking neurons, steer with a strong left-turn bias, and the whole brain can be built but runs far slower than real time. The compound-eye encoder is an engineered green-object detector. Results show what these models compute, not established fly biology. The [research guide](docs/RESEARCH.md#what-remains-before-biological-simulation-claims) describes what a biologically validated version would need.
 
 ## License and credits
 

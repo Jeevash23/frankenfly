@@ -1,4 +1,4 @@
-# DigitalFly research workspace — v0.3
+# DigitalFly research workspace — v0.4
 
 This is an experimental sensorimotor workbench with explicit modeling assumptions. Its tests establish computational behavior and repeatability, not biological validity. See the [setup instructions](../README.md#quick-start) and [validation summary](../STATUS.md).
 
@@ -8,11 +8,11 @@ This is an experimental sensorimotor workbench with explicit modeling assumption
 | --- | --- | --- |
 | Embodied experiment | Actual FlyGym 2.1 / MuJoCo body, joints, contact and adhesion | Female-derived morphology; engineered walking/turning controller |
 | Vision | Two actual rendered eye images, upstream fisheye correction and 721 ommatidia per eye | Engineered green-contrast feature encoder; no learned visual network |
-| Neural models | The engineered six-unit graph (default), or a connectome-constrained rate model of 3,000 FlyWire v783 neurons around the DNa02 steering neurons; live rates, parameters, silencing and a circuit view for both | Engineered model: explicit rate units, not identified neurons. Connectome model: data-derived wiring, assumed signs, engineered dynamics and input/output mapping; not a whole brain, not biologically validated |
+| Neural models | The engineered six-unit graph (default), or the connectome model on any FlyWire v783 circuit, with rate or spiking (Shiu et al. 2024) dynamics: the 3,000-neuron DNa02 circuit (default), a 4,000-neuron steering circuit around DNa01, DNa02 and DNp09, or a circuit you build, up to the whole brain; live activity, parameters, populations, silencing, path tracing and a circuit view | Engineered model: explicit rate units, not identified neurons. Connectome model: data-derived wiring, assumed signs, engineered input and readout; not an uploaded brain, not biologically validated |
 | Anatomy | Rotatable male/female surfaces and twelve published neuron skeletons | Structural anatomy, separate from dynamics |
-| Connectivity | The built-in DNa02 subcircuit drives the connectome model. Separately, import, validate, save, search and inspect a small directed graph | Imports: up to 300 neurons / 3,000 edges / 2 MB; imports never drive the body |
+| Connectivity | Build circuits around any FlyWire v783 cell types or neurons, in the app or with the builder; separately, import, validate, save, search and inspect a small directed graph | Builds need the prepared FlyWire archive (once, from the cached downloads). Imports: up to 300 neurons / 3,000 edges / 2 MB; imports never drive the body |
 | Experiments | Timed stimuli, finite protocols, matched-seed comparisons, pause/resume/cancel and automatic trial export | Sequential, one body at a time |
-| Analysis | Path length, displacement, mean speed, net turn, final target distance, contact occupancy, trajectory overlays | Descriptive outcomes; no significance or biological-effect claims |
+| Analysis | Path length, displacement, mean speed, net turn, final target distance, contact occupancy, trajectory overlays; a research toolkit (Python and command line) for batch trials, parameter sweeps, bias curves, ablation scans, path tracing and fits of turning against readout activity in runs or fly recordings | Descriptive outcomes; no significance or biological-effect claims |
 | Records | Local run library, configuration restoration, CSV/JSON/ZIP and replay | Same pinned software stack; no cross-device guarantee |
 | Closing | Quit and Save current run & quit | Requests graceful shutdown of this launcher’s server and its worker |
 
@@ -25,7 +25,7 @@ This is an experimental sensorimotor workbench with explicit modeling assumption
 5. **Run comparison** resets and runs one trial for each seed/condition pair. The target reverses halfway through each trial. Every finished trial saves automatically. Pause freezes the current trial; Cancel retains the current partial trial for manual export and stops remaining trials.
 6. Select saved runs in **Run library** to compare their trajectories and measurements. Save ZIPs for analysis elsewhere. “Restore starting configuration” initializes a fresh paused experiment; it does not replay the old trajectory.
 
-**Set up the first experiment** on the Experiments page fills in steps 4 and 5 in one click: target reversal over 2 simulated seconds, seeds 42 and 43, and **Neural control** against **Descending units off** (or **Both DNa02 off** with the connectome model). It keeps the current body and sensor, so switch to compound eyes on the Workbench first if you want step 2 as well.
+**Set up the first experiment** on the Experiments page fills in steps 4 and 5 in one click: target reversal over 2 simulated seconds, seeds 42 and 43, and **Neural control** against **Descending units off** (or **Both DNa02 off** with a connectome circuit that contains DNa02). It keeps the current body and sensor, so switch to compound eyes on the Workbench first if you want step 2 as well.
 
 Longer runs are not automatically more biologically meaningful. The simple attraction controller can overshoot, circle, or leave the ±40 mm display area. The physics ground is unbounded.
 
@@ -70,7 +70,7 @@ Export metadata includes `body_joint_order` so each joint position can be identi
 
 ## The connectome model
 
-The **connectome_dna02** model steers the fly with a rate model built on real wiring: both DNa02 descending neurons, which predict and influence steering in walking flies, and their presynaptic partners up to two hops back, from the FlyWire reconstruction of one adult female brain (FAFB v783). The engineered six-unit model stays the default and is unchanged. Select the connectome model with **Workbench → Neural model**.
+The **connectome** model steers the fly with real wiring from the FlyWire reconstruction of one adult female brain (FAFB v783). Pick it in **Workbench → Neural model**, then pick a **circuit** and **dynamics** under it. The engineered six-unit model stays the default and is unchanged.
 
 This is a connectome-constrained model, not an uploaded fly brain. It is not biologically validated.
 
@@ -78,9 +78,23 @@ This is a connectome-constrained model, not an uploaded fly brain. It is not bio
 | --- | --- | --- |
 | Which neurons, cell types, sides, predicted transmitters, synapse counts | **Data-derived** | FlyWire FAFB v783, through the files below |
 | Sign of each connection | **Assumed** | From the presynaptic neuron's predicted transmitter |
-| Leaky-rate dynamics, gains, time constant | **Engineered** | One global value each; nothing per neuron or per synapse |
-| Sensor → neuron input | **Engineered** | Each sensor drives every visual projection neuron on its side |
-| DNa02 → body output | **Engineered**, direction from literature | Turn from the right − left DNa02 difference; constant forward drive |
+| Rate dynamics: leaky rates, gains, time constant | **Engineered** | One global value each; nothing per neuron or per synapse |
+| Spiking dynamics: leaky integrate-and-fire neurons | **Published model** | The neuron model and constants of Shiu et al. 2024, with engineered sensor input and readout |
+| Sensor → neuron input | **Engineered** | Each sensor drives the input neurons on its side |
+| Readout → body output | **Engineered**, direction from literature | Turn from the right − left difference of the readout cell types; forward drive from a tonic term |
+
+The model was called `connectome_dna02` in v0.3. Runs and configurations that use that name still load and replay.
+
+### Circuits
+
+A circuit is a file of neurons and connections selected from FlyWire v783. Two ship with the repository; you can [build more](#building-your-own-circuits).
+
+| Circuit | Seeds | Neurons | Connections | Cell types | Default readout | Notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| `fafb783-dna02` (default) | DNa02 | 3,000 | 78,615 | 1,257 | DNa02 | The v0.3 circuit, unchanged |
+| `fafb783-steering` | DNa01, DNa02, DNp09 | 4,000 | 120,728 | 1,650 | DNa01 + DNa02 + DNp09 | Added in v0.4; see [the steering circuit](#the-steering-circuit) |
+
+Both hold the seeds and their presynaptic partners up to two hops back, with connections of at least 5 synapses, capped by path strength. Circuits you build yourself go to `data/circuits/local/`, which git ignores, and appear in the circuit list next to the committed ones.
 
 ### Data sources
 
@@ -93,9 +107,11 @@ Both sources are FlyWire v783, the release whose neurons the atlas already shows
 
 Only the needed columns (presynaptic ID, postsynaptic ID, synapse count, and Shiu et al.'s own sign, kept for comparison) were fetched, so the second hash covers the downloaded byte ranges rather than the whole file; the pinned commit and git blob hash identify the whole upstream file. Full hashes are in `downloads.json`. FlyWire Codex bulk downloads were not used: they require signing in.
 
-FlyWire data is licensed **CC BY-NC 4.0, for non-commercial use only**. Credit the FlyWire Consortium and cite Dorkenwald et al. 2024 and Schlegel et al. 2024 (reconstruction and annotation), Eckstein et al. 2024 (transmitter predictions) and Shiu et al. 2024 (connectivity table). See [data/circuits/LICENSE.md](../data/circuits/LICENSE.md).
+FlyWire data is licensed **CC BY-NC 4.0, for non-commercial use only**. That covers every circuit, including the ones you build. Credit the FlyWire Consortium and cite Dorkenwald et al. 2024 and Schlegel et al. 2024 (reconstruction and annotation), Eckstein et al. 2024 (transmitter predictions) and Shiu et al. 2024 (connectivity table). See [data/circuits/LICENSE.md](../data/circuits/LICENSE.md).
 
 ### Building the subcircuit
+
+The default command rebuilds the committed DNa02 circuit from the two downloads:
 
 ```sh
 backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-data.lock   # pyarrow, build only
@@ -109,18 +125,41 @@ backend/.venv/bin/python scripts/build_circuit.py            # add --offline to 
 
 The result, `data/circuits/fafb783-dna02.json` (1.1 MB), has **3,000 neurons, 78,615 connections, 1,818,869 synapses and 1,257 cell types**. It records its sources, release, hashes, threshold, hops, cap report, counts, license and attribution. An offline rebuild reproduces it byte for byte. The direct inputs match the published circuit: same-side cholinergic DNa03, PFL3 neurons from the central complex, and strong inhibitory PS049 and VES051/052 inputs.
 
+### Building your own circuits
+
+Any cell types or neurons can seed a circuit. First convert the cached downloads once into a prepared archive (pyarrow is needed for this step only):
+
+```sh
+backend/.venv/bin/python scripts/build_circuit.py prepare --offline
+```
+
+This writes `.cache/circuits/fafb783-connectome.npz` (50.8 MB: 144,837 neurons and 15,091,902 connections with metadata; the 81 connections whose neurons lack metadata are left out) and a catalog of all 8,841 cell-type labels. Then, with NumPy only:
+
+```sh
+backend/.venv/bin/python scripts/build_circuit.py build --name my-circuit --seeds DNa01,DNa02 --hops 2 --threshold 5 --cap 3000
+backend/.venv/bin/python scripts/build_circuit.py build --name whole --seed DNa02 --whole-brain
+```
+
+- **Seeds** are exact cell-type names (case-sensitive) or FlyWire root IDs. Use `--seed` once per seed for names that contain commas, such as `VES051,VES052`.
+- **Selection** follows the same rules as the committed circuit: hops back from the seeds, the synapse threshold, the cap by path strength (every seed and hop-1 neuron is kept), and the induced subgraph.
+- **Whole brain** (`--whole-brain`) keeps every neuron with at least one connection at the threshold: 134,180 neurons and 2,700,509 connections at 5 synapses. The seeds only set hop distances; neurons with no path to them get hop −1.
+- **Default readout**: the seed cell types that have seed neurons on both sides. You can change it later.
+- **Output**: format 2, as JSON up to 200,000 connections and as a compressed NumPy archive above that, in `data/circuits/local/`, with the same provenance, cap report, transmitter counts, license and attribution as the committed files. The general builder reproduces the committed DNa02 circuit's neurons, connections and cap report, and rebuilds `fafb783-steering.json` byte for byte (both tested when the prepared archive is present).
+
+The same builder runs from **Neural atlas → Build a circuit**: type seeds with autocomplete from the catalog, set hops, threshold and cap, and follow the build log. One build runs at a time, as a separate process with validated arguments; nothing is downloaded. **Use this circuit** starts a fresh run on it.
+
 ### Signs
 
-| Predicted transmitter | Neurons | Sign |
+| Predicted transmitter | Neurons (DNa02 circuit) | Sign |
 | --- | --- | --- |
 | Acetylcholine | 1,882 | +1, excitatory |
 | GABA | 544 | −1, inhibitory |
 | Glutamate | 557 | −1, inhibitory |
 | Dopamine, serotonin, octopamine, unknown | 8, 3, 5, 1 | **Excluded** by default |
 
-Signs follow Shiu et al. 2024 for acetylcholine, GABA and glutamate. Shiu et al. treat dopamine, serotonin and octopamine as excitatory; here those connections are left out by default, because a fast excitatory synapse is a poor description of neuromodulation. That is an explicit, switchable assumption: **Dopamine, serotonin, octopamine, unknown → Excitatory** restores Shiu et al.'s rule. At default settings 906 of the 78,615 connections are excluded this way. The metadata's per-neuron transmitter agrees with Shiu et al.'s own sign for 2,989 of the 2,999 neurons both describe.
+Signs follow Shiu et al. 2024 for acetylcholine, GABA and glutamate. Shiu et al. treat dopamine, serotonin and octopamine as excitatory; here those connections are left out by default, because a fast excitatory synapse is a poor description of neuromodulation. That is an explicit, switchable assumption: **Dopamine, serotonin, octopamine, unknown → Excitatory** restores Shiu et al.'s rule. At default settings 906 of the DNa02 circuit's 78,615 connections are excluded this way. The metadata's per-neuron transmitter agrees with Shiu et al.'s own sign for 2,989 of the 2,999 neurons both describe.
 
-### Dynamics
+### Rate dynamics
 
 Every neuron is a leaky rate unit, updated by Euler steps every 1 ms (the existing neural step) with a sparse weight matrix:
 
@@ -129,37 +168,62 @@ r_i ← r_i + dt/τ × [clip(Σ_j W_ij r_j + input_i, 0, 1) − r_i]
 W_ij = sign(j) × synapses(j → i) × global gain
 ```
 
-with τ = 20 ms and rates in [0, 1]. Silenced neurons are clamped to zero before and after every update. There is no spiking, no synaptic delay, no adaptation and no per-neuron parameter.
+with τ = 20 ms and rates in [0, 1]. Silenced neurons are clamped to zero before and after every update. There is no synaptic delay, adaptation or per-neuron parameter. This is the default and is numerically identical to v0.3.
+
+### Spiking dynamics
+
+**Dynamics → Spiking** replaces the rate units with the leaky integrate-and-fire network of Shiu et al. 2024 (Methods and their `model.py`), on the same wiring and signs:
+
+```text
+dv/dt = (v_rest − v + g) / τ_m      dg/dt = −g / τ_s      (both frozen while refractory)
+spike when v > v_th: v → v_reset, g → 0; 1.8 ms later each target gets g += sign × synapses × w_syn
+```
+
+| Constant | Value | Constant | Value |
+| --- | --- | --- | --- |
+| Resting and reset potential | −52 mV | Threshold | −45 mV |
+| Membrane time constant | 20 ms | Synaptic time constant | 5 ms |
+| Refractory period | 2.2 ms | Synaptic delay | 1.8 ms |
+| Weight per synapse, w_syn | 0.275 mV | Poisson input kick | 250 × w_syn |
+
+Each 1 ms neural step runs ten 0.1 ms forward-Euler substeps in Brian2's schedule order, which Shiu et al.'s code uses: state update, threshold, delayed synaptic and Poisson input, reset. A neuron is frozen until 22 substeps after its spike, as in Brian2. The sensor input is engineered: each sensor value × input gain × 150 Hz (Shiu et al.'s default rate) is the Poisson rate of every input neuron on its side, and those neurons have no refractory period, as Poisson targets in Shiu et al.'s code. The readout is each neuron's firing rate, an exponential average over 50 ms, divided by a rate scale of 100 Hz, so 100 spikes/s count like a rate-model activity of 1. Spike trains depend on the run's seed, so a spiking run repeats exactly for its seed and replays with error 0.
+
+Speed on the reference laptop: the 3,000-neuron circuit spends about 0.3 ms of wall time per 1 ms neural step (about 3× faster than real time for the neural part) and the 134,180-neuron whole brain about 6.7 ms (0.15×). With rate dynamics the same circuits take 0.05 ms and 3.2 ms. The FlyGym body adds its own cost.
 
 ### Input mapping
 
-Each side's sensor value (geometric or compound-eye) × the input gain is added to the drive of every **visual projection neuron** (FlyWire super class `visual_projection`) on the same side: **250 left and 227 right**. Twenty-nine of them connect to DNa02 directly (31 connections); 448 sit two hops back. The most common types are LC10a, LC10c and LC10d, LT51, LC36, LPLC4 and LC33. This mapping is engineered: these cell types encode different visual features, and here they all receive the same scalar. No cell identities were invented.
+Each side's sensor value (geometric or compound-eye) × the input gain drives every **visual projection neuron** (FlyWire super class `visual_projection`) on the same side: **250 left and 227 right** in the DNa02 circuit, 345 and 304 in the steering circuit. In the DNa02 circuit, 29 of them connect to DNa02 directly (31 connections) and 448 sit two hops back; the most common types are LC10a, LC10c and LC10d, LT51, LC36, LPLC4 and LC33. This mapping is engineered: these cell types encode different visual features, and here they all receive the same value. **Populations → Sensor input** restricts the input to named cell types (they need neurons on both sides).
 
 ### Output mapping
 
 ```text
-turn = output gain × (DNa02 R − DNa02 L)
-motor = 1.4 × clip([tonic drive + turn, tonic drive − turn], 0, 1)    # [left legs, right legs]
+turn = output gain × Σ over readout types (mean right − mean left)
+forward = tonic drive (+ speed gain × mean of the speed cell types, if any)
+motor = 1.4 × clip([forward + turn, forward − turn], 0, 1)    # [left legs, right legs]
 ```
 
-- **Direction of DNa02 steering.** Rayshubskiy et al. 2025 ([eLife 13:RP102230](https://doi.org/10.7554/eLife.102230)) found the fly's rotational velocity linearly related to the right − left difference in DNa02 firing, a burst in the left DNa02 before a leftward turn, and ipsiversive rotation when one DNa02 is excited. So a more active right DNa02 means a right turn.
+- **Direction.** Rayshubskiy et al. 2025 ([eLife 13:RP102230](https://doi.org/10.7554/eLife.102230)) found the fly's rotational velocity linearly related to the right − left difference in DNa02 firing, and the same relation in a paired DNa01 recording, with DNa02 predicting large, transient turns and DNa01 smaller, slower ones. Bidaye et al. 2020 ([Neuron 108:469](https://doi.org/10.1016/j.neuron.2020.07.032)) found that P9 (DNp09) drives forward walking with turning toward its own side and receives input from visual projection neurons. So a more active right neuron of any of these types means a right turn.
+- **Weights.** Readout types are summed with equal weights. That is an assumption: the measured gains differ between DNa01 and DNa02.
 - **Which amplitude turns which way.** FlyGym 2.1.0's `HybridTurningController.step` sets the first three CPG amplitudes (legs LF, LM, LH) from `descending_signal[0]` and the last three (RF, RM, RH) from `descending_signal[1]`. A larger left amplitude turns the body right: `[1.2, 0.4]` turns the FlyGym body 146° clockwise in 1 s, and the toy body turns the same way.
-- **Forward drive** is the existing tonic term, constant in this model (the engineered model also adds sensory drive).
+- **Forward drive** is the tonic term. **Populations → Speed drive** adds the mean activity of named cell types (for example DNp09) × the speed gain. It is off by default.
+
+Readout, input and speed populations are set by cell type in **Neural atlas → Live circuit → Populations**. They decide which rates are recorded, so changing them starts a fresh run.
 
 ### Parameters and how the defaults were chosen
 
-Only global parameters exist: synapse threshold (5–100, applied on top of the build threshold), global gain, input gain, output gain, tonic drive, τ, and the transmitter switch. Edit them in **Neural atlas → Live circuit**; changes are recorded and replayed.
+Only global parameters exist: synapse threshold (1–1000, applied on top of the circuit's build threshold), global gain, input gain, output gain, tonic drive, τ, the transmitter switch, the speed gain and, for spiking, the weight per synapse, the input rate, the rate window and the rate scale. Edit them in **Neural atlas → Live circuit**; changes are recorded and replayed. Circuit, dynamics and populations are fixed for a run.
 
 | Parameter | Default | Choice |
 | --- | --- | --- |
 | Global gain | 0.001 | The largest round value that keeps both DNa02 below half saturation for any constant input in [0, 1] on both sides (peak 0.45; 0.0012 reaches 0.63). Chosen before any behavior was measured |
 | Input gain | 1 | Sensor values used as they are |
-| Output gain | 1 | The turn command equals the DNa02 rate difference |
+| Output gain | 1 | The turn command equals the summed readout difference |
 | Tonic drive, τ, threshold | 0.35, 20 ms, 5 synapses | The engineered model's tonic drive, a 20 ms time constant and the build threshold |
+| Spiking constants | Shiu et al. 2024 | Not tuned; the 100 Hz rate scale and 50 ms window are engineered readout choices |
 
-### What the circuit computes
+### What the circuits compute
 
-With the target held still, steady-state DNa02 activity after 0.6 s (geometric sensor, target 12 mm away, default parameters):
+With the target held still, steady-state DNa02 activity in the DNa02 circuit after 0.6 s (geometric sensor, target 12 mm away, default parameters):
 
 | Target | DNa02 R − L | Turn command means |
 | --- | --- | --- |
@@ -169,65 +233,145 @@ With the target held still, steady-state DNa02 activity after 0.6 s (geometric s
 | 45° right | −0.056 | Left, away |
 | 90° right | +0.060 | Right, toward |
 
-Compared with a target straight ahead, moving it to either side shifts activity toward the DNa02 on that side, as Rayshubskiy et al. describe for attractive stimuli. In a linear count of signed synapses, that comes from two-step pathways; the 31 direct connections from visual projection neurons favor the opposite DNa02. But the circuit is **strongly biased to the left**: equal input on both sides already commands a left turn (−0.18 for a target straight ahead), so a target must be about 90° to the right before the circuit turns right. The circuit's composition is close to balanced (329 left and 353 right hop-1 neurons; 1,163 and 1,146 at hop 2), so the bias emerges from the recurrent, rectified dynamics on this wiring. No global parameter removes it: τ leaves steady states unchanged, a 10- or 20-synapse threshold weakens every response without removing the bias, the transmitter switch changes nothing measurable, and a larger input gain makes the bias stronger. Possible causes include reconstruction or annotation asymmetries, the uniform-gain rate assumption, the sign assumptions, treating all visual projection types alike and the 3,000-neuron cap. This model cannot tell them apart.
+Compared with a target straight ahead, moving it to either side shifts activity toward the DNa02 on that side, as Rayshubskiy et al. describe for attractive stimuli. But the DNa02 circuit is **strongly biased to the left**: equal input on both sides already commands a left turn, so a target must be about 90° to the right before the circuit turns right. No global parameter removes the bias: τ leaves steady states unchanged, a 10- or 20-synapse threshold weakens every response without removing it, the transmitter switch changes nothing measurable, and a larger input gain makes it stronger.
+
+`scripts/toolkit.py bias` measures the same thing directly: it clamps both sensors for 500 ms over a grid of inputs and reports the turn command, plus a **mirror test** (a left-right symmetric circuit gives turn(a, b) = −turn(b, a); the asymmetry is 0 for such a circuit and grows with the bias):
+
+| Circuit and dynamics | Turn with equal input 0.5 / 0.5 | Turn, input 0.3 / 0.7 (target right) | Turn, input 0.7 / 0.3 (target left) | Mirror asymmetry |
+| --- | --- | --- | --- | --- |
+| DNa02 circuit, rate | −0.179 (left) | −0.025 (left) | −0.240 (left) | 1.07 |
+| Steering circuit, rate | +0.026 | +0.440 (right) | −0.368 (left) | 0.15 |
+| Steering circuit, spiking | −2.02 (left) | −0.40 (left) | −1.91 (left) | 1.07 |
+
+Positive turns are rightward. The spiking values are averaged over the last 400 ms of 800 ms (seed 1).
+
+### Where the side bias comes from
+
+`scripts/toolkit.py ablation` silences each cell type in turn (both sides, all of its neurons) with equal input on both sides and ranks the types by how much the turn command changes. In the DNa02 circuit (rate dynamics, intact turn −0.179):
+
+| Silenced type | Neurons in the circuit (left / right) | Turn with it silenced | Change |
+| --- | --- | --- | --- |
+| AOTU025 | 1 / 1 | −0.080 | +0.099 |
+| LC10c | 35 / 19 | −0.118 | +0.061 |
+| LC10a | 51 / 29 | −0.123 | +0.056 |
+| LC33 | 8 / 7 | −0.220 | −0.041 |
+| LT51 | 11 / 11 | −0.214 | −0.035 |
+
+A positive change means the type was pushing the fly to the left. Two of the strongest contributors are visual projection types that the 3,000-neuron cap sampled unevenly: it kept 51 left and 29 right LC10a neurons and 35 left and 19 right LC10c neurons, because the cap ranks neurons by their path to the seeds, not by side. Every visual projection neuron on a side receives the same sensor value, so a lopsided sample turns into a lopsided drive. The bias is not only a sampling effect: in the whole-brain circuit (built locally with `--whole-brain`, no cap), equal input still commands a left turn of −0.171 through DNa02, with a mirror asymmetry of 0.75.
+
+In the steering circuit the same scan finds larger effects that cancel: silencing LC9 (63 left, 77 right) shifts the turn by −0.144, while LC10a (19 left, 3 right), PVLP020, AOTU025 and LC11 (42 left, 7 right) each push left by +0.045 to +0.126. Its near-symmetric output is partly a balance of opposite sampling asymmetries, not a symmetric circuit. A cap that samples both sides evenly is an obvious next experiment.
+
+### The steering circuit
+
+The steering circuit adds two descending types to DNa02: DNa01, the other steering neuron Rayshubskiy et al. recorded, and DNp09 (P9), which drives object-directed walking with turning to its own side (Bidaye et al. 2020). It was built with the general builder (`build --name fafb783-steering --seeds DNa01,DNa02,DNp09 --cap 4000 --committed`): 6 seed neurons, 1,306 direct partners and 2,688 of 21,656 hop-2 candidates.
+
+How it was chosen, in order: DNa01 and DNa02 were added for their documented steering roles, and DNp09 for object-directed walking. An open-loop check on this 4,000-neuron circuit showed the turn command stayed left-biased with DNa01 and DNa02 as readout (−0.130 with equal input, and a left turn even for a target on the right), and became nearly symmetric once DNp09 was read out too (+0.026). The three-type readout is the builder's default rule (seed types with neurons on both sides), not a parameter fitted to behavior. No gain was changed. The sweep below then compares the four readouts on the same circuit (`scripts/toolkit.py trials --set connectome_parameters.circuit=fafb783-steering --vary 'connectome_parameters.readout_types=…'`, toy body, the evaluation's 60 trials each):
+
+| Readout | Reached ≤2 mm | First turn toward lateral targets | Median final distance |
+| --- | --- | --- | --- |
+| DNa02 | 0/60 | 20/40 | 63.9 mm |
+| DNa01 + DNa02 | 0/60 | 10/40 | 68.8 mm |
+| DNa01 + DNa02 + DNp09 (default) | 57/60 | 40/40 | 3.8 mm |
+| DNp09 | 60/60 | 40/40 | 2.2 mm |
+
+So in this model the reaching comes from DNp09. Read out alone, DNa01 and DNa02 turn the fly the wrong way at first in this larger circuit, and it walks away. That is a property of this circuit and readout, not evidence about which neurons flies use.
 
 ### Evaluation
 
-`scripts/evaluate_models.py` runs both models from the default configuration with matched seeds, changing only the target, seed, model and silencing. Targets sit ahead, 45° and 90° to each side and directly behind the starting heading, at 12 and 30 mm. A target counts as reached within 2 mm; the first turn is the direction of the first 10° heading change. All numbers below come from the reports the script saved (`docs/evidence/evaluation-*.json`, kept locally).
+`scripts/evaluate_models.py` runs the engineered model and three connectome configurations (DNa02 circuit; steering circuit; steering circuit with spiking dynamics) from the default configuration with matched seeds, changing only the target, seed, model, circuit, dynamics and silencing. Targets sit ahead, 45° and 90° to each side and directly behind the starting heading, at 12 and 30 mm. A target counts as reached within 2 mm; the first turn is the direction of the first 10° heading change. All numbers below come from the reports the script saved (`docs/evidence/evaluation-*.json`, kept locally). The engineered and DNa02-circuit results are identical to v0.3's.
 
-**Toy body**, 5 seeds (1–5), 10 simulated seconds per trial:
+**Toy body**, 5 seeds (1–5), 10 simulated seconds per trial, 60 trials per model:
 
-| Target | Distance | Engineered: reached (median time) | Engineered: first turn toward | Engineered: final distance (mm) | Connectome: reached | Connectome: first turn toward | Connectome: final distance (mm) |
+| Model | Reached ≤2 mm | First turn toward lateral targets | Median time to reach | Mean final distance, 12 mm targets | Mean speed |
+| --- | --- | --- | --- | --- | --- |
+| Engineered | 59/60 | 40/40 | 2.25 s | 1.5 mm | 9.5 mm/s |
+| Connectome, DNa02 circuit | 0/60 | 40/40 | — | 7.5 mm | 5.9 mm/s |
+| Connectome, steering circuit | 57/60 | 40/40 | 4.7 s | 3.8 mm | 6.1 mm/s |
+| Connectome, steering circuit, spiking | 0/60 | 22/40 | — | 15.5 mm | 7.1 mm/s |
+
+The steering circuit misses only three of the five 30 mm targets behind the fly. After reaching a target it keeps circling it at about 4 mm, because nothing tells it to stop. The engineered model misses one 30 mm target behind.
+
+**Headless FlyGym body**, 3 seeds (1–3), 12 mm targets, 6 simulated seconds per trial, 18 trials per model:
+
+| Model | Reached ≤2 mm | First turn toward lateral targets | Median time to reach | Mean final distance | Mean speed |
+| --- | --- | --- | --- | --- | --- |
+| Engineered | 18/18 | 12/12 | 0.9 s | 2.5 mm | 14.6 mm/s |
+| Connectome, DNa02 circuit | 0/18 | 12/12 | — | 12.0 mm | 8.7 mm/s |
+| Connectome, steering circuit | 18/18 | 12/12 | 1.6 s | 9.4 mm | 9.0 mm/s |
+| Connectome, steering circuit, spiking | 0/18 | 7/12 | — | 13.2 mm | 11.6 mm/s |
+
+On the real body the steering circuit reaches every target within 1.4–3.9 s and then walks past it: the final distances include that. With spiking dynamics both circuits keep a strong left bias (the table in [What the circuits compute](#what-the-circuits-compute)), so the fly circles away from targets on its right.
+
+**The DNa02 circuit's orbit.** Its first turn goes toward every lateral target, but it never comes within 2 mm. It settles into a clockwise orbit around the target, holding it at 90° to its right: in a 12 mm toy trial the orbit radius is 7.5 mm from any starting bearing. The output gain sets the orbit's size, not its shape: gains of 2, 4 and 8 shrink the radius to 4.4, 2.3 and 1.5 mm, so a gain of 8 would satisfy the 2 mm criterion while the fly still circles. The defaults were not changed to pass this test.
+
+**Silencing DNa02** (toy body, targets 45° and 90° to each side at 12 mm, 5 seeds; positive yaw rate turns left):
+
+| Circuit | DNa02 silenced | Mean yaw rate, first 2 s: left targets | right targets | Net turn: left targets | right targets | Reached ≤2 mm | Mean final distance |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Ahead | 12 mm | 5/5 (0.7 s) | mixed | 1.4 | 0/5 | left | 7.5 |
-| Ahead | 30 mm | 5/5 (2.2 s) | mixed | 1.6 | 0/5 | left | 10.3 |
-| 45° left | 12 mm | 5/5 (0.8 s) | 5/5 | 1.6 | 0/5 | 5/5 | 7.5 |
-| 45° left | 30 mm | 5/5 (2.3 s) | 5/5 | 1.8 | 0/5 | 5/5 | 9.4 |
-| 45° right | 12 mm | 5/5 (0.8 s) | 5/5 | 1.6 | 0/5 | 5/5 | 7.5 |
-| 45° right | 30 mm | 5/5 (2.3 s) | 5/5 | 1.8 | 0/5 | 5/5 | 12.7 |
-| 90° left | 12 mm | 5/5 (1.0 s) | 5/5 | 1.3 | 0/5 | 5/5 | 7.5 |
-| 90° left | 30 mm | 5/5 (2.5 s) | 5/5 | 1.2 | 0/5 | 5/5 | 9.5 |
-| 90° right | 12 mm | 5/5 (1.0 s) | 5/5 | 1.3 | 0/5 | 5/5 | 7.6 |
-| 90° right | 30 mm | 5/5 (2.5 s) | 5/5 | 1.2 | 0/5 | 5/5 | 20.1 |
-| Behind | 12 mm | 5/5 (2.7 s) | mixed | 1.9 | 0/5 | left | 7.6 |
-| Behind | 30 mm | 4/5 (6.6 s) | mixed | 21.2 | 0/5 | left | 28.2 |
+| DNa02 | None | +55 °/s | −23 °/s | −267° | −375° | 0/20 | 7.5 mm |
+| DNa02 | Left | −16 °/s | −74 °/s | −70° | −237° | 0/20 | 55.6 mm |
+| DNa02 | Right | +100 °/s | +37 °/s | +577° | +419° | 0/20 | 41.5 mm |
+| DNa02 | Both | 0 °/s | 0 °/s | 0° | 0° | 0/20 | 55.5 mm |
+| Steering | None | +40 °/s | −34 °/s | +1431° | +1293° | 20/20 | 3.9 mm |
+| Steering | Left | +46 °/s | −25 °/s | +1253° | +1123° | 20/20 | 3.9 mm |
+| Steering | Right | +38 °/s | −37 °/s | +1273° | +1136° | 20/20 | 4.0 mm |
+| Steering | Both | +46 °/s | −25 °/s | +1526° | +1394° | 20/20 | 2.5 mm |
 
-**Headless FlyGym body**, 3 seeds (1–3), 12 mm targets, 6 simulated seconds per trial:
+On the headless FlyGym body (3 seeds, 6 simulated seconds) the pattern is the same: the DNa02 circuit turns toward the intact side with one DNa02 off and stops turning with both off (−0.4 °/s, a drift of the walking gait itself), while the steering circuit reaches all 12 targets in every condition.
 
-| Target | Distance | Engineered: reached (median time) | Engineered: first turn toward | Engineered: final distance (mm) | Connectome: reached | Connectome: first turn toward | Connectome: final distance (mm) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Ahead | 12 mm | 3/3 (0.7 s) | right | 4.1 | 0/3 | left | 10.5 |
-| 45° left | 12 mm | 3/3 (0.8 s) | 3/3 | 1.3 | 0/3 | 3/3 | 11.0 |
-| 45° right | 12 mm | 3/3 (0.8 s) | 3/3 | 1.4 | 0/3 | 3/3 | 10.5 |
-| 90° left | 12 mm | 3/3 (1.1 s) | 3/3 | 2.2 | 0/3 | 3/3 | 10.8 |
-| 90° right | 12 mm | 3/3 (1.0 s) | 3/3 | 1.9 | 0/3 | 3/3 | 11.9 |
-| Behind | 12 mm | 3/3 (2.8 s) | right | 3.9 | 0/3 | left | 17.5 |
+With DNa02 as its only readout, the DNa02 circuit cannot turn without it. The steering circuit keeps steering with both DNa02 silenced, because DNp09 carries its turning. Flies also keep turning when both DNa02 are inhibited (Rayshubskiy et al. 2025), but here that robustness follows from the readout we chose. It is consistent with the fly result, not evidence for it.
 
-The real body tells the same story. It walks faster than the toy body at the same drive (8.7 against 5.9 mm/s with the connectome model), so its circles are wider. The engineered model's final distances include walking past the target after reaching it.
+### The research toolkit
 
-**What this shows.** The engineered model reaches almost every target. The connectome model's first turn goes toward every lateral target, but it never comes within 2 mm. It settles into a clockwise orbit around the target, holding it at 90° to its right: in a 12 mm toy trial the orbit radius is 7.5 mm from any starting bearing, and the DNa02 difference there (R − L ≈ +0.07) gives exactly the turn rate that circle needs at the constant tonic forward speed. Its weak response to targets on the right cannot turn it more sharply. The output gain sets the orbit's size, not its shape: in the same toy trials, gains of 2, 4 and 8 shrink the radius to 4.4, 2.3 and 1.5 mm, so a gain of 8 would satisfy the 2 mm criterion while the fly still circles. The defaults were not changed to pass this test.
+`digitalfly.toolkit` (Python) and `scripts/toolkit.py` (command line) run the analyses above without the web app. Every trial is built from a validated configuration and seed, so it can be repeated; results go to the ignored `runs/toolkit/` as CSV and JSON.
 
-**Silencing DNa02** (connectome model, toy body, targets 45° and 90° to each side at 12 mm, 5 seeds; positive yaw rate turns left):
+```sh
+backend/.venv/bin/python scripts/toolkit.py trials --set neural_model=connectome \
+    --vary connectome_parameters.circuit=fafb783-dna02,fafb783-steering --workers 8
+backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
+backend/.venv/bin/python scripts/toolkit.py ablation --set circuit=fafb783-dna02 --workers 8 --top 20
+backend/.venv/bin/python scripts/toolkit.py paths --source LC10a --target DNa02
+backend/.venv/bin/python scripts/toolkit.py circuits
+```
 
-| DNa02 silenced | Mean yaw rate, first 2 s: left targets | right targets | Net turn over the trial: left targets | right targets | Reached ≤2 mm | Mean final distance (mm) |
-| --- | --- | --- | --- | --- | --- | --- |
-| None (intact) | +55 °/s | −23 °/s | −267° | −375° | 0/20 | 7.5 |
-| Left | −16 °/s | −74 °/s | −70° | −237° | 0/20 | 55.6 |
-| Right | +100 °/s | +37 °/s | +577° | +419° | 0/20 | 41.5 |
-| Both | 0 °/s | 0 °/s | 0° | 0° | 0/20 | 55.5 |
+```python
+from digitalfly import toolkit
+base = toolkit.configure({"engine": "toy", "neural_model": "connectome"})
+configs = toolkit.grid(base, seed=[1, 2, 3], stimulus=[toolkit.target(45, 12), toolkit.target(-90, 12)],
+                       **{"connectome_parameters.output_gain": [1, 2, 4]})
+rows = toolkit.run_trials(configs, workers=4, duration_s=10)     # same results for any number of workers
+toolkit.ablation_scan(toolkit.ConnectomeParameters(circuit="fafb783-steering"), left=.5, right=.5)
+```
 
-On the headless FlyGym body (3 seeds, 6 simulated seconds):
+- **trials** runs closed-loop trials over target bearings, distances and seeds, with `--set` for fixed settings and `--vary` for grid axes (dotted names reach nested settings). It reports reaching, the first turn, final distance, the target's final bearing (about −90° while circling clockwise), net turn and speed.
+- **bias** clamps the sensors and reports turn commands and the mirror test. **ablation** silences each cell type in turn. Both accept `--average-ms` to average spiking output.
+- **paths** lists the strongest cell-type paths between two types. A step's strength is the share of the target type's input synapses that comes from the source type; a path multiplies its steps, and its sign multiplies the assumed signs. The same tracing is in the live circuit view.
+- **compare** fits turning to readout activity in a recording or a run; see below.
 
-| DNa02 silenced | Mean yaw rate, first 2 s: left targets | right targets | Net turn over the trial: left targets | right targets | Reached ≤2 mm | Mean final distance (mm) |
-| --- | --- | --- | --- | --- | --- | --- |
-| None (intact) | +57 °/s | −23 °/s | −72° | −195° | 0/12 | 11.0 |
-| Left | −7 °/s | −69 °/s | −3° | −139° | 0/12 | 36.5 |
-| Right | +97 °/s | +29 °/s | +249° | +61° | 0/12 | 43.3 |
-| Both | −0.4 °/s | −0.4 °/s | 0° | 0° | 0/12 | 38.9 |
+Parallel workers use separate processes (`spawn`), so call the Python functions with `workers > 1` from a script file, not an interactive prompt.
 
-With both DNa02 silenced, the FlyGym body's turn command is exactly zero; the remaining −0.4 °/s is a drift of the walking gait itself.
+### Comparing with real flies
 
-Silencing one DNa02 makes the model turn toward the intact side whatever the target does, and silencing both removes all turning, because the readout depends only on these two neurons. Flies differ: Rayshubskiy et al. found that inhibiting DNa02 on both sides left rotational speed unchanged, because other descending neurons such as DNa01 also steer. That is a limit of this model, not a prediction.
+`digitalfly.compare` fits rotational velocity to the right − left firing rate of a readout pair, choosing the lag (0–0.5 s) with the best r²: the relation Rayshubskiy et al. measured for DNa02. It reads a recording in one documented CSV (or NumPy) format, with columns `t_s`, `rate_left_hz`, `rate_right_hz`, `rotational_velocity_deg_s` (rightward positive) and optionally `forward_velocity_mm_s`, and it reads exported DigitalFly runs directly, converting spiking activity back to spikes/s:
+
+```sh
+backend/.venv/bin/python scripts/toolkit.py compare --recording fly.csv --run runs/YOUR_RUN_FOLDER
+```
+
+It reports each fit's sign, lag, gain, offset and r², side by side. Gains only compare directly when both are in spikes/s; the model's turning follows its readout by construction, so a matching fit is not validation. A steering curve (mean turning rate by the target's bearing) is also available for trajectories toward targets. The fitting is tested on labeled synthetic recordings with a known gain, lag and offset.
+
+No fly data is bundled or downloaded. Candidate public datasets, checked from their metadata only:
+
+| Dataset | What it holds | License | Smallest useful download |
+| --- | --- | --- | --- |
+| Rayshubskiy et al. 2025, Harvard Dataverse [doi:10.7910/DVN/0NCLP1](https://doi.org/10.7910/DVN/0NCLP1) | DNa01 and DNa02 whole-cell recordings with ball-tracked forward, rotational and sideways velocity (MATLAB files); 380 files, 157.9 GB in all, mostly imaging | CC0 1.0 | One paired left/right DNa02 recording, 71,381,032 bytes |
+| Mussells Pires et al. 2024 ([Nature 626:808](https://doi.org/10.1038/s41586-023-07006-3)), Zenodo [doi:10.5281/zenodo.10145317](https://doi.org/10.5281/zenodo.10145317) | Tethered walking flies orienting to a closed-loop visual landmark, with landmark jumps that provoke corrective turns | CC BY 4.0 | Figure source data, 526,695 bytes |
+
+A converter for the Rayshubskiy files (spike detection from raw membrane voltage and the ball-velocity calibration) will be written and tested once that 71 MB file has been downloaded with your approval.
+
+### Vision: what FlyVis would add
+
+FlyVis (Lappalainen et al. 2024, [Nature 634:1132](https://doi.org/10.1038/s41586-024-07939-3)) models 64 optic-lobe cell types from photoreceptors to T4/T5, on the same 721-column hexagonal lattice as FlyGym's eyes (MIT license; Python up to 3.12). It would replace the engineered green detector with a connectome-constrained early visual system. Its limits for this app: it has no lobula columnar or other visual projection neurons, so a FlyWire layer would still have to connect it to the circuits here; it sees luminance only; and FlyGym 2.x no longer ships the integration that FlyGym 1.x had. Installing it needs PyTorch: the CPU-only wheel is 196,253,677 bytes (about 240–265 MB of downloads in all, an estimate), against about 3.0 GB for the default CUDA build, plus 3.4 MB of pretrained models. Nothing has been installed.
 
 ### A known quirk of the engineered model
 
@@ -235,12 +379,13 @@ With the target directly behind, the engineered model's left and right inputs ar
 
 ### Limits and assumptions
 
-- **Not a whole brain and not validated.** 3,000 of FlyWire's roughly 140,000 neurons, chosen by synapse paths to DNa02, with 12,155 weaker hop-2 partners dropped by the cap. Behavior was compared between models, not against flies.
+- **Not a whole brain in the closed loop by default, and not validated.** The committed circuits hold 3,000 and 4,000 of FlyWire's roughly 140,000 neurons, chosen by synapse paths to their seeds. The whole brain can be built and run, slowly. Behavior was compared between models, not against flies.
 - **Signs** come from per-neuron transmitter predictions. Glutamate is treated as inhibitory although it can excite; neuromodulators are left out by default; electrical synapses are absent.
-- **Dynamics** are one leaky-rate rule with a single gain, time constant and rectification for every neuron. There are no spikes, delays, adaptation, receptor kinetics or neuromodulation.
-- **Input**: every visual projection neuron on a side gets the same scalar, whatever its visual feature. **Output**: only DNa02 steers, and forward drive is a constant. The body's other descending neurons and the nerve cord are not modeled.
+- **Dynamics.** The rate model is one leaky-rate rule with a single gain, time constant and rectification. The spiking model uses Shiu et al.'s single set of constants for every neuron, with no adaptation, receptor kinetics or neuromodulation, and forward-Euler integration rather than Brian2's exact linear integration.
+- **Input and output.** Every input neuron on a side gets the same value, whatever its visual feature. Turning is an equal-weight sum over the readout types, and forward drive is a tonic term. The nerve cord and the body's other descending neurons are not modeled.
+- **Sampling.** The cap keeps neurons by path strength, which can sample a cell type unevenly between the sides.
 - **Sides** follow FlyWire's annotations; FAFB is a single female brain, and individual flies differ.
-- **The left bias** is a property of this model on this wiring; it is not known to describe flies.
+- **The side biases** are properties of these models on this wiring; they are not known to describe flies.
 
 ### Citations
 
@@ -249,6 +394,9 @@ With the target directly behind, the engineered model's left and right inputs ar
 - Eckstein N. et al. (2024) Neurotransmitter classification from electron microscopy images at synaptic sites in *Drosophila melanogaster*. *Cell* 187:2574–2594. [doi:10.1016/j.cell.2024.03.016](https://doi.org/10.1016/j.cell.2024.03.016)
 - Shiu P.K. et al. (2024) A *Drosophila* computational brain model reveals sensorimotor processing. *Nature* 634:210–219. [doi:10.1038/s41586-024-07763-9](https://doi.org/10.1038/s41586-024-07763-9)
 - Rayshubskiy A. et al. (2025) Neural circuit mechanisms for steering control in walking *Drosophila*. *eLife* 13:RP102230. [doi:10.7554/eLife.102230](https://doi.org/10.7554/eLife.102230)
+- Bidaye S.S. et al. (2020) Two brain pathways initiate distinct forward walking programs in *Drosophila*. *Neuron* 108:469–485. [doi:10.1016/j.neuron.2020.07.032](https://doi.org/10.1016/j.neuron.2020.07.032)
+- Lappalainen J.K. et al. (2024) Connectome-constrained networks predict neural activity across the fly visual system. *Nature* 634:1132–1140. [doi:10.1038/s41586-024-07939-3](https://doi.org/10.1038/s41586-024-07939-3)
+- Mussells Pires P. et al. (2024) Converting an allocentric goal into an egocentric steering signal. *Nature* 626:808–818. [doi:10.1038/s41586-023-07006-3](https://doi.org/10.1038/s41586-023-07006-3)
 - Zheng Z. et al. (2018) A complete electron microscopy volume of the brain of adult *Drosophila melanogaster*. *Cell* 174:730–743. [doi:10.1016/j.cell.2018.06.019](https://doi.org/10.1016/j.cell.2018.06.019)
 - Lobato-Rios V. et al. (2022) NeuroMechFly, a neuromechanical model of adult *Drosophila melanogaster*. *Nature Methods* 19:620–627. [doi:10.1038/s41592-022-01466-7](https://doi.org/10.1038/s41592-022-01466-7)
 - Wang-Chen S. et al. (2024) NeuroMechFly v2: simulating embodied sensorimotor control in adult *Drosophila*. *Nature Methods* 21:2353–2362. [doi:10.1038/s41592-024-02497-y](https://doi.org/10.1038/s41592-024-02497-y)
@@ -314,8 +462,8 @@ Replace `YOUR_RUN_FOLDER` with the name of a run you exported locally. Reference
 
 ## What remains before biological simulation claims
 
-v0.3 adds real connectivity with documented transmitter/sign assumptions, but its dynamics, sensory encoding and motor mapping are engineered, and it steers with a strong left bias. The next scientific step is a **validated circuit**: dynamics fitted to recorded activity, a sensory encoding grounded in the visual projection neurons' measured responses, a descending-to-motor mapping that includes the other steering neurons, and predictions tested against measured fly behavior and neural data, including held-out interventions. A larger neuron count alone does not provide this validation.
+v0.3 added real connectivity with documented transmitter/sign assumptions; v0.4 adds any circuit up to the whole brain, published spiking dynamics, a steering circuit that reaches targets and tools to analyze and compare them. The sensory encoding and the motor readout are still engineered, the side biases are unexplained beyond the sampling effects above, and nothing has been fitted to or tested against fly data. The next scientific step is a **validated circuit**: dynamics fitted to recorded activity, a sensory encoding grounded in the visual projection neurons' measured responses, a descending-to-motor mapping that includes the other steering neurons, and predictions tested against measured fly behavior and neural data, including held-out interventions. A larger neuron count alone does not provide this validation.
 
-The app currently does not simulate a whole CNS, spiking physiology, sex-specific behavior, flight, feeding, learning, courtship or mating. The real body supports walking and turning under the upstream leg controller. Whole-connectome ingestion, FlyVis integration, measured male biomechanics, odor sensing and multi-animal experiments remain future work.
+The app does not simulate the nerve cord, sex-specific behavior, flight, feeding, learning, courtship or mating. The real body supports walking and turning under the upstream leg controller. FlyVis integration, converters for recorded fly data, measured male biomechanics, odor sensing and multi-animal experiments remain future work.
 
 The official MaleCNS download list gives about **1.1 GB** for the full wiring table, **12.7 GB** for synapse locations and **6.8 GB** for partner records. These optional datasets are outside the bundled sample's scope. The published resources linked from the atlas remain available for inspecting broader data externally; the app never downloads them automatically.
