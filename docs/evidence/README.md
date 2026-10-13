@@ -14,9 +14,12 @@ backend/.venv/bin/python -m pip check
 backend/.venv/bin/python scripts/smoke_flygym.py
 backend/.venv/bin/python scripts/benchmark.py
 backend/.venv/bin/python scripts/benchmark.py --vision
+backend/.venv/bin/python scripts/benchmark.py --model connectome_dna02
+backend/.venv/bin/python scripts/evaluate_models.py --engine toy
+backend/.venv/bin/python scripts/evaluate_models.py --engine flygym --quick
 ```
 
-The full tests, smoke test and rendered benchmarks require a working graphics context. `./scripts/check.sh --fast` omits the FlyGym integration tests when only the remaining checks are needed.
+The full tests, smoke test and rendered benchmarks require a working graphics context. The evaluation script writes `evaluation-*.json` here and prints the tables summarized in the [research guide](../RESEARCH.md#evaluation). `./scripts/check.sh --fast` omits the FlyGym integration tests when only the remaining checks are needed.
 
 The smoke script writes a JSON report and PNG here. Benchmark scripts write sensor-specific JSON reports here. To keep console output, redirect it into a local log:
 

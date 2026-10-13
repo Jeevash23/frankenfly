@@ -72,3 +72,23 @@ def test_export_schedule_and_seed(tmp_path):
         assert (Path(result["path"]) / "telemetry.csv").read_text().count("\n") == 102
     finally:
         exp.close()
+
+
+@pytest.mark.flygym
+def test_fast_flygym_path_matches_upstream_controller_bitwise():
+    # The adapter precomputes FlyGym's per-step lookups; the physics must not change at all.
+    from digitalfly.simulation.engines import FlyGymBody
+    fast, upstream = FlyGymBody(11, render=False), FlyGymBody(11, render=False, upstream=True)
+    try:
+        rng = np.random.default_rng(0)
+        for _ in range(40):
+            motor = rng.uniform(-.2, 1.4, size=2)
+            fast.advance(motor)
+            upstream.advance(motor)
+            assert np.array_equal(fast.sim.mj_data.qpos, upstream.sim.mj_data.qpos)
+            assert np.array_equal(fast.sim.mj_data.qvel, upstream.sim.mj_data.qvel)
+            assert fast.body_signals() == upstream.body_signals()
+            assert fast.pose() == upstream.pose()
+    finally:
+        fast.close()
+        upstream.close()

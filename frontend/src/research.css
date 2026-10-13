@@ -1561,3 +1561,16 @@ input[type='checkbox'] {
 .panel-copy {
   font-size: 12px;
 }
+.retina-side {
+  font:
+    9px 'DM Sans Variable',
+    sans-serif;
+  fill: #7f8f72;
+}
+.intro-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}

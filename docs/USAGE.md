@@ -28,8 +28,9 @@ Extra browser tabs on the same computer share one simulation: Run, Reset, interv
 | Arena | Labeled top-down map from the simulated body poses; click to place the target |
 | Target X/Y, intensity | Moves the stimulus and its rendered landmark; press Enter or leave the field to apply coordinates |
 | Sensor model | Geometric bearing or rendered compound eyes; switching starts a fresh experiment |
+| Neural model | The engineered six-unit loop (default) or the connectome DNa02 circuit; switching starts a fresh experiment |
 | Sensor switches | Zero the corresponding input to the neural circuit |
-| Neural silencing | Clamps the selected units to zero in the model |
+| Neural silencing | Engineered model: clamps a group of units to zero. Connectome model: silences the left, right or both DNa02 neurons, or any cell type in the circuit |
 | Body engine | Starts a new experiment with FlyGym physics or the separately labeled toy demo |
 | Control mode | Neural loop, or the controller-only `[1, 1]` baseline that bypasses the neurons; starts a fresh experiment |
 | Export | Saves a folder and ZIP with CSV telemetry, configuration, provenance and the input schedule |
@@ -39,6 +40,10 @@ Extra browser tabs on the same computer share one simulation: Run, Reset, interv
 The **geometric** sensor uses the target's bearing and distance. The **compound-eye** mode computes its neural input from the actual eye-camera pixels, through an engineered green-contrast encoder. Behavior always comes from the Python simulation; the browser never animates it.
 
 Neural traces show continuous firing rates, not spikes. Silencing the descending units does not stop the body instantly, because the walking controller and the body keep their own dynamics.
+
+**Driving the fly**, under the world view, names the model that currently drives the body. With the connectome model, **Inside the loop** shows DNa02 left and right, the mean visual input on each side, or the five most active cell types, and **Neural atlas → Live circuit** shows the circuit by cell type: layers are hop distance to DNa02 (not anatomy), node size is the number of neurons, fill is the live mean rate, solid lines are excitatory and dashed, capped lines inhibitory connections. Click a type, or find it by name, to see its transmitter, partners and activity, or to silence it. In **Male & female anatomy**, the two female DNa02 skeletons are then tinted by the model's computed activity. That tint is model output, not recorded neural data.
+
+When the real-time factor drops below 1×, a note under the controls says how long one simulated second takes and whether that is the speed you requested or more than the computer can keep up with.
 
 Charts use simulated time and freeze during Pause. Sensor readouts can update while paused when you move the target. Active wall time excludes paused time, and the real-time factor is simulated time divided by active wall time, including rendering. These are measurements, not guarantees of real-time speed.
 
@@ -71,8 +76,10 @@ backend/.venv/bin/python scripts/benchmark.py --vision
 
 **No usable renderer:** compound-eye vision needs a graphics context. Use geometric sensing with `--no-render` if graphics are unavailable.
 
-**Body viewport disabled:** `--no-render` keeps the real physics and shows the labeled pose map instead. If the body itself fails to initialize, the app shows the error and keeps FlyGym selected; it never switches to the toy demo silently. The toy demo is always labeled **"Toy demo: not FlyGym physics or a biological connectome."**
+**Body viewport disabled:** `--no-render` keeps the real physics and shows the labeled pose map instead. If the body itself fails to initialize, the app shows the error and keeps FlyGym selected; it never switches to the toy demo silently. The toy demo is always labeled **"Toy demo: a kinematic body, not FlyGym physics."**
 
-**Linux headless rendering:** `MUJOCO_GL=egl ./scripts/start.sh` selects EGL, if your system has the EGL/OpenGL libraries installed. Setup never installs drivers or system packages. Linux rendering hasn't been validated yet.
+**Linux rendering:** in a desktop session MuJoCo's default GLFW context works. Without a display (SSH, containers), DigitalFly selects EGL automatically. To choose explicitly, start with `MUJOCO_GL=egl ./scripts/start.sh`, or `MUJOCO_GL=osmesa` if your system still ships OSMesa (recent Mesa releases do not). Setup never installs drivers or system packages.
+
+**Connectome circuit unavailable:** the connectome model reads `data/circuits/fafb783-dna02.json`, which ships with the repository. If it is missing or edited, restore it from version control or rebuild it with `scripts/build_circuit.py` (see the [research guide](RESEARCH.md#building-the-subcircuit)).
 
 **Connection lost:** controls disable, the last received state stays on screen with a label, and the page reconnects automatically. The app talks only to your own computer, fonts and meshes included; there are no analytics, accounts or cloud services.

@@ -3,13 +3,13 @@
 ## Requirements
 
 - A POSIX shell for the launch/setup scripts.
-- Python **3.12**, selected from PATH or supplied explicitly through `PYTHON_BIN`.
-- Node.js **24–26** and npm for installing/building the frontend.
+- Python **3.12**, selected from PATH, supplied explicitly through `PYTHON_BIN`, or (when [uv](https://docs.astral.sh/uv/) is installed and no other 3.12 is found) a uv-managed Python 3.12. The project environment is still created with `python -m venv` and installed from the hashed lock with pip.
+- Node.js **22.12–26** and npm for installing/building the frontend. Vite 7 needs Node 22.12 or newer. The frontend unit tests import TypeScript directly through Node's built-in type stripping, which the test script enables explicitly for Node 22.12–22.17 (later releases enable it by default).
 - An offscreen OpenGL context for the body camera and compound-eye sensing. Geometric sensing with `--no-render` can run without those images.
 
 No GPU or CUDA installation is required. Setup creates a project-local `backend/.venv`; it does not install drivers or change system settings. Each checkout should create its own environment and frontend dependencies.
 
-Reference validation covers macOS/ARM64. Linux/EGL and other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
+Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL rendering (v0.3). Other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
 
 ## Chosen stack
 
@@ -31,7 +31,8 @@ Reference validation covers macOS/ARM64. Linux/EGL and other environments have n
 | psutil | 7.2.2 |
 | pytest / httpx | 9.1.1 / 0.28.1 |
 | pip-tools | 7.5.3 |
-| Node requirement | 24–26 |
+| pyarrow (circuit build only, not the app) | 25.0.1 |
+| Node requirement | 22.12–26 |
 | React / React DOM | 19.3.0 |
 | Vite / React plugin | 7.3.6 / 5.2.0 |
 | TypeScript | 5.9.3 |
@@ -48,6 +49,21 @@ PIP_CACHE_DIR="$PWD/.cache/pip" PIP_TOOLS_CACHE_DIR="$PWD/.cache/pip-tools" \
 ```
 
 Do not hand-maintain an additional requirements file. Setup installs from the lock using `--require-hashes`, then installs the local source without resolving dependencies again.
+
+The circuit builder (`scripts/build_circuit.py`) needs pyarrow, which the app itself never imports. It lives in the optional `data` extra and its own lock, `backend/requirements-data.lock`: the runtime lock plus pyarrow, with hashes for every published wheel (macOS and Linux included). Install it only to rebuild `data/circuits/`:
+
+```sh
+backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-data.lock
+```
+
+After regenerating the runtime lock, regenerate this one from it, so shared pins stay identical:
+
+```sh
+cp backend/requirements.lock backend/requirements-data.lock
+PIP_CACHE_DIR="$PWD/.cache/pip" PIP_TOOLS_CACHE_DIR="$PWD/.cache/pip-tools" \
+  backend/.venv/bin/pip-compile --extra test --extra data --generate-hashes \
+  --output-file backend/requirements-data.lock backend/pyproject.toml
+```
 
 ## Official references checked
 
@@ -98,3 +114,11 @@ The research features use the existing pinned runtime packages; no extra GPU fra
 Anatomy data was downloaded from the official MaleCNS v1.0 bucket and the Bates/Lee lab FAFB v783 compilation. Small surface files came from navis-flybrains; no navis, trimesh, PyTorch, JAX or new graphics dependency was installed. A narrow NumPy reader handles the retained, hash-verified PLY assets. Details, sizes, coordinate assumptions and licensing: [RESEARCH.md](RESEARCH.md).
 
 Reproduce these checks using the commands above. Generated results belong in the ignored evidence directory; the public repository retains generic instructions and the validation summary.
+
+## v0.3 dependencies
+
+The connectome model needs no new runtime package: it uses NumPy and `scipy.sparse`; SciPy was already installed with FlyGym and is now declared directly, with unchanged pins and hashes. Building the circuit needs pyarrow 25.0.1, in the optional `data` extra and `backend/requirements-data.lock`; the app never imports it. The build downloads about 61 MB of FlyWire v783 data (13.5 MB of metadata and 47.3 MB of Parquet column chunks) into the ignored cache; sources and hashes are in `data/circuits/downloads.json`.
+
+The frontend's Node range is 22.12–26. Nothing needs Node 24: Vite 7 and its React plugin need 22.12 or newer, and CI runs on 22.12.0. Rollup's optional `@napi-rs/lzma` binary declares a newer Node, but it is a build-tool helper that rollup never loads at run time, and npm skips it on older Node versions.
+
+The continuous-integration workflow (`.github/workflows/ci.yml`) installs the hashed backend lock and the frontend lockfile on Ubuntu and runs everything except the FlyGym physics tests, which need an OpenGL context.

@@ -6,6 +6,7 @@ Physics, renderer creation, rendering and cleanup must use one owning thread.
 from io import BytesIO
 from pathlib import Path
 import os
+import sys
 import numpy as np
 from digitalfly.api.models import Pose, Stimulus, SensorState, Interventions
 
@@ -13,14 +14,143 @@ ROOT = Path(__file__).resolve().parents[4]
 PHYSICS_DT = .0001
 CONTROL_DT = .01
 NEURAL_DT = .001
+LEGS = ["lf", "lm", "lh", "rf", "rm", "rh"]
 os.environ.setdefault("MPLCONFIGDIR", str(ROOT / ".cache/matplotlib"))
 os.environ.setdefault("FLYGYM_ASSET_CACHE_DIR", str(ROOT / "data/flygym-assets"))
+# Headless Linux has no display for MuJoCo's default GLFW context; EGL renders offscreen.
+if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+    os.environ.setdefault("MUJOCO_GL", "egl")
+
+
+class ContactForces:
+    """Ground-contact forces on fixed body segments, computed exactly as FlyGym 2.1.0's
+    Simulation.get_bodysegment_contact_forces(ground_only=True), with its per-call segment
+    and geometry lookups done once. Same contacts, same order, same arithmetic."""
+
+    def __init__(self, sim, fly_name, segments):
+        geom_ids = sim._internal_geomid_by_bodyseg_by_fly[fly_name]
+        self.output = {int(geom_ids[segment]): i for i, segment in enumerate(segments)}
+        self.requested = np.zeros(sim.mj_model.ngeom, dtype=bool)
+        self.requested[list(self.output)] = True
+        self.ground = np.zeros(sim.mj_model.ngeom, dtype=bool)
+        self.ground[np.asarray(sim._internal_ground_geom_ids, dtype=np.int64)] = True
+        self.sim, self.fly_name, self.segments = sim, fly_name, segments
+
+    def __call__(self):
+        import mujoco
+        sim = self.sim
+        data = sim.mj_data
+        forces = np.zeros((len(self.segments), 3), dtype=float)
+        ncon = data.ncon
+        if ncon == 0:
+            return forces
+        contacts = data.contact
+        geom1, geom2 = contacts.geom1[:ncon], contacts.geom2[:ncon]
+        if geom1.min() < 0 or geom2.min() < 0:  # flex contacts: use the upstream routine
+            return sim.get_bodysegment_contact_forces(self.fly_name, self.segments, ground_only=True)
+        requested1, requested2 = self.requested[geom1], self.requested[geom2]
+        active = (requested1 | requested2) & ~contacts.exclude[:ncon].astype(bool)
+        active &= (requested1 & self.ground[geom2]) | (requested2 & self.ground[geom1])
+        wrench = np.zeros(6, dtype=float)
+        for contact_id in np.where(active)[0]:
+            mujoco.mj_contactForce(sim.mj_model, data, int(contact_id), wrench)
+            world_force = contacts.frame[contact_id].reshape(3, 3).T @ wrench[:3]
+            g1, g2 = int(geom1[contact_id]), int(geom2[contact_id])
+            if g1 in self.output:
+                forces[self.output[g1]] -= world_force
+            if g2 in self.output:
+                forces[self.output[g2]] += world_force
+        return forces
+
+
+def fast_turning_controller(timestep, preprogrammed_steps, output_dof_order):
+    """FlyGym 2.1.0's HybridTurningController with its per-step bookkeeping precomputed.
+
+    Each physics step the upstream controller rebuilds 42 JointDOF objects and looks
+    them up in a dict to order its output. This subclass gathers the same values by
+    precomputed index and precomputes the phase-gain breakpoints. Every arithmetic
+    operation is the upstream one, in the same order; a FlyGym test checks that the body
+    state stays bitwise identical to the upstream controller's.
+    """
+    from flygym_demo.complex_terrain import HybridTurningController, LocomotionAction
+    from flygym_demo.complex_terrain.common import dof_spec_to_jointdof
+    from flygym_demo.complex_terrain.hybrid_controller import _CORRECTION_VECTORS, _RIGHT_LEG_CORRECTION_SIGN
+
+    class FastTurningController(HybridTurningController):
+        def __post_init__(self):
+            super().__post_init__()
+            steps = self.preprogrammed_steps
+            order = {dof: i for i, dof in enumerate(self.output_dof_order)}
+            self._output_index = [[order.get(dof_spec_to_jointdof(leg, spec)) for spec in steps.dofs_per_leg]
+                                  for leg in self.legs]
+            if any(i is None for row in self._output_index for i in row) or \
+                    sorted(i for row in self._output_index for i in row) != list(range(len(self.output_dof_order))):
+                raise ValueError("Controller DOFs do not match the requested output order.")
+            self._gain_points = {}
+            for leg in self.legs:
+                swing_start, swing_end = steps.swing_period[leg]
+                self._gain_points[leg] = np.array([swing_start, np.mean([swing_start, swing_end]),
+                    swing_end + self.swing_extension, np.mean([swing_end, 2 * np.pi]), 2 * np.pi])
+            self._gain_values = np.array([0.0, 0.8, 0.0, -0.1, 0.0])
+            self._correction = {leg: _CORRECTION_VECTORS[leg[1]] * _RIGHT_LEG_CORRECTION_SIGN
+                                if leg.startswith("r") else _CORRECTION_VECTORS[leg[1]] for leg in self.legs}
+
+        def step(self, descending_signal, obs):
+            # HybridTurningController.step, unchanged.
+            descending_signal = np.asarray(descending_signal, dtype=float)
+            if descending_signal.shape != (2,):
+                raise ValueError("descending_signal must have shape (2,).")
+            self.cpg_network.intrinsic_amps = np.repeat(np.abs(descending_signal[:, np.newaxis]), 3, axis=1).ravel()
+            intrinsic_freqs = self._base_intrinsic_freqs.copy()
+            intrinsic_freqs[:3] *= 1 if descending_signal[0] >= 0 else -1
+            intrinsic_freqs[3:] *= 1 if descending_signal[1] >= 0 else -1
+            self.cpg_network.intrinsic_freqs = intrinsic_freqs
+            # HybridController.step with precomputed lookups.
+            leg_to_correct_retraction = self._select_retraction_leg(obs)
+            if leg_to_correct_retraction is not None:
+                if self.retraction_correction[leg_to_correct_retraction] > self.retraction_persistence_initiation_threshold:
+                    self.retraction_persistence_counter[leg_to_correct_retraction] = 1
+            self._update_persistence_counter()
+            stumbling_mask = self._get_stumbling_mask(obs)
+            self.cpg_network.step()
+            joint_angles = np.empty(len(self.output_dof_order), dtype=float)
+            adhesion_onoff = []
+            net_corrections = np.zeros(6, dtype=float)
+            for leg_idx, leg in enumerate(self.legs):
+                self._update_retraction_correction(leg_idx, leg_to_correct_retraction)
+                self._update_stumbling_correction(leg_idx, stumbling_mask[leg_idx])
+                if self.retraction_correction[leg_idx] > 0:
+                    net_correction = self.retraction_correction[leg_idx]
+                    self.stumbling_correction[leg_idx] = 0
+                else:
+                    net_correction = self.stumbling_correction[leg_idx]
+                phase = self.cpg_network.curr_phases[leg_idx]
+                magnitude = self.cpg_network.curr_magnitudes[leg_idx]
+                leg_angles = self.preprogrammed_steps.get_joint_angles(leg, phase, magnitude)
+                net_correction = np.clip(net_correction, 0, self.max_correction)
+                phase_gain = float(np.interp(phase % (2 * np.pi), self._gain_points[leg], self._gain_values))
+                leg_angles = leg_angles + net_correction * phase_gain * self._correction[leg]
+                net_corrections[leg_idx] = net_correction * phase_gain
+                joint_angles[self._output_index[leg_idx]] = leg_angles
+                adhesion_onoff.append(self._get_adhesion_onoff(leg, phase) if self.enable_adhesion else False)
+            adhesion_onoff = np.array(adhesion_onoff, dtype=bool)
+            self.last_info = {
+                "net_corrections": net_corrections.copy(),
+                "retraction_correction": self.retraction_correction.copy(),
+                "stumbling_correction": self.stumbling_correction.copy(),
+                "stumbling_mask": stumbling_mask.copy(),
+                "leg_to_correct_retraction": leg_to_correct_retraction,
+            }
+            return LocomotionAction(joint_angles=joint_angles, adhesion_onoff=adhesion_onoff)
+
+    return FastTurningController(timestep=timestep, preprogrammed_steps=preprogrammed_steps,
+                                 output_dof_order=output_dof_order)
 
 
 class FlyGymBody:
     name = "flygym"
 
-    def __init__(self, seed: int, render: bool = True, sensor_model: str = "geometric"):
+    def __init__(self, seed: int, render: bool = True, sensor_model: str = "geometric", upstream: bool = False):
         from flygym import Simulation
         from flygym.anatomy import ContactBodiesPreset
         from flygym.compose import FlatGroundWorld
@@ -56,13 +186,16 @@ class FlyGymBody:
             self.sim = Simulation(world, timestep=PHYSICS_DT)
             self.steps = PreprogrammedSteps()
             self.order = self.fly.get_actuated_jointdofs_order("position")
-            self.controller = HybridTurningController(timestep=PHYSICS_DT,
-                preprogrammed_steps=self.steps, output_dof_order=self.order)
+            # upstream=True keeps FlyGym's own controller and observation code, for equivalence checks.
+            self.upstream = upstream
+            self.controller = (HybridTurningController if upstream else fast_turning_controller)(
+                timestep=PHYSICS_DT, preprogrammed_steps=self.steps, output_dof_order=self.order)
             self.thorax_id = self.sim.mj_model.body("specimen/c_thorax").id
             self.target_id = self.sim.mj_model.geom("visual_target").id
             self.segment_ids = [[self.sim.mj_model.body(f"specimen/{leg}_{part}").id
                                  for part in ["coxa", "trochanterfemur", "tibia", "tarsus1", "tarsus5"]]
-                                for leg in ["lf", "lm", "lh", "rf", "rm", "rh"]]
+                                for leg in LEGS]
+            self._prepare_lookups()
             self.reset(seed)
             if render:
                 try:
@@ -73,6 +206,35 @@ class FlyGymBody:
         except Exception:
             self.close()
             raise
+
+    def _prepare_lookups(self):
+        """Segment indices that FlyGym otherwise recomputes on every physics step."""
+        from flygym.anatomy import BodySegment, LEGS as CONTROLLER_LEGS
+        from flygym_demo.complex_terrain.hybrid_controller import _DETECTED_STUMBLING_LINKS
+        fly = self.sim.world.fly_lookup[self.fly.name]
+        segment = type(fly).BODY_SEGMENT_CLASS
+        order = fly.get_bodysegs_order()
+        body_ids = self.sim._internal_bodyids_by_fly[self.fly.name]
+        self._thorax_body = body_ids[order.index(segment("c_thorax"))]
+        self._tarsus_bodies = [body_ids[order.index(segment(f"{leg}_tarsus5"))] for leg in CONTROLLER_LEGS]
+        self._stumbling_forces = ContactForces(self.sim, self.fly.name, [
+            segment(f"{leg}_{link}") for leg in CONTROLLER_LEGS for link in _DETECTED_STUMBLING_LINKS])
+        self._stumbling_shape = (len(CONTROLLER_LEGS), len(_DETECTED_STUMBLING_LINKS), 3)
+        self._leg_forces = ContactForces(self.sim, self.fly.name, [
+            BodySegment(f"{leg}_{part}") for leg in LEGS
+            for part in ["tibia", "tarsus1", "tarsus2", "tarsus3", "tarsus4", "tarsus5"]])
+
+    def _observation(self):
+        """HybridControllerObservation.from_sim's values, read through the precomputed indices."""
+        from flygym_demo.complex_terrain import HybridControllerObservation
+        if self.upstream:
+            return HybridControllerObservation.from_sim(self.sim, self.fly.name)
+        data = self.sim.mj_data
+        return HybridControllerObservation(
+            thorax_z=float(data.xpos[self._thorax_body, 2]),
+            tarsus5_z=np.array([data.xpos[i, 2] for i in self._tarsus_bodies], dtype=float),
+            stumbling_contact_forces=self._stumbling_forces().reshape(self._stumbling_shape),
+            fly_heading=data.xmat[self._thorax_body].reshape(3, 3)[:, 0].copy())
 
     def reset(self, seed: int):
         import mujoco
@@ -102,7 +264,7 @@ class FlyGymBody:
 
     def sensors(self, stimulus: Stimulus, interventions: Interventions) -> SensorState:
         from digitalfly.neural.model import encode
-        diagnostic = encode(self.pose(), stimulus, interventions)
+        diagnostic = encode(self.pose(legs=False), stimulus, interventions)
         if self.sensor_model != "vision":
             return diagnostic
         if self._visual_input is None or self._vision_age >= 5:
@@ -131,11 +293,10 @@ class FlyGymBody:
             "right": 0 if interventions.zero_right else right, "raw_left": left, "raw_right": right})
 
     def advance(self, motor: np.ndarray):
-        from flygym_demo.complex_terrain import HybridControllerObservation, apply_locomotion_action
+        from flygym_demo.complex_terrain import apply_locomotion_action
         previous = self.sim.mj_data.xpos[self.thorax_id, :2].copy()
         for _ in range(round(CONTROL_DT / PHYSICS_DT)):
-            obs = HybridControllerObservation.from_sim(self.sim, self.fly.name)
-            action = self.controller.step(motor, obs)
+            action = self.controller.step(motor, self._observation())
             apply_locomotion_action(self.sim, self.fly.name, action)
             self.sim.step()
         self.validate()
@@ -143,12 +304,13 @@ class FlyGymBody:
         self._vision_age += 1
 
     def body_signals(self):
-        from flygym.anatomy import BodySegment
-        legs = ["lf", "lm", "lh", "rf", "rm", "rh"]
-        segments = [BodySegment(f"{leg}_{part}") for leg in legs for part in ["tibia", "tarsus1", "tarsus2", "tarsus3", "tarsus4", "tarsus5"]]
-        forces = self.sim.get_bodysegment_contact_forces(self.fly.name, segments, ground_only=True).reshape(6, 6, 3)
-        magnitude = np.linalg.norm(forces.sum(axis=1), axis=1)
-        return {"leg_order": legs, "ground_contact_force": magnitude.tolist(),
+        if self.upstream:
+            segments = self._leg_forces.segments
+            forces = self.sim.get_bodysegment_contact_forces(self.fly.name, segments, ground_only=True)
+        else:
+            forces = self._leg_forces()
+        magnitude = np.linalg.norm(forces.reshape(6, 6, 3).sum(axis=1), axis=1)
+        return {"leg_order": LEGS, "ground_contact_force": magnitude.tolist(),
             "contact": (magnitude > .01).tolist(), "contact_threshold": .01,
             "cpg_phase_rad": (self.controller.cpg_network.curr_phases % (2*np.pi)).tolist(),
             "joint_position_rad": self.sim.get_joint_angles(self.fly.name).tolist(),
@@ -166,13 +328,20 @@ class FlyGymBody:
             if data.warning[warning].number:
                 raise FloatingPointError(f"MuJoCo numerical warning: {warning.name}")
 
-    def pose(self) -> Pose:
+    def planar(self) -> tuple[float, float, float]:
+        """x, y and yaw exactly as pose() computes them, without building leg geometry."""
+        data = self.sim.mj_data
+        x, y, _ = data.xpos[self.thorax_id]
+        mat = data.xmat[self.thorax_id].reshape(3, 3)
+        return float(x), float(y), float(np.arctan2(mat[1, 0], mat[0, 0]))
+
+    def pose(self, legs: bool = True) -> Pose:
         data = self.sim.mj_data
         x, y, z = data.xpos[self.thorax_id]
         mat = data.xmat[self.thorax_id].reshape(3, 3)
         return Pose(x=float(x), y=float(y), z=float(z),
                     yaw=float(np.arctan2(mat[1, 0], mat[0, 0])), velocity=self.velocity,
-                    legs=[data.xpos[ids].tolist() for ids in self.segment_ids])
+                    legs=[data.xpos[ids].tolist() for ids in self.segment_ids] if legs else [])
 
     def frame(self) -> bytes | None:
         if self.renderer is None:
@@ -219,7 +388,10 @@ class ToyBody:
         if not np.isfinite([self.x, self.y, self.yaw]).all():
             raise FloatingPointError("Toy body produced nonfinite state.")
 
-    def pose(self) -> Pose:
+    def planar(self) -> tuple[float, float, float]:
+        return float(self.x), float(self.y), self.yaw
+
+    def pose(self, legs: bool = True) -> Pose:
         return Pose(x=float(self.x), y=float(self.y), z=.7, yaw=self.yaw, velocity=self.velocity)
 
     def frame(self):

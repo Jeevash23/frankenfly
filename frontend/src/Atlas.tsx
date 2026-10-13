@@ -11,8 +11,10 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import type {Command} from './types';
-import {fmt} from './ResearchPanels';
+import type {Command, State} from './types';
+import {fmt} from './format';
+import {glowColor} from './connectome/layout';
+import {useCircuit} from './connectome/useCircuit';
 
 type Neuron = {
   id: string;
@@ -45,12 +47,15 @@ function BrainCanvas({
   type,
   surface,
   includeCord,
+  tint,
 }: {
   data: Anatomy;
   selected: string | null;
   type: string;
   surface: boolean;
   includeCord: boolean;
+  // Live model output per neuron ID; drawn instead of the cell-type color.
+  tint: Record<string, number> | null;
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const drag = useRef<{x: number; y: number} | null>(null);
@@ -144,9 +149,10 @@ function BrainCanvas({
     data.neurons
       .filter((n) => type === 'all' || n.cell_type === type)
       .forEach((n) => {
+        const live = tint?.[n.id];
         ctx.globalAlpha = selected && selected !== n.id ? 0.16 : 0.92;
-        ctx.strokeStyle = colors[n.cell_type] ?? '#cadabe';
-        ctx.lineWidth = selected === n.id ? 1.2 : 0.75;
+        ctx.strokeStyle = live !== undefined ? glowColor(live) : (colors[n.cell_type] ?? '#cadabe');
+        ctx.lineWidth = selected === n.id ? 1.2 : live !== undefined ? 1.3 : 0.75;
         ctx.beginPath();
         n.edges.forEach(([a, b]) => {
           if (
@@ -175,13 +181,13 @@ function BrainCanvas({
     ctx.fillText('100 µm', 26, 483);
     ctx.fillStyle = '#7e9588';
     ctx.fillText('Native coordinates · anatomical reconstruction', width - 270, 483);
-  }, [data, selected, type, surface, angle, width, bounds, includeCord, visibleSurfaces]);
+  }, [data, selected, type, surface, angle, width, bounds, includeCord, visibleSurfaces, tint]);
   return (
     <div className="brain-view">
       <div className="brain-view-label">
         <span>
           <i />
-          ANATOMICAL DATA
+          {tint ? 'ANATOMY · DNA02 TINTED BY MODEL OUTPUT' : 'ANATOMICAL DATA'}
         </span>
         <span>{data.space.toUpperCase()} / µm</span>
       </div>
@@ -243,7 +249,7 @@ function BrainCanvas({
   );
 }
 
-export function AnatomyPanel() {
+export function AnatomyPanel({state}: {state: State | null}) {
   const [sex, setSex] = useState<'female' | 'male'>('female');
   const [cache, setCache] = useState<Partial<Record<'female' | 'male', Anatomy>>>({});
   const [error, setError] = useState('');
@@ -253,6 +259,19 @@ export function AnatomyPanel() {
   const [surface, setSurface] = useState(true);
   const [includeCord, setIncludeCord] = useState(true);
   const data = cache[sex];
+  const {circuit} = useCircuit(state);
+  // Only the female FAFB skeletons are the same neurons as the connectome model's DNa02.
+  const leftRate = Math.round((state?.sample?.rates[0] ?? 0) * 100) / 100;
+  const rightRate = Math.round((state?.sample?.rates[1] ?? 0) * 100) / 100;
+  const tint = useMemo(
+    () =>
+      circuit && sex === 'female'
+        ? {[circuit.dna02.left]: leftRate, [circuit.dna02.right]: rightRate}
+        : null,
+    [circuit, sex, leftRate, rightRate],
+  );
+  const sideOf = (id: string) =>
+    circuit?.dna02.left === id ? 'left' : circuit?.dna02.right === id ? 'right' : null;
   useEffect(() => {
     setSelected(null);
     setType('all');
@@ -265,7 +284,10 @@ export function AnatomyPanel() {
     setError('');
     fetch(`/api/atlas/${sex}`)
       .then((r) => {
-        if (!r.ok) throw Error('Anatomy assets could not be loaded.');
+        if (!r.ok)
+          throw Error(
+            'The anatomy files could not be loaded. They ship in data/atlas/; check that folder is intact and the server is still running.',
+          );
         return r.json();
       })
       .then((d) => {
@@ -325,6 +347,7 @@ export function AnatomyPanel() {
               type={type}
               surface={surface}
               includeCord={includeCord}
+              tint={tint}
             />
           )}
           <div className="anatomy-controls">
@@ -363,8 +386,16 @@ export function AnatomyPanel() {
               <ChevronDown size={13} />
             </div>
           </div>
+          {tint && (
+            <p className="model-tint-note anatomy-tint-note" role="note">
+              DNa02 brightness is live output of the connectome model (computed rate: dim = 0,
+              bright = 1). It is model output, not recorded neural data.
+            </p>
+          )}
           <div className="panel-footnote">
-            Source geometry, simplified for display · no simulated activity on this anatomy
+            {tint
+              ? 'Source geometry, simplified for display · DNa02 tinted by computed model output'
+              : 'Source geometry, simplified for display · no simulated activity on this anatomy'}
           </div>
         </section>
         <aside className="atlas-inspector">
@@ -385,9 +416,20 @@ export function AnatomyPanel() {
                   className={`neuron-list-row ${selected === neuron.id ? 'selected' : ''}`}
                   onClick={() => setSelected(neuron.id)}
                 >
-                  <i style={{background: colors[neuron.cell_type]}} />
+                  <i
+                    style={
+                      tint?.[neuron.id] !== undefined
+                        ? {background: glowColor(tint[neuron.id]), boxShadow: '0 0 0 1px #2b4939'}
+                        : {background: colors[neuron.cell_type]}
+                    }
+                  />
                   <span>
-                    <strong>{neuron.cell_type}</strong>
+                    <strong>
+                      {neuron.cell_type}
+                      {tint && sideOf(neuron.id)
+                        ? ` · ${sideOf(neuron.id)} · model ${fmt(tint[neuron.id])}`
+                        : ''}
+                    </strong>
                     <small>{neuron.id}</small>
                   </span>
                   <Eye size={14} />
@@ -515,7 +557,10 @@ export function ConnectivityPanel({command, disabled}: {command: Command; disabl
   const refresh = () =>
     fetch('/api/connectivity')
       .then((r) => {
-        if (!r.ok) throw Error('Connectivity library is unavailable.');
+        if (!r.ok)
+          throw Error(
+            'The saved connectivity list could not be read. Check that the local server is still running.',
+          );
         return r.json();
       })
       .then((d) => setDatasets(d.datasets))
@@ -541,12 +586,15 @@ export function ConnectivityPanel({command, disabled}: {command: Command; disabl
   const load = async (key: string) => {
     try {
       const response = await fetch(`/api/connectivity/${key}`);
-      if (!response.ok) throw Error('Could not load the selected dataset.');
+      if (!response.ok)
+        throw Error(
+          'The selected dataset could not be loaded. Its file may have been moved or deleted.',
+        );
       setData(await response.json());
       setSelected('');
       setError('');
     } catch (e) {
-      setError(String(e));
+      setError(e instanceof Error ? e.message : 'The selected dataset could not be loaded.');
     }
   };
   const nodes = data?.graph.nodes ?? [];

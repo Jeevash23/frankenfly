@@ -10,13 +10,15 @@ import psutil
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend/src"))
 from digitalfly.api.models import RunConfig
+from digitalfly.simulation.experiment import APPLICATION_VERSION
 from digitalfly.simulation.worker import SimulationWorker
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--vision', action='store_true', help='Benchmark rendered compound-eye inputs')
+parser.add_argument('--model', choices=['engineered', 'connectome_dna02'], default='engineered', help='Neural model to drive the body')
 args = parser.parse_args()
 sensor_model = 'vision' if args.vision else 'geometric'
-worker = SimulationWorker(RunConfig(speed=2, sensor_model=sensor_model), render=True)
+worker = SimulationWorker(RunConfig(speed=2, sensor_model=sensor_model, neural_model=args.model), render=True)
 worker.start()
 try:
     assert worker.ready.wait(30), "Worker initialization timed out"
@@ -33,8 +35,8 @@ try:
     assert state["status"] == "paused", state["error"]
     result = {
         "platform": platform.platform(), "python": platform.python_version(), "engine": "FlyGym 2.1.0",
-        "controller": "engineered neural + upstream hybrid turning", "render_resolution": [640, 288],
-        "sensor_model": sensor_model, "application_version": "0.2.0",
+        "controller": f"{args.model} neural model + upstream hybrid turning", "render_resolution": [640, 288],
+        "sensor_model": sensor_model, "neural_model": args.model, "application_version": APPLICATION_VERSION,
         "eye_ommatidia_per_eye": state['vision'].get('ommatidia_per_eye'),
         "vertical_field_of_view_degrees": 35,
         "render_target_wall_hz": 10, "requested_speed": 2,
@@ -50,5 +52,5 @@ try:
 finally:
     worker.close()
 result["worker_cleanly_stopped"] = not worker.thread.is_alive()
-(ROOT / f"docs/evidence/research-performance-{sensor_model}.json").write_text(json.dumps(result, indent=2))
+(ROOT / f"docs/evidence/research-performance-{sensor_model}-{args.model}.json").write_text(json.dumps(result, indent=2))
 print(json.dumps(result, indent=2))
