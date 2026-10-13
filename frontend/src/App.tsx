@@ -7,6 +7,7 @@ import {AnatomyPanel, ConnectivityPanel} from './Atlas';
 import {CircuitPanel} from './ResearchPanels';
 import Experiments from './Experiments';
 import {ConnectomeCircuitView} from './connectome/CircuitView';
+import {BuildPanel} from './connectome/BuildPanel';
 import {modelPhrases, noInterventions} from './models';
 import {AppHeader, type Page} from './shell/AppHeader';
 import {Alerts, type Exported} from './shell/Alerts';
@@ -20,7 +21,9 @@ export default function App() {
   const [serverClosed, setServerClosed] = useState(false);
   const {state, connected, busy, error, command, clearError} = useSimulation(!serverClosed);
   const [page, setPage] = useState<Page>('workbench');
-  const [atlasView, setAtlasView] = useState<'anatomy' | 'circuit' | 'connectivity'>('anatomy');
+  const [atlasView, setAtlasView] = useState<'anatomy' | 'circuit' | 'build' | 'connectivity'>(
+    'anatomy',
+  );
   const [quitOpen, setQuitOpen] = useState(false);
   const [view, setView] = useState<WorldView>('specimen');
   const [modelNotes, setModelNotes] = useState(false);
@@ -162,28 +165,38 @@ export default function App() {
         {page === 'atlas' && (
           <>
             <div className="research-tabs" aria-label="Neural explorer view">
-              {(['anatomy', 'circuit', 'connectivity'] as const).map((view) => (
+              {(['anatomy', 'circuit', 'build', 'connectivity'] as const).map((view) => (
                 <button
                   key={view}
                   className={atlasView === view ? 'selected' : ''}
                   onClick={() => setAtlasView(view)}
                 >
-                  {view === 'anatomy'
-                    ? 'Male & female anatomy'
-                    : view === 'circuit'
-                      ? 'Live circuit'
-                      : 'Imported connectivity'}
+                  {
+                    {
+                      anatomy: 'Male & female anatomy',
+                      circuit: 'Live circuit',
+                      build: 'Build a circuit',
+                      connectivity: 'Imported connectivity',
+                    }[view]
+                  }
                 </button>
               ))}
             </div>
             {atlasView === 'anatomy' ? (
               <AnatomyPanel state={state} />
             ) : atlasView === 'circuit' ? (
-              state?.config.neural_model === 'connectome_dna02' ? (
-                <ConnectomeCircuitView state={state} command={command} disabled={disabled} />
+              state?.config.neural_model === 'connectome' ? (
+                <ConnectomeCircuitView
+                  state={state}
+                  command={command}
+                  reset={reset}
+                  disabled={disabled}
+                />
               ) : (
                 <CircuitPanel state={state} command={command} disabled={disabled} />
               )
+            ) : atlasView === 'build' ? (
+              <BuildPanel state={state} command={command} reset={reset} disabled={editDisabled} />
             ) : (
               <ConnectivityPanel command={command} disabled={disabled} />
             )}
@@ -226,8 +239,8 @@ export default function App() {
           <div>
             <FlyMark small />
             <span>
-              {state?.config.neural_model === 'connectome_dna02'
-                ? 'Walking controller: FlyWire DNa02 subcircuit · data-derived wiring, assumed signs, engineered dynamics'
+              {state?.config.neural_model === 'connectome'
+                ? `Walking controller: FlyWire circuit ${state.config.connectome_parameters.circuit} · data-derived wiring, assumed signs, ${state.config.connectome_parameters.dynamics === 'spiking' ? 'spiking neurons after Shiu et al. 2024' : 'engineered rate dynamics'}`
                 : 'No biological connectome loaded into the walking controller'}
             </span>
             <button onClick={() => setModelNotes(true)}>

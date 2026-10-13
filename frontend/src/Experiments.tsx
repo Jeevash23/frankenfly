@@ -20,6 +20,7 @@ import {
   conditionsFor,
   firstExperiment,
   modelPhrases,
+  normalizeModel,
   noInterventions,
 } from './models';
 import {useCircuit} from './connectome/useCircuit';
@@ -57,15 +58,17 @@ export default function Experiments({
   const [conditions, setConditions] = useState<Condition[]>(['control', 'left_sensor_off']);
   const [cellType, setCellType] = useState('');
   const model = state?.config.neural_model ?? 'engineered';
-  const available = conditionsFor(model);
   const {circuit} = useCircuit(state);
-  // Switching models drops conditions the new model does not have.
+  // DNa02 conditions need a circuit with DNa02; assume one until the circuit has loaded.
+  const hasDNa02 = !circuit || circuit.types.some((t) => t.name === 'DNa02');
+  const available = conditionsFor(model, hasDNa02);
+  // Switching models or circuits drops conditions that are no longer available.
   useEffect(() => {
     setConditions((previous) => {
-      const kept = previous.filter((c) => conditionsFor(model).includes(c));
+      const kept = previous.filter((c) => conditionsFor(model, hasDNa02).includes(c));
       return kept.length ? kept : ['control'];
     });
-  }, [model]);
+  }, [model, hasDNa02]);
   const [runs, setRuns] = useState<SavedRun[]>([]);
   const [selected, setSelected] = useState<string[]>([]);
   const [details, setDetails] = useState<SavedRun[]>([]);
@@ -144,7 +147,7 @@ export default function Experiments({
       setError('Use each seed only once.');
       return;
     }
-    const conditionError = conditionProblem(conditions, model, cellType);
+    const conditionError = conditionProblem(conditions, model, cellType, hasDNa02);
     if (conditionError) {
       setError(conditionError);
       return;
@@ -158,7 +161,7 @@ export default function Experiments({
     if (result) setNotice('Comparison started. Each complete trial is saved automatically.');
   };
   const loadFirstExperiment = () => {
-    const preset = firstExperiment(model);
+    const preset = firstExperiment(model, hasDNa02);
     setProtocol(preset.protocol);
     setSeeds(preset.seeds);
     setConditions(preset.conditions);
@@ -595,8 +598,8 @@ export default function Experiments({
                         {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
                         <small>
                           {run.config.sensor_model === 'vision' ? 'Compound eye' : 'Geometric'} ·{' '}
-                          {run.config.neural_model === 'connectome_dna02'
-                            ? 'connectome'
+                          {normalizeModel(run.config.neural_model) === 'connectome'
+                            ? `connectome · ${run.config.connectome_parameters?.circuit ?? 'fafb783-dna02'}${run.config.connectome_parameters?.dynamics === 'spiking' ? ' · spiking' : ''}`
                             : 'engineered'}
                         </small>
                       </td>

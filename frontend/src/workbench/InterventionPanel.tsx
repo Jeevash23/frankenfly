@@ -30,37 +30,42 @@ function CellTypeSilencing({
   const [draft, setDraft] = useState('');
   const silenced = state?.interventions.silence_types ?? [];
   const names = new Set(circuit?.types.map((t) => t.name));
+  // Large circuits list only the types nearest the readout; the server checks the rest.
+  const complete = !circuit || circuit.types_shown >= circuit.types_total;
+  const hasDNa02 = names.has('DNa02');
   const problem =
-    draft && !names.has(draft.trim())
+    draft && complete && !names.has(draft.trim())
       ? 'Not a cell type in this circuit. Pick one from the suggestions.'
       : '';
   const add = () => {
     const name = draft.trim();
-    if (!names.has(name) || silenced.includes(name)) return;
+    if (!name || (complete && !names.has(name)) || silenced.includes(name)) return;
     intervene({silence_types: [...silenced, name]});
     setDraft('');
   };
   return (
     <>
-      <label className="field-label">
-        Silence DNa02
-        <div className="select-wrap">
-          <select
-            aria-label="Silence DNa02"
-            value={state?.interventions.silence_dna02 ?? 'none'}
-            disabled={editDisabled}
-            onChange={(e) =>
-              intervene({silence_dna02: e.target.value as Intervention['silence_dna02']})
-            }
-          >
-            <option value="none">None · both active</option>
-            <option value="left">Left DNa02 (L)</option>
-            <option value="right">Right DNa02 (R)</option>
-            <option value="both">Both DNa02</option>
-          </select>
-          <ChevronDown size={14} />
-        </div>
-      </label>
+      {hasDNa02 && (
+        <label className="field-label">
+          Silence DNa02
+          <div className="select-wrap">
+            <select
+              aria-label="Silence DNa02"
+              value={state?.interventions.silence_dna02 ?? 'none'}
+              disabled={editDisabled}
+              onChange={(e) =>
+                intervene({silence_dna02: e.target.value as Intervention['silence_dna02']})
+              }
+            >
+              <option value="none">None · both active</option>
+              <option value="left">Left DNa02 (L)</option>
+              <option value="right">Right DNa02 (R)</option>
+              <option value="both">Both DNa02</option>
+            </select>
+            <ChevronDown size={14} />
+          </div>
+        </label>
+      )}
       <label className="field-label">
         Silence a cell type
         <input
@@ -143,7 +148,7 @@ export function InterventionPanel({
           disabled={editDisabled}
           onChange={() => intervene({zero_right: !interventions?.zero_right})}
         />
-        {state?.config.neural_model === 'connectome_dna02' ? (
+        {state?.config.neural_model === 'connectome' ? (
           <CellTypeSilencing state={state} editDisabled={editDisabled} intervene={intervene} />
         ) : (
           <label className="field-label">
