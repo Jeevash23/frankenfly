@@ -45,7 +45,7 @@ LIF = {"v_rest_mv": -52.0, "v_reset_mv": -52.0, "v_threshold_mv": -45.0, "tau_me
 
 def circuit_path(name: str) -> Path:
     """Committed circuits first, then local ones; only plain files inside the two folders."""
-    if not NAME_PATTERN.fullmatch(name) or name == "local":
+    if not NAME_PATTERN.fullmatch(name) or name == "local" or name.endswith(".flyvis"):
         raise ValueError(f"{name!r} is not a valid circuit name.")
     for folder in (CIRCUIT_DIR, LOCAL_DIR):
         for suffix in (".json", ".npz"):
@@ -182,13 +182,40 @@ def list_circuits() -> list[dict]:
             continue
         for path in sorted(folder.iterdir()):
             if path.suffix in {".json", ".npz"} and NAME_PATTERN.fullmatch(path.stem) and path.name != "downloads.json" \
-                    and path.stem != "local" and path.stem not in seen and path.is_file() and not path.is_symlink():
+                    and path.stem != "local" and not path.stem.endswith(".flyvis") and path.stem not in seen \
+                    and path.is_file() and not path.is_symlink():
                 seen.add(path.stem)
                 try:
                     result.append(_info(str(path), path.stat().st_mtime_ns))
                 except (OSError, ValueError, KeyError) as exc:
                     result.append({"name": path.stem, "error": f"{type(exc).__name__}: {exc}"})
     return result
+
+
+def bridge_path(data: "CircuitData") -> Path:
+    """Where a circuit's FlyVis bridge lives: next to the circuit file (scripts/build_circuit.py flyvis-bridge)."""
+    return data.path.with_name(f"{data.path.stem}.flyvis.json")
+
+
+@lru_cache(maxsize=4)
+def _bridge(path: str, mtime_ns: int, circuit_sha256: str, n: int):
+    raw = json.loads(Path(path).read_text())
+    if raw.get("format") != "digitalfly-flyvis-bridge" or raw.get("circuit_sha256") != circuit_sha256:
+        raise ValueError(f"{Path(path).name} does not belong to this version of the circuit; rebuild it.")
+    e = raw["entries"]
+    columns = np.asarray(e["eye"], dtype=np.int64) * len(raw["flyvis"]["types"]) + np.asarray(e["type"], dtype=np.int64)
+    matrix = sparse.csr_matrix((np.asarray(e["weight"], dtype=np.float64), (np.asarray(raw["neurons"])[e["neuron"]], columns)),
+                               shape=(n, 2 * len(raw["flyvis"]["types"])))
+    return matrix, raw["flyvis"]["types"]
+
+
+def load_bridge(data: "CircuitData"):
+    """(sparse weights from FlyVis eye × type responses to neurons, FlyVis type names) for a circuit."""
+    path = bridge_path(data)
+    if not path.is_file():
+        raise FileNotFoundError(f"The {data.key} circuit has no FlyVis bridge. Build it with: "
+                                f"backend/.venv/bin/python scripts/build_circuit.py flyvis-bridge --circuit {data.key}")
+    return _bridge(str(path), path.stat().st_mtime_ns, data.sha256, len(data.ids))
 
 
 def known_cell_types(circuit: str = DEFAULT_CIRCUIT) -> set[str]:
@@ -242,10 +269,17 @@ class SpikingState:
         self.step_index = 0
         self.rng = np.random.default_rng([int(seed), 0x5B1])
 
-    def advance(self, left: float, right: float, silenced: np.ndarray):
-        """One 1 ms neural step: ten 0.1 ms substeps. Returns the number of spikes."""
+    def advance(self, left: float, right: float, silenced: np.ndarray, drive: np.ndarray | None = None):
+        """One 1 ms neural step: ten 0.1 ms substeps. Returns the number of spikes. With `drive` (one value per
+        neuron, from FlyVis), each neuron's Poisson rate follows its own drive instead of its side's sensor."""
         p = self.parameters
-        chances = [min(1., p.input_gain * value * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000) for value in (left, right)]
+        scale = p.input_gain * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000
+        if drive is None:
+            chances = [min(1., scale * value) for value in (left, right)]
+            inputs = self.inputs
+        else:
+            targets = np.flatnonzero(drive > 0)
+            inputs, chances = [targets], [np.minimum(1., scale * drive[targets])]
         v, g, blocked = self.v, self.g, self.blocked
         total = 0
         for _ in range(self.substeps):
@@ -272,8 +306,8 @@ class SpikingState:
                     np.add.at(self.queue[(slot + self.delay) % self.slots], self.indices[offsets], self.weights[offsets])
             g += self.queue[slot]
             self.queue[slot] = 0
-            for population, chance in zip(self.inputs, chances):
-                if chance > 0:
+            for population, chance in zip(inputs, chances):
+                if np.any(chance > 0):
                     v[population[self.rng.random(len(population)) < chance]] += self.kick
             v[spikes], g[spikes] = LIF["v_reset_mv"], 0
             blocked[spikes] = self.refractory[spikes]
@@ -297,6 +331,7 @@ class ConnectomeCircuit:
         self._seed = 0
         self._silence_key = None
         self._silenced = np.array([], dtype=np.int64)
+        self.visual = None  # FlyVis responses (eyes × types) when the FlyVis sensor drives the circuit
         self.configure(parameters or ConnectomeParameters())
 
     def configure(self, parameters: ConnectomeParameters):
@@ -389,18 +424,38 @@ class ConnectomeCircuit:
         if self.spiking is not None:
             self.spiking.reset(self._seed)
 
+    def set_visual(self, responses: np.ndarray | None):
+        """Drive the input neurons from FlyVis (an eyes × types array, left eye first) through the circuit's
+        FlyWire bridge, or return to the left/right sensor values with None. Returns the mean drive per side."""
+        if responses is None:
+            self.visual = self._visual_drive = None
+            return None
+        matrix, types = load_bridge(self.data)
+        responses = np.asarray(responses, dtype=np.float64)
+        if responses.shape != (2, len(types)):
+            raise ValueError(f"FlyVis responses must be 2 × {len(types)}.")
+        drive = np.zeros(len(self.data.ids))
+        inputs = np.concatenate([self.input_left, self.input_right])
+        drive[inputs] = (matrix @ responses.ravel())[inputs]
+        self.visual, self._visual_drive = responses, drive
+        return float(drive[self.input_left].mean()), float(drive[self.input_right].mean())
+
     def advance(self, sensors: SensorState, interventions: Interventions, dt: float = .001):
         silenced = self.silenced(interventions)
+        visual = self._visual_drive if self.visual is not None else None
         if self.spiking is not None:
-            self.spiking.advance(sensors.left, sensors.right, silenced)
+            self.spiking.advance(sensors.left, sensors.right, silenced, visual)
             self.spiking.rate_hz[silenced] = 0
             return
         rates = self.rates
         rates[silenced] = 0
         drive = self.W @ rates
         gain = self.parameters.input_gain
-        drive[self.input_left] += gain * sensors.left
-        drive[self.input_right] += gain * sensors.right
+        if visual is not None:
+            drive += gain * visual
+        else:
+            drive[self.input_left] += gain * sensors.left
+            drive[self.input_right] += gain * sensors.right
         np.clip(drive, 0, 1, out=drive)
         rates += dt / self.tau * (drive - rates)
         rates[silenced] = 0

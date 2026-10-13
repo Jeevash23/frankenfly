@@ -164,9 +164,11 @@ class FlyGymBody:
         self.eye_frame = None
         self._vision_age = 0
         self._visual_input = None
+        self.flyvis = None
+        self._luminance = None
         try:
             self.fly = make_locomotion_fly(name="specimen", add_adhesion=True, colorize=True)
-            if sensor_model == "vision":
+            if sensor_model in ("vision", "flyvis"):
                 self.fly.add_vision()
             self.camera = self.fly.add_tracking_camera(
                 name="body_cam", pos_offset=(-.5, -7.5, 3.5),
@@ -196,6 +198,9 @@ class FlyGymBody:
                                  for part in ["coxa", "trochanterfemur", "tibia", "tarsus1", "tarsus5"]]
                                 for leg in LEGS]
             self._prepare_lookups()
+            if sensor_model == "flyvis":
+                from digitalfly.vision.flyvis_eyes import FlyVisEyes
+                self.flyvis = FlyVisEyes(retina=self.sim.retina)
             self.reset(seed)
             if render:
                 try:
@@ -252,7 +257,25 @@ class FlyGymBody:
         self._vision_age = 0
         self.vision = {}
         self.eye_frame = None
+        self._luminance = None
+        self._flyvis_adapt = self.flyvis is not None  # on the first look, once the target is placed
         self.validate()
+
+    def _render_eyes(self, stimulus):
+        """Render both eye cameras; keep per-ommatidium luminance (FlyVis) and the display frame."""
+        from PIL import Image
+        raw = self.sim.get_raw_vision(self.fly.name)
+        self._luminance = (self.flyvis.luminance(raw[0]), self.flyvis.luminance(raw[1]))
+        self._vision_age = 0
+        self.vision = {"ommatidia_per_eye": self.sim.retina.num_ommatidia_per_eye,
+            "left": np.round(self._luminance[0], 5).tolist(), "right": np.round(self._luminance[1], 5).tolist(),
+            "sample_interval_s": .05, "sample_time_s": float(self.sim.mj_data.time),
+            "encoder": "FlyVis (Lappalainen et al. 2024) on per-ommatidium luminance; pooled per cell type and eye"}
+        combined = np.concatenate([raw[0], raw[1]], axis=1)
+        image = Image.fromarray(combined)
+        image.thumbnail((640, 365))
+        out = BytesIO(); image.save(out, format="JPEG", quality=85)
+        self.eye_frame = out.getvalue()
 
     def set_stimulus(self, stimulus: Stimulus):
         import mujoco
@@ -261,10 +284,23 @@ class FlyGymBody:
         self.sim.mj_model.geom_rgba[self.target_id] = [.08, min(1, .08+.67*stimulus.intensity), .12, 1 if stimulus.intensity else 0]
         mujoco.mj_forward(self.sim.mj_model, self.sim.mj_data)
         self._visual_input = None
+        self._luminance = None
 
     def sensors(self, stimulus: Stimulus, interventions: Interventions) -> SensorState:
         from digitalfly.neural.model import encode
         diagnostic = encode(self.pose(legs=False), stimulus, interventions)
+        if self.sensor_model == "flyvis":
+            if self._luminance is None or self._vision_age >= 5:
+                self._render_eyes(stimulus)
+            if self._flyvis_adapt:
+                # Adapt FlyVis to the starting scene for 0.5 s, so a run does not begin with a flash.
+                self.flyvis.reset()
+                self.flyvis.step(*self._luminance, steps=50)
+                self._flyvis_adapt = False
+            # The circuit reads self.flyvis.responses through its bridge; these are display summaries.
+            left, right = (float(v) for v in self.flyvis.responses.mean(axis=1))
+            return diagnostic.model_copy(update={"left": 0 if interventions.zero_left else left,
+                "right": 0 if interventions.zero_right else right, "raw_left": left, "raw_right": right})
         if self.sensor_model != "vision":
             return diagnostic
         if self._visual_input is None or self._vision_age >= 5:
@@ -301,6 +337,8 @@ class FlyGymBody:
             self.sim.step()
         self.validate()
         self.velocity = float(np.linalg.norm(self.sim.mj_data.xpos[self.thorax_id, :2] - previous) / CONTROL_DT)
+        if self.flyvis is not None:
+            self.flyvis.step(*self._luminance)  # 10 ms of FlyVis with the latest eye images
         self._vision_age += 1
 
     def body_signals(self):

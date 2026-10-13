@@ -104,10 +104,23 @@ class Experiment:
             self.active_wall_s += time.perf_counter() - self._run_started
             self._run_started = None
 
+    def sense(self):
+        """Sensor values for this interval; with FlyVis eyes, the circuit's visual drive too."""
+        sensors = self.body.sensors(self.config.stimulus, self.interventions)
+        if getattr(self.body, "flyvis", None) is not None and self.circuit.kind == "connectome":
+            responses = self.body.flyvis.responses.copy()
+            responses[0] *= not self.interventions.zero_left
+            responses[1] *= not self.interventions.zero_right
+            left, right = self.circuit.set_visual(responses)
+            sensors = sensors.model_copy(update={"left": left, "right": right})
+        elif getattr(self.circuit, "visual", None) is not None:
+            self.circuit.set_visual(None)
+        return sensors
+
     def observe(self):
         self.circuit.apply_silencing(self.interventions)
         pose = self.body.pose()
-        sensors = self.body.sensors(self.config.stimulus, self.interventions)
+        sensors = self.sense()
         self.sample = Sample(step=self.step_index, t=self.t, pose=pose, sensors=sensors,
             rates=self.circuit.readout(), motor=self.circuit.motor(self.config.controller == "baseline").tolist(),
             body_signals=self.body.body_signals())
@@ -143,7 +156,7 @@ class Experiment:
                         self.set_interventions(event.interventions, source="protocol")
                     self.protocol_applied.add(index)
         previous_x, previous_y, previous_yaw = self.body.planar()
-        sensors = self.body.sensors(self.config.stimulus, self.interventions)
+        sensors = self.sense()
         for _ in range(round(CONTROL_DT / NEURAL_DT)):
             self.circuit.advance(sensors, self.interventions, NEURAL_DT)
         motor = self.circuit.motor(self.config.controller == "baseline")
@@ -270,7 +283,9 @@ class Experiment:
             mode = "Controller-only baseline; neural output bypassed" if self.config.controller == "baseline" else "Engineered neural closed loop"
         return {
             "body_engine": "FlyGym 2.1.0 / MuJoCo 3.9.0 · NeuroMechFly" if self.config.engine == "flygym" else "Toy demo: not FlyGym physics",
-            "sensor_model": "FlyGym compound-eye rendering · engineered green-contrast encoder" if self.config.sensor_model == "vision" else "Geometric bilateral bearing / intensity approximation · v1",
+            "sensor_model": {"vision": "FlyGym compound-eye rendering · engineered green-contrast encoder",
+                             "flyvis": "FlyGym compound-eye rendering → FlyVis optic-lobe network (Lappalainen et al. 2024; FIB-25/FIB-19 connectivity, task-trained) → circuit visual neurons by FlyWire v783 synapse counts; pooling engineered"
+                             }.get(self.config.sensor_model, "Geometric bilateral bearing / intensity approximation · v1"),
             "neural_model": neural,
             "motor_controller": "FlyGym hybrid turning controller · engineered" if self.config.engine == "flygym" else "Differential kinematic controller · engineered",
             "connectivity_source": wiring,

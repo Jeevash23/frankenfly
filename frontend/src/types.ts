@@ -84,7 +84,7 @@ export type Config = {
   controller: 'neural' | 'baseline';
   speed: number;
   stimulus: Stimulus;
-  sensor_model: 'geometric' | 'vision';
+  sensor_model: 'geometric' | 'vision' | 'flyvis';
   neural_model: NeuralModel;
   neural_parameters: NeuralParameters;
   connectome_parameters: ConnectomeParameters;

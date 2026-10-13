@@ -15,6 +15,7 @@ from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, St
 from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
 from digitalfly.neural.model import RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog
+from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION
 from digitalfly.data.research import ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs, run_detail
 from digitalfly.simulation.engines import ROOT
@@ -117,6 +118,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 "whole_brain_connectome": model == "connectome" and bool(circuit.get("build", {}).get("whole_brain")),
                 "connectome_circuit": circuit, "connectome_circuits_available": len(list_circuits()),
                 "circuit_builder_ready": catalog() is not None,
+                "flyvis": dict(zip(["available", "reason"], flyvis_available())),
                 "body_morphology_sex": "female", "male_body_available": False,
                 "shutdown_available": app.state.shutdown_callback is not None,
                 "neural_units": 6 if model == "engineered" else circuit.get("neurons"),
@@ -185,6 +187,17 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             return _summary(parameters.model_dump_json(), load_circuit(parameters.circuit).sha256)
         except (OSError, ValueError) as exc:
             raise HTTPException(404, f"Connectome circuit unavailable: {exc}") from exc
+
+    @app.get("/api/vision/flyvis")
+    def flyvis_status():
+        ok, reason = flyvis_available()
+        circuit = current_parameters().circuit
+        try:
+            from digitalfly.neural.connectome import bridge_path
+            bridged = bridge_path(load_circuit(circuit)).is_file()
+        except (OSError, ValueError):
+            bridged = False
+        return {"available": ok, "reason": reason, "circuit": circuit, "circuit_has_bridge": bridged}
 
     @app.get("/api/connectome/circuits")
     def connectome_circuits():

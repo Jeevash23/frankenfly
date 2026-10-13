@@ -148,8 +148,12 @@ export default function App() {
               Female-derived body · single animal
             </span>
             <small>
-              {state?.config.sensor_model === 'vision' ? 'Compound-eye input' : 'Geometric input'} ·{' '}
-              {modelPhrases[state?.config.neural_model ?? 'engineered']}
+              {
+                {vision: 'Compound-eye input', flyvis: 'FlyVis eyes', geometric: 'Geometric input'}[
+                  state?.config.sensor_model ?? 'geometric'
+                ]
+              }{' '}
+              · {modelPhrases[state?.config.neural_model ?? 'engineered']}
             </small>
           </div>
         </section>
