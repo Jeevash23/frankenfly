@@ -251,8 +251,15 @@ class SpikingState:
         for _ in range(self.substeps):
             np.subtract(blocked, 1, out=blocked, where=blocked > 0)
             free = blocked == 0
-            v[free] += self.decay_membrane * (LIF["v_rest_mv"] - v[free] + g[free])
-            g[free] -= self.decay_synapse * g[free]
+            # Masked arithmetic instead of boolean indexing: the same values, several times faster.
+            dv = LIF["v_rest_mv"] - v
+            dv += g
+            dv *= self.decay_membrane
+            dg = g * self.decay_synapse
+            dv *= free
+            dg *= free
+            v += dv
+            g -= dg
             v[silenced], g[silenced] = LIF["v_reset_mv"], 0
             spikes = np.flatnonzero(free & (v > LIF["v_threshold_mv"]))
             slot = self.step_index % self.slots
@@ -261,8 +268,8 @@ class SpikingState:
                 lengths = ends - starts
                 if lengths.sum():
                     offsets = np.repeat(starts - np.cumsum(lengths) + lengths, lengths) + np.arange(lengths.sum())
-                    target = (slot + self.delay) % self.slots
-                    self.queue[target] += np.bincount(self.indices[offsets], weights=self.weights[offsets], minlength=self.n)
+                    # The target slot was emptied when it was last delivered, one substep ago.
+                    np.add.at(self.queue[(slot + self.delay) % self.slots], self.indices[offsets], self.weights[offsets])
             g += self.queue[slot]
             self.queue[slot] = 0
             for population, chance in zip(self.inputs, chances):
