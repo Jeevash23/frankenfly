@@ -1,21 +1,25 @@
-"""Connectome-constrained rate model around the two DNa02 steering neurons.
+"""Connectome-constrained models on FlyWire circuits, with rate or spiking dynamics.
 
 What each part is:
   data-derived  neurons, cell types, sides, predicted transmitters and synapse counts from
-                FlyWire FAFB v783 (data/circuits/fafb783-dna02.json, built by scripts/build_circuit.py)
+                FlyWire FAFB v783 (data/circuits/, built by scripts/build_circuit.py)
   assumed       signs: acetylcholine excitatory; GABA and glutamate inhibitory (as in Shiu et al. 2024);
                 dopamine, serotonin, octopamine and unknown transmitters excluded unless switched on
-  engineered    leaky-rate dynamics and their global gains; the sensor → visual projection neuron
-                input mapping; forward drive as a tonic term; the turning readout gain
+  engineered    the dynamics' global gains; which populations receive the sensors, read out turning
+                and (optionally) set walking speed; forward drive as a tonic term
 
-Euler update every 1 ms for every neuron i:
-  r_i += dt/tau × (clip(sum_j W_ij r_j + input_i, 0, 1) − r_i)
-  W_ij = sign(j) × synapses(j → i) × global_gain
-Turning: right DNa02 more active than left turns the fly right (Rayshubskiy et al. 2025), and
-FlyGym's HybridTurningController turns right when the left legs' amplitude exceeds the right's.
+Rate dynamics, an Euler update every 1 ms for every neuron i:
+  r_i += dt/tau × (clip(sum_j W_ij r_j + input_i, 0, 1) − r_i),  W_ij = sign(j) × synapses(j → i) × global_gain
+Spiking dynamics: the leaky integrate-and-fire model and parameters of Shiu et al. 2024, stepped at 0.1 ms.
+Turning: turn = output gain × Σ_types (mean right − mean left) over the readout types. A more active
+right DNa02 turns the fly right (Rayshubskiy et al. 2025); FlyGym's HybridTurningController turns right
+when the left legs' amplitude exceeds the right's.
 """
 import hashlib
+import io
 import json
+import math
+import re
 from functools import lru_cache
 from pathlib import Path
 import numpy as np
@@ -23,39 +27,106 @@ from scipy import sparse
 from digitalfly.api.models import ConnectomeParameters, Interventions, SensorState
 
 ROOT = Path(__file__).resolve().parents[4]
-CIRCUIT_PATH = ROOT / "data/circuits/fafb783-dna02.json"
-READOUT_NAMES = ["DNa02 L", "DNa02 R", "Visual input L", "Visual input R", "Circuit mean"]
+CIRCUIT_DIR = ROOT / "data/circuits"
+LOCAL_DIR = CIRCUIT_DIR / "local"
+DEFAULT_CIRCUIT = "fafb783-dna02"
+CIRCUIT_PATH = CIRCUIT_DIR / f"{DEFAULT_CIRCUIT}.json"
+NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 INPUT_SUPER_CLASS = "visual_projection"
 CLASSIC_SIGNS = {"acetylcholine": 1, "gaba": -1, "glutamate": -1}
 OTHER_TRANSMITTERS = ("dopamine", "serotonin", "octopamine", "unknown")
 MOTOR_SCALE = 1.4  # Same descending-to-amplitude scale as the engineered model.
 TRACE_TYPES = 5
+DISPLAY_TYPES = 1500  # larger circuits show the types nearest the readout in the circuit view
+# Shiu et al. 2024 (Methods and model.py): leaky integrate-and-fire neurons with alpha synapses.
+LIF = {"v_rest_mv": -52.0, "v_reset_mv": -52.0, "v_threshold_mv": -45.0, "tau_membrane_ms": 20.0,
+       "tau_synapse_ms": 5.0, "refractory_ms": 2.2, "delay_ms": 1.8, "poisson_scale": 250, "dt_ms": 0.1}
+
+
+def circuit_path(name: str) -> Path:
+    """Committed circuits first, then local ones; only plain files inside the two folders."""
+    if not NAME_PATTERN.fullmatch(name) or name == "local":
+        raise ValueError(f"{name!r} is not a valid circuit name.")
+    for folder in (CIRCUIT_DIR, LOCAL_DIR):
+        for suffix in (".json", ".npz"):
+            path = folder / f"{name}{suffix}"
+            if path.is_file() and not path.is_symlink():
+                return path
+    raise FileNotFoundError(f"There is no circuit named {name}. Build it with scripts/build_circuit.py.")
+
+
+def _read(path: Path):
+    raw = path.read_bytes()
+    if path.suffix == ".npz":
+        with np.load(io.BytesIO(raw), allow_pickle=False) as archive:
+            arrays = {key: archive[key] for key in archive.files}
+        header = json.loads(str(arrays.pop("header")))
+        neurons = {key.removeprefix("neuron_"): value for key, value in arrays.items() if key.startswith("neuron_")}
+        neurons["id"] = arrays["neuron_id"]
+        edges = {"pre": arrays["edge_pre"], "post": arrays["edge_post"], "synapses": arrays["edge_synapses"]}
+        return raw, header, neurons, edges
+    data = json.loads(raw)
+    return raw, data, data["neurons"], data["edges"]
+
+
+def _describe(path: Path, raw: bytes, header: dict) -> dict:
+    """What the circuit list shows, from the file's header alone."""
+    prov = header["provenance"]
+    build, counts = prov.get("build", {}), prov.get("counts", {})
+    if header["version"] == 1:
+        seeds, readout = ["DNa02"], ["DNa02"]
+    else:
+        seeds, readout = [s["seed"] for s in prov["seeds"]], header["defaults"]["readout_types"]
+    return {"name": path.stem, "title": header["name"], "committed": path.parent == CIRCUIT_DIR,
+            "format": path.suffix[1:], "version": header["version"], "neurons": counts.get("neurons"),
+            "connections": counts.get("connections"), "cell_types": counts.get("cell_types"),
+            "seeds": seeds, "readout_types": readout,
+            "build": {k: build.get(k) for k in ["synapse_threshold", "hops", "neuron_cap", "whole_brain", "seeds"]},
+            "coverage": prov.get("coverage"), "license": prov.get("license"), "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+@lru_cache(maxsize=64)
+def _info(path: str, mtime_ns: int) -> dict:
+    path = Path(path)
+    raw = path.read_bytes()
+    if path.suffix == ".npz":
+        with np.load(io.BytesIO(raw), allow_pickle=False) as archive:
+            header = json.loads(str(archive["header"]))
+    else:
+        header = json.loads(raw)
+    if header.get("format") != "digitalfly-circuit" or header.get("version") not in (1, 2):
+        raise ValueError(f"{path.name} is not a DigitalFly circuit file.")
+    return _describe(path, raw, header)
 
 
 class CircuitData:
-    """The committed circuit file, validated once and shared by every model instance."""
+    """One circuit file (format 1 or 2, JSON or NumPy), validated once and shared by every model."""
 
     def __init__(self, path: Path):
-        raw = path.read_bytes()
+        raw, header, neurons, edges = _read(path)
+        if header.get("format") != "digitalfly-circuit" or header.get("version") not in (1, 2):
+            raise ValueError(f"{path.name} is not a DigitalFly circuit file.")
         self.path = path
-        self.sha256 = hashlib.sha256(raw).hexdigest()
-        data = json.loads(raw)
-        if data.get("format") != "digitalfly-circuit" or data.get("version") != 1:
-            raise ValueError(f"{path.name} is not a version-1 DigitalFly circuit file.")
-        self.provenance = data["provenance"]
-        self.name = data["name"]
-        lookups, neurons, edges = data["lookups"], data["neurons"], data["edges"]
-        self.ids = list(neurons["id"])
+        self.info = _describe(path, raw, header)
+        self.sha256 = self.info["sha256"]
+        self.bytes = len(raw)
+        self.version = header["version"]
+        self.name = header["name"]
+        self.key = path.stem
+        self.provenance = header["provenance"]
+        lookups = header["lookups"]
+        self.ids = [str(i) for i in np.asarray(neurons["id"]).tolist()]
         n = len(self.ids)
         for key in ["cell_type", "super_class", "cell_class", "transmitter", "side", "hop"]:
             if len(neurons[key]) != n:
                 raise ValueError(f"Circuit field {key} has {len(neurons[key])} entries for {n} neurons.")
         self.type_names = list(lookups["cell_type"])
         self.type_index = np.asarray(neurons["cell_type"], dtype=np.int64)
-        self.super_class = np.asarray(lookups["super_class"], dtype=object)[neurons["super_class"]]
-        self.cell_class = np.asarray(lookups["cell_class"], dtype=object)[neurons["cell_class"]]
-        self.transmitter = np.asarray(lookups["transmitter"], dtype=object)[neurons["transmitter"]]
-        self.side = np.asarray(lookups["side"], dtype=object)[neurons["side"]]
+        self.super_class = np.asarray(lookups["super_class"], dtype=object)[np.asarray(neurons["super_class"])]
+        self.cell_class = np.asarray(lookups["cell_class"], dtype=object)[np.asarray(neurons["cell_class"])]
+        self.transmitter = np.asarray(lookups["transmitter"], dtype=object)[np.asarray(neurons["transmitter"])]
+        self.side = np.asarray(lookups["side"], dtype=object)[np.asarray(neurons["side"])]
         self.hop = np.asarray(neurons["hop"], dtype=np.int64)
         self.pre = np.asarray(edges["pre"], dtype=np.int64)
         self.post = np.asarray(edges["post"], dtype=np.int64)
@@ -66,32 +137,62 @@ class CircuitData:
             raise ValueError("Circuit edge refers to a missing neuron.")
         if (self.synapses < 1).any():
             raise ValueError("Circuit synapse counts must be positive.")
-        dna02 = self.provenance["dna02"]
-        self.left, self.right = self.ids.index(dna02["left"]), self.ids.index(dna02["right"])
-        if self.type_names[self.type_index[self.left]] != "DNa02" or self.type_names[self.type_index[self.right]] != "DNa02":
-            raise ValueError("The circuit's DNa02 entries are not typed DNa02.")
-        inputs = self.super_class == INPUT_SUPER_CLASS
-        self.input_left = np.flatnonzero(inputs & (self.side == "left"))
-        self.input_right = np.flatnonzero(inputs & (self.side == "right"))
-        if not len(self.input_left) or not len(self.input_right):
-            raise ValueError("The circuit has no visual projection neurons on one side.")
+        if self.version == 1:  # v0.3 files describe one DNa02 pair
+            dna02 = self.provenance["dna02"]
+            self.seeds = [{"seed": "DNa02", "cell_types": ["DNa02"], "left": [dna02["left"]],
+                           "right": [dna02["right"]], "other": []}]
+            self.defaults = {"readout_types": ["DNa02"], "input": INPUT_SUPER_CLASS}
+        else:
+            self.seeds = self.provenance["seeds"]
+            self.defaults = header["defaults"]
         self.type_counts = np.bincount(self.type_index, minlength=len(self.type_names))
-        self.type_members = {name: np.flatnonzero(self.type_index == i) for i, name in enumerate(self.type_names)}
+        order = np.argsort(self.type_index, kind="stable")
+        bounds = np.searchsorted(self.type_index[order], np.arange(len(self.type_names) + 1))
+        self.type_members = {name: order[bounds[i]:bounds[i + 1]] for i, name in enumerate(self.type_names)}
+        self.build_threshold = int(self.provenance.get("build", {}).get("synapse_threshold", 5))
+
+    def members(self, cell_type: str, side: str | None = None) -> np.ndarray:
+        if cell_type not in self.type_members:
+            raise ValueError(f"{cell_type} is not a cell type in the {self.key} circuit.")
+        members = self.type_members[cell_type]
+        return members if side is None else members[self.side[members] == side]
+
+    def summary(self) -> dict:
+        return {**self.info, "neurons": len(self.ids), "connections": int(len(self.synapses)),
+                "cell_types": len(self.type_names)}
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _load(path: str, mtime_ns: int) -> CircuitData:
     return CircuitData(Path(path))
 
 
-def load_circuit(path: Path = CIRCUIT_PATH) -> CircuitData:
+def load_circuit(circuit: str | Path = DEFAULT_CIRCUIT) -> CircuitData:
+    path = circuit if isinstance(circuit, Path) else circuit_path(circuit)
     if not path.is_file():
         raise FileNotFoundError("The connectome circuit file is missing. Rebuild it with scripts/build_circuit.py.")
     return _load(str(path), path.stat().st_mtime_ns)
 
 
-def known_cell_types() -> set[str]:
-    return set(load_circuit().type_names)
+def list_circuits() -> list[dict]:
+    """Every circuit the app can load by name: committed ones, then locally built ones."""
+    result, seen = [], set()
+    for folder in (CIRCUIT_DIR, LOCAL_DIR):
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.iterdir()):
+            if path.suffix in {".json", ".npz"} and NAME_PATTERN.fullmatch(path.stem) and path.name != "downloads.json" \
+                    and path.stem != "local" and path.stem not in seen and path.is_file() and not path.is_symlink():
+                seen.add(path.stem)
+                try:
+                    result.append(_info(str(path), path.stat().st_mtime_ns))
+                except (OSError, ValueError, KeyError) as exc:
+                    result.append({"name": path.stem, "error": f"{type(exc).__name__}: {exc}"})
+    return result
+
+
+def known_cell_types(circuit: str = DEFAULT_CIRCUIT) -> set[str]:
+    return set(load_circuit(circuit).type_names)
 
 
 def transmitter_signs(data: CircuitData, other_transmitters: str) -> np.ndarray:
@@ -99,33 +200,148 @@ def transmitter_signs(data: CircuitData, other_transmitters: str) -> np.ndarray:
     return np.array([CLASSIC_SIGNS.get(nt, other) for nt in data.transmitter], dtype=np.float64)
 
 
-class ConnectomeCircuit:
-    kind = "connectome_dna02"
-    unit_names = READOUT_NAMES
+class SpikingState:
+    """Leaky integrate-and-fire network after Shiu et al. 2024, stepped at 0.1 ms (forward Euler).
 
-    def __init__(self, parameters: ConnectomeParameters | None = None, path: Path = CIRCUIT_PATH):
-        self.data = load_circuit(path)
-        self.rates = np.zeros(len(self.data.ids))
+    dv/dt = (v_rest − v + g) / tau_m and dg/dt = −g / tau_s, both frozen while refractory. A spike
+    resets v and g and, 1.8 ms later, adds sign × synapses × w_syn to g of each target. Input
+    neurons receive Poisson spikes that add 250 × w_syn to v and have no refractory period.
+    Each substep follows Brian2's schedule, which Shiu et al.'s code runs on: state update,
+    threshold, delayed synaptic and Poisson input, reset. A neuron that spiked at step s is
+    frozen until step s + 22 (Brian2: timestep(t − lastspike) ≥ timestep(refractory)).
+    """
+
+    def __init__(self, data: CircuitData, active: np.ndarray, signs: np.ndarray, parameters: ConnectomeParameters,
+                 inputs: tuple[np.ndarray, np.ndarray]):
+        p = parameters.spiking
+        n = len(data.ids)
+        weights = signs[data.pre[active]] * data.synapses[active] * p.synapse_weight_mv
+        matrix = sparse.csc_matrix((weights, (data.post[active], data.pre[active])), shape=(n, n))
+        matrix.sum_duplicates()
+        self.indptr, self.indices, self.weights = matrix.indptr, matrix.indices, matrix.data
+        self.n, self.inputs, self.parameters = n, inputs, parameters
+        dt = LIF["dt_ms"]
+        self.substeps = round(1 / dt)
+        self.delay = round(LIF["delay_ms"] / dt)
+        self.slots = self.delay + 1
+        self.refractory = np.full(n, round(LIF["refractory_ms"] / dt), dtype=np.int64)
+        for side in inputs:
+            self.refractory[side] = 0  # as for Poisson targets in Shiu et al.'s code
+        self.decay_membrane, self.decay_synapse = dt / LIF["tau_membrane_ms"], dt / LIF["tau_synapse_ms"]
+        self.kick = LIF["poisson_scale"] * p.synapse_weight_mv
+        self.rate_decay = math.exp(-dt / p.rate_window_ms)
+        self.rate_jump = 1000 / p.rate_window_ms  # Hz added per spike, so a steady f Hz train averages f
+        self.reset(0)
+
+    def reset(self, seed: int):
+        self.v = np.full(self.n, LIF["v_rest_mv"])
+        self.g = np.zeros(self.n)
+        self.blocked = np.zeros(self.n, dtype=np.int64)
+        self.queue = np.zeros((self.slots, self.n))
+        self.rate_hz = np.zeros(self.n)
+        self.step_index = 0
+        self.rng = np.random.default_rng([int(seed), 0x5B1])
+
+    def advance(self, left: float, right: float, silenced: np.ndarray):
+        """One 1 ms neural step: ten 0.1 ms substeps. Returns the number of spikes."""
+        p = self.parameters
+        chances = [min(1., p.input_gain * value * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000) for value in (left, right)]
+        v, g, blocked = self.v, self.g, self.blocked
+        total = 0
+        for _ in range(self.substeps):
+            np.subtract(blocked, 1, out=blocked, where=blocked > 0)
+            free = blocked == 0
+            v[free] += self.decay_membrane * (LIF["v_rest_mv"] - v[free] + g[free])
+            g[free] -= self.decay_synapse * g[free]
+            v[silenced], g[silenced] = LIF["v_reset_mv"], 0
+            spikes = np.flatnonzero(free & (v > LIF["v_threshold_mv"]))
+            slot = self.step_index % self.slots
+            if len(spikes):
+                starts, ends = self.indptr[spikes], self.indptr[spikes + 1]
+                lengths = ends - starts
+                if lengths.sum():
+                    offsets = np.repeat(starts - np.cumsum(lengths) + lengths, lengths) + np.arange(lengths.sum())
+                    target = (slot + self.delay) % self.slots
+                    self.queue[target] += np.bincount(self.indices[offsets], weights=self.weights[offsets], minlength=self.n)
+            g += self.queue[slot]
+            self.queue[slot] = 0
+            for population, chance in zip(self.inputs, chances):
+                if chance > 0:
+                    v[population[self.rng.random(len(population)) < chance]] += self.kick
+            v[spikes], g[spikes] = LIF["v_reset_mv"], 0
+            blocked[spikes] = self.refractory[spikes]
+            self.rate_hz *= self.rate_decay
+            self.rate_hz[spikes] += self.rate_jump
+            self.step_index += 1
+            total += len(spikes)
+        if not np.isfinite(v).all():
+            raise FloatingPointError("Nonfinite neural state; simulation paused.")
+        return total
+
+
+class ConnectomeCircuit:
+    """A connectome circuit with rate (default) or spiking dynamics and configurable populations."""
+    kind = "connectome"
+
+    def __init__(self, parameters: ConnectomeParameters | None = None, path: Path | None = None):
+        self.path = path  # an explicit file (tests); otherwise parameters.circuit names one
+        self.data = None
+        self.spiking = None
+        self._seed = 0
         self._silence_key = None
         self._silenced = np.array([], dtype=np.int64)
         self.configure(parameters or ConnectomeParameters())
 
     def configure(self, parameters: ConnectomeParameters):
-        data = self.data
+        data = load_circuit(self.path or parameters.circuit)
+        if data is not self.data:
+            self.data = data
+            self.rates = np.zeros(len(data.ids))
+            self._silence_key = None
         self.parameters = parameters.model_copy(deep=True)
-        signs = transmitter_signs(data, parameters.other_transmitters)
-        active = (data.synapses >= parameters.synapse_threshold) & (signs[data.pre] != 0)
-        weights = signs[data.pre[active]] * data.synapses[active] * parameters.global_gain
+        p = self.parameters
+        readout_types = p.readout_types if p.readout_types is not None else data.defaults["readout_types"]
+        if not readout_types:
+            raise ValueError(f"Choose readout cell types: the {data.key} circuit has no default steering readout.")
+        self.readouts = []
+        for name in readout_types:
+            left, right = data.members(name, "left"), data.members(name, "right")
+            if not len(left) or not len(right):
+                raise ValueError(f"{name} needs neurons on both sides to read out turning.")
+            self.readouts.append((name, left, right))
+        if p.input_types is None:
+            visual = data.super_class == INPUT_SUPER_CLASS
+            self.input_left = np.flatnonzero(visual & (data.side == "left"))
+            self.input_right = np.flatnonzero(visual & (data.side == "right"))
+            input_label = "Visual input"
+        else:
+            self.input_left = np.unique(np.concatenate([data.members(t, "left") for t in p.input_types]))
+            self.input_right = np.unique(np.concatenate([data.members(t, "right") for t in p.input_types]))
+            input_label = "Input"
+        if not len(self.input_left) or not len(self.input_right):
+            raise ValueError("The chosen input population has no neurons on one side.")
+        self.speed = np.unique(np.concatenate([data.members(t) for t in p.speed_types])) if p.speed_types else None
+        self.unit_names = [f"{name} {side}" for name, _, _ in self.readouts for side in ("L", "R")] + \
+            [f"{input_label} L", f"{input_label} R", "Circuit mean"] + (["Speed drive"] if self.speed is not None else [])
+        signs = transmitter_signs(data, p.other_transmitters)
+        active = (data.synapses >= p.synapse_threshold) & (signs[data.pre] != 0)
         n = len(data.ids)
-        self.W = sparse.csr_matrix((weights, (data.post[active], data.pre[active])), shape=(n, n))
-        self.W.sum_duplicates()
-        self.W.sort_indices()
-        self.tau = parameters.tau_ms / 1000
+        if p.dynamics == "spiking":
+            self.spiking = SpikingState(data, active, signs, p, (self.input_left, self.input_right))
+            self.spiking.reset(self._seed)
+            self.W = None
+        else:
+            self.spiking = None
+            weights = signs[data.pre[active]] * data.synapses[active] * p.global_gain
+            self.W = sparse.csr_matrix((weights, (data.post[active], data.pre[active])), shape=(n, n))
+            self.W.sum_duplicates()
+            self.W.sort_indices()
+        self.tau = p.tau_ms / 1000
         self.counts = {
             "connections_total": int(len(data.synapses)),
             "connections_active": int(active.sum()),
-            "excluded_below_threshold": int((data.synapses < parameters.synapse_threshold).sum()),
-            "excluded_by_sign_assumption": int(((data.synapses >= parameters.synapse_threshold) & (signs[data.pre] == 0)).sum()),
+            "excluded_below_threshold": int((data.synapses < p.synapse_threshold).sum()),
+            "excluded_by_sign_assumption": int(((data.synapses >= p.synapse_threshold) & (signs[data.pre] == 0)).sum()),
             "excitatory_connections": int((active & (signs[data.pre] > 0)).sum()),
             "inhibitory_connections": int((active & (signs[data.pre] < 0)).sum()),
         }
@@ -135,32 +351,49 @@ class ConnectomeCircuit:
         if key != self._silence_key:
             data = self.data
             chosen = []
-            if interventions.silence_dna02 in {"left", "both"}:
-                chosen.append([data.left])
-            if interventions.silence_dna02 in {"right", "both"}:
-                chosen.append([data.right])
-            for name in interventions.silence_types:
-                if name not in data.type_members:
-                    raise ValueError(f"{name} is not a cell type in the connectome circuit.")
-                chosen.append(data.type_members[name])
+            if interventions.silence_dna02 != "none":
+                if "DNa02" not in data.type_members:
+                    raise ValueError(f"The {data.key} circuit has no DNa02 neurons to silence.")
+                sides = ["left", "right"] if interventions.silence_dna02 == "both" else [interventions.silence_dna02]
+                chosen += [data.members("DNa02", side) for side in sides]
+            chosen += [data.members(name) for name in interventions.silence_types]
             self._silenced = np.unique(np.concatenate(chosen)).astype(np.int64) if chosen else np.array([], dtype=np.int64)
             self._silence_key = key
         return self._silenced
 
-    def apply_silencing(self, interventions: Interventions):
-        self.rates[self.silenced(interventions)] = 0
+    @property
+    def activity(self) -> np.ndarray:
+        """Rates for the rate model; for the spiking model, firing rate ÷ the rate scale."""
+        if self.spiking is not None:
+            return self.spiking.rate_hz / self.parameters.spiking.rate_scale_hz
+        return self.rates
 
-    def reset(self):
+    def apply_silencing(self, interventions: Interventions):
+        silenced = self.silenced(interventions)
+        if self.spiking is not None:
+            self.spiking.v[silenced], self.spiking.g[silenced], self.spiking.rate_hz[silenced] = LIF["v_reset_mv"], 0, 0
+        else:
+            self.rates[silenced] = 0
+
+    def reset(self, seed: int | None = None):
+        if seed is not None:
+            self._seed = int(seed)
         self.rates.fill(0)
+        if self.spiking is not None:
+            self.spiking.reset(self._seed)
 
     def advance(self, sensors: SensorState, interventions: Interventions, dt: float = .001):
         silenced = self.silenced(interventions)
+        if self.spiking is not None:
+            self.spiking.advance(sensors.left, sensors.right, silenced)
+            self.spiking.rate_hz[silenced] = 0
+            return
         rates = self.rates
         rates[silenced] = 0
         drive = self.W @ rates
         gain = self.parameters.input_gain
-        drive[self.data.input_left] += gain * sensors.left
-        drive[self.data.input_right] += gain * sensors.right
+        drive[self.input_left] += gain * sensors.left
+        drive[self.input_right] += gain * sensors.right
         np.clip(drive, 0, 1, out=drive)
         rates += dt / self.tau * (drive - rates)
         rates[silenced] = 0
@@ -168,82 +401,123 @@ class ConnectomeCircuit:
             raise FloatingPointError("Nonfinite neural state; simulation paused.")
 
     def turn(self) -> float:
-        """Positive when the right DNa02 is more active: a rightward turn command."""
-        return self.parameters.output_gain * float(self.rates[self.data.right] - self.rates[self.data.left])
+        """Positive when the readout's right side is more active: a rightward turn command."""
+        r = self.activity
+        return self.parameters.output_gain * float(sum(r[right].mean() - r[left].mean() for _, left, right in self.readouts))
+
+    def forward(self) -> float:
+        p = self.parameters
+        return p.tonic_drive if self.speed is None else p.tonic_drive + p.speed_gain * float(self.activity[self.speed].mean())
 
     def motor(self, baseline: bool = False) -> np.ndarray:
         if baseline:
             return np.ones(2)
-        turn, tonic = self.turn(), self.parameters.tonic_drive
+        turn, forward = self.turn(), self.forward()
         # Larger left-leg amplitude turns FlyGym's body (and the toy body) to the right.
-        return np.clip(np.array([tonic + turn, tonic - turn]), 0, 1) * MOTOR_SCALE
+        return np.clip(np.array([forward + turn, forward - turn]), 0, 1) * MOTOR_SCALE
 
     def readout(self) -> list[float]:
-        r, data = self.rates, self.data
-        return [float(r[data.left]), float(r[data.right]), float(r[data.input_left].mean()),
-                float(r[data.input_right].mean()), float(r.mean())]
+        r = self.activity
+        values = [float(r[side].mean()) for _, left, right in self.readouts for side in (left, right)]
+        values += [float(r[self.input_left].mean()), float(r[self.input_right].mean()), float(r.mean())]
+        return values + ([float(r[self.speed].mean())] if self.speed is not None else [])
 
     def type_means(self) -> np.ndarray:
-        return np.bincount(self.data.type_index, weights=self.rates, minlength=len(self.data.type_names)) / self.data.type_counts
+        return np.bincount(self.data.type_index, weights=self.activity, minlength=len(self.data.type_names)) / self.data.type_counts
 
     def description(self):
         data, p = self.data, self.parameters
         prov = data.provenance
+        spiking = p.dynamics == "spiking"
         return {
-            "kind": self.kind, "unit_names": READOUT_NAMES, "parameters": p.model_dump(),
-            "circuit_file": str(data.path.relative_to(ROOT)) if data.path.is_relative_to(ROOT) else data.path.name,
+            "kind": self.kind, "unit_names": self.unit_names, "parameters": p.model_dump(),
+            "circuit": data.key, "circuit_file": str(data.path.relative_to(ROOT)) if data.path.is_relative_to(ROOT) else data.path.name,
             "circuit_sha256": data.sha256, "circuit_name": data.name,
             "dataset": f"{prov['dataset']} {prov['release']} · {prov['specimen']}",
             "license": prov["license"], "coverage": prov["coverage"],
             "neurons": len(data.ids), "cell_types": len(data.type_names), **self.counts,
-            "dna02": {"left": data.ids[data.left], "right": data.ids[data.right]},
-            "input_population": {"super_class": INPUT_SUPER_CLASS, "left": int(len(data.input_left)),
-                                 "right": int(len(data.input_right))},
-            "equation": "r += dt/tau * (clip(W @ r + input, 0, 1) - r); W_ij = sign(j) * synapses(j->i) * global_gain",
+            "readout": [{"cell_type": name, "left": [data.ids[i] for i in left], "right": [data.ids[i] for i in right]}
+                        for name, left, right in self.readouts],
+            "input_population": {"cell_types": p.input_types or f"super class {INPUT_SUPER_CLASS}",
+                                 "left": int(len(self.input_left)), "right": int(len(self.input_right))},
+            "speed_population": p.speed_types or None,
+            "dynamics": p.dynamics,
+            "readout_units": "firing rate (spikes/s) ÷ rate scale" if spiking else "dimensionless rate",
+            "equation": ("Shiu et al. 2024 LIF: dv/dt = (v_rest − v + g)/tau_m, dg/dt = −g/tau_s; spike → g_post += sign × synapses × w_syn after 1.8 ms"
+                         if spiking else "r += dt/tau * (clip(W @ r + input, 0, 1) - r); W_ij = sign(j) * synapses(j->i) * global_gain"),
+            "spiking_constants": LIF if spiking else None,
             "signs": {"acetylcholine": "+1 (assumed)", "gaba": "-1 (assumed)", "glutamate": "-1 (assumed)",
                       "dopamine, serotonin, octopamine, unknown": "excluded (assumed)" if p.other_transmitters == "excluded"
                       else "+1 (assumed, Shiu et al. 2024 convention)"},
-            "input_mapping": "Engineered: the left/right sensor value × input gain drives every visual projection neuron on that side",
-            "output_mapping": ("Engineered readout: turn = output gain × (DNa02 R − DNa02 L); motor = 1.4 × clip([tonic + turn, tonic − turn], 0, 1). "
+            "input_mapping": (f"Engineered: the left/right sensor value × input gain drives every neuron of {', '.join(p.input_types)} on that side"
+                              if p.input_types else "Engineered: the left/right sensor value × input gain drives every visual projection neuron on that side")
+                             + (" as Poisson spikes (input rate × sensor)" if spiking else ""),
+            "output_mapping": ("Engineered readout: turn = output gain × Σ (right − left) over "
+                               f"{', '.join(name for name, _, _ in self.readouts)}; forward = tonic"
+                               + (f" + speed gain × mean({', '.join(p.speed_types)})" if p.speed_types else "")
+                               + "; motor = 1.4 × clip([forward + turn, forward − turn], 0, 1). "
                                "Direction: higher right DNa02 → rightward turn (Rayshubskiy et al. 2025); larger left amplitude turns right (FlyGym HybridTurningController)."),
-            "labels": {"structure": "data-derived", "signs": "assumed", "dynamics": "engineered",
+            "labels": {"structure": "data-derived", "signs": "assumed", "dynamics": "engineered" if not spiking else "published model (Shiu et al. 2024 parameters)",
                        "input_mapping": "engineered", "output_mapping": "engineered, direction from literature"},
         }
 
 
-def circuit_summary(parameters: ConnectomeParameters | None = None) -> dict:
-    """Cell-type view of the circuit for display: counts, layers and sign-aggregated connections."""
+def _display_types(data: CircuitData, keep: set[int], limit: int) -> np.ndarray:
+    n_types = len(data.type_names)
+    if n_types <= limit:
+        return np.arange(n_types)
+    layer = np.full(n_types, 99, dtype=np.int64)
+    hops = np.where(data.hop < 0, 98, data.hop)
+    np.minimum.at(layer, data.type_index, hops)
+    order = np.lexsort((np.arange(n_types), -data.type_counts, layer))
+    chosen = list(keep) + [int(t) for t in order if int(t) not in keep]
+    return np.array(sorted(chosen[:max(limit, len(keep))]))
+
+
+def circuit_summary(parameters: ConnectomeParameters | None = None, limit: int = DISPLAY_TYPES) -> dict:
+    """Cell-type view of a circuit for display: counts, layers and sign-aggregated connections."""
     parameters = parameters or ConnectomeParameters()
-    data = load_circuit()
+    model = ConnectomeCircuit(parameters.model_copy(update={"dynamics": "rate"}))
+    data = model.data
     signs = transmitter_signs(data, parameters.other_transmitters)
     active = (data.synapses >= parameters.synapse_threshold) & (signs[data.pre] != 0)
+    special = {data.type_names.index(name) for name, _, _ in model.readouts}
+    special |= {int(data.type_index[i]) for i in np.concatenate([model.input_left, model.input_right])} if parameters.input_types else set()
+    if model.speed is not None:
+        special |= {int(t) for t in np.unique(data.type_index[model.speed])}
+    shown = _display_types(data, special, limit)
+    visible = np.zeros(len(data.type_names), dtype=bool)
+    visible[shown] = True
     t_pre, t_post = data.type_index[data.pre[active]], data.type_index[data.post[active]]
-    sign = signs[data.pre[active]].astype(np.int64)
+    keep = visible[t_pre] & visible[t_post]
     n_types = len(data.type_names)
-    key = (t_pre * n_types + t_post) * 2 + (sign > 0)
+    key = ((t_pre[keep] * n_types + t_post[keep]) * 2 + (signs[data.pre[active]][keep] > 0)).astype(np.int64)
     unique, inverse = np.unique(key, return_inverse=True)
-    synapses = np.bincount(inverse, weights=data.synapses[active])
+    synapses = np.bincount(inverse, weights=data.synapses[active][keep])
     connections = np.bincount(inverse)
     inputs = np.zeros(len(data.ids), dtype=bool)
-    inputs[data.input_left] = inputs[data.input_right] = True
+    inputs[model.input_left] = inputs[model.input_right] = True
     types = []
-    for t, name in enumerate(data.type_names):
+    for t in shown.tolist():
+        name = data.type_names[t]
         members = data.type_members[name]
         transmitters = {}
         for nt in data.transmitter[members]:
             transmitters[nt] = transmitters.get(nt, 0) + 1
-        dominant = max(transmitters.items(), key=lambda item: (item[1], item[0]))[0]
+        hops = data.hop[members]
         types.append({
-            "name": name, "count": int(len(members)), "layer": int(data.hop[members].min()),
+            "index": t, "name": name, "count": int(len(members)),
+            "layer": int(hops[hops >= 0].min()) if (hops >= 0).any() else -1,
             "super_class": max(set(data.super_class[members]), key=list(data.super_class[members]).count),
-            "transmitters": transmitters, "transmitter": dominant,
+            "transmitters": transmitters, "transmitter": max(transmitters.items(), key=lambda item: (item[1], item[0]))[0],
             "sign": int(np.sign(signs[members].sum())),
             "left": int((data.side[members] == "left").sum()), "right": int((data.side[members] == "right").sum()),
             "input": bool(inputs[members].any()),
         })
-    def into(neuron):
-        # Inputs to one DNa02, aggregated by presynaptic cell type and sign, to show left/right differences.
-        mask = active & (data.post == neuron)
+
+    def into(neurons):
+        # Inputs to one side of a readout type, by presynaptic cell type and sign.
+        mask = active & np.isin(data.post, neurons)
         pre_type = data.type_index[data.pre[mask]]
         pre_sign = signs[data.pre[mask]].astype(np.int64)
         keys, back = np.unique(pre_type * 2 + (pre_sign > 0), return_inverse=True)
@@ -251,10 +525,12 @@ def circuit_summary(parameters: ConnectomeParameters | None = None) -> dict:
                 "synapses": np.bincount(back, weights=data.synapses[mask]).astype(np.int64).tolist()}
 
     return {
-        "name": data.name, "sha256": data.sha256, "parameters": parameters.model_dump(),
+        "name": data.key, "title": data.name, "sha256": data.sha256, "parameters": parameters.model_dump(),
         "neurons": len(data.ids), "connections_active": int(active.sum()),
-        "dna02_inputs": {"left": into(data.left), "right": into(data.right)},
-        "dna02": {"left": data.ids[data.left], "right": data.ids[data.right], "type_index": data.type_names.index("DNa02")},
+        "types_total": n_types, "types_shown": int(len(shown)),
+        "readouts": [{"cell_type": name, "type_index": data.type_names.index(name),
+                      "left": [data.ids[i] for i in left], "right": [data.ids[i] for i in right],
+                      "inputs": {"left": into(left), "right": into(right)}} for name, left, right in model.readouts],
         "provenance": {k: data.provenance[k] for k in ["dataset", "release", "specimen", "license", "coverage"]},
         "citations": data.provenance.get("citations", []),
         "types": types,
@@ -262,5 +538,50 @@ def circuit_summary(parameters: ConnectomeParameters | None = None) -> dict:
                   "sign": np.where(unique % 2 == 1, 1, -1).tolist(), "synapses": synapses.astype(np.int64).tolist(),
                   "connections": connections.tolist()},
         "labels": {"structure": "data-derived (FlyWire v783)", "signs": "assumed from predicted transmitters",
-                   "layout": "layers are hop distance to DNa02, not anatomy"},
+                   "layout": "layers are hop distance to the seeds, not anatomy"},
     }
+
+
+def trace_paths(parameters: ConnectomeParameters, source: str, target: str, max_hops: int = 4,
+                limit: int = 10, beam: int = 400) -> dict:
+    """Strongest cell-type paths from `source` to `target` within the circuit.
+
+    A step's strength is the input fraction it carries: synapses from the source type onto the target
+    type ÷ every synapse onto the target type in the circuit. A path multiplies its steps; its net sign
+    multiplies each step's assumed sign. Beam search keeps the strongest `beam` partial paths per depth.
+    """
+    data = load_circuit(parameters.circuit)
+    for name in (source, target):
+        data.members(name)
+    signs = transmitter_signs(data, parameters.other_transmitters)
+    active = (data.synapses >= parameters.synapse_threshold) & (signs[data.pre] != 0)
+    n_types = len(data.type_names)
+    t_pre, t_post = data.type_index[data.pre[active]], data.type_index[data.post[active]]
+    key = t_pre * n_types + t_post
+    unique, inverse = np.unique(key, return_inverse=True)
+    signed = np.bincount(inverse, weights=signs[data.pre[active]] * data.synapses[active])
+    total = np.bincount(inverse, weights=data.synapses[active])
+    incoming = np.bincount(data.type_index[data.post], weights=data.synapses, minlength=n_types)
+    edge_pre, edge_post = unique // n_types, unique % n_types
+    fraction = total / incoming[edge_post]
+    outgoing = {}
+    for a, b, f, s in zip(edge_pre.tolist(), edge_post.tolist(), fraction.tolist(), np.sign(signed).tolist()):
+        if a != b:
+            outgoing.setdefault(a, []).append((b, f, int(s)))
+    start, goal = data.type_names.index(source), data.type_names.index(target)
+    frontier, found = [((start,), 1.0, 1)], []
+    for _ in range(max_hops):
+        extended = []
+        for path, strength, sign in frontier:
+            for nxt, f, s in outgoing.get(path[-1], []):
+                if nxt in path:
+                    continue
+                candidate = (path + (nxt,), strength * f, sign * s)
+                (found if nxt == goal else extended).append(candidate)
+        frontier = sorted(extended, key=lambda c: -c[1])[:beam]
+    found.sort(key=lambda c: -c[1])
+    return {"source": source, "target": target, "max_hops": max_hops, "circuit": data.key,
+            "paths": [{"cell_types": [data.type_names[t] for t in path], "strength": strength,
+                       "net_sign": sign} for path, strength, sign in found[:limit]],
+            "rule": "Step strength = synapses onto the next type ÷ all its input synapses in the circuit; "
+                    "net sign multiplies the assumed signs. Strongest paths by beam search."}

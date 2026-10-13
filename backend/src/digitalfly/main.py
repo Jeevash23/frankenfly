@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
+from functools import lru_cache
 import asyncio
+import json
 import os
 from pathlib import Path
 import re
@@ -9,13 +11,19 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, StrictModel, NeuralParameters,
-    ConnectomeParameters, BatchRequest)
-from digitalfly.neural.connectome import circuit_summary
+    ConnectomeParameters, BatchRequest, check_cell_types, silenced_types)
+from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
 from digitalfly.neural.model import RateCircuit
 from digitalfly.simulation.experiment import APPLICATION_VERSION
 from digitalfly.data.research import ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs, run_detail
 from digitalfly.simulation.engines import ROOT
 from digitalfly.simulation.worker import SimulationWorker
+
+
+@lru_cache(maxsize=8)
+def _summary(parameters_json: str, sha256: str):
+    # Keyed by the circuit's hash as well, so a rebuilt file is never served from the cache.
+    return circuit_summary(ConnectomeParameters.model_validate_json(parameters_json))
 
 
 def create_app(config: RunConfig | None = None, render: bool = True):
@@ -88,10 +96,9 @@ def create_app(config: RunConfig | None = None, render: bool = True):
     def capabilities():
         state = worker.get_snapshot()
         model = state["config"]["neural_model"]
+        parameters = ConnectomeParameters.model_validate(state["config"]["connectome_parameters"])
         try:
-            summary = circuit_summary()
-            circuit = {"available": True, "neurons": summary["neurons"], "cell_types": len(summary["types"]),
-                       "sha256": summary["sha256"], **summary["provenance"]}
+            circuit = {"available": True, **load_circuit(parameters.circuit).summary()}
         except (OSError, ValueError) as exc:
             circuit = {"available": False, "error": str(exc)}
         return {"engines": ["flygym", "toy"], "default_engine": "flygym", "rendering": state["rendering"],
@@ -99,11 +106,13 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 "telemetry_target_hz": 10, "compound_eye_sensor": True,
                 "neural_models": {
                     "engineered": "Six engineered leaky rate units with hand-chosen weights (default)",
-                    "connectome_dna02": "FlyWire v783 DNa02 input subcircuit: data-derived wiring, assumed signs, engineered dynamics"},
+                    "connectome": "FlyWire v783 circuits with rate or spiking dynamics: data-derived wiring, assumed signs, engineered dynamics"},
                 "default_neural_model": "engineered", "active_neural_model": model,
-                # True only while the active model's wiring comes from connectome data; never a whole brain.
-                "biological_connectome": model == "connectome_dna02", "whole_brain_connectome": False,
-                "connectome_circuit": circuit,
+                "connectome_dynamics": ["rate", "spiking"], "active_dynamics": parameters.dynamics if model == "connectome" else None,
+                # True only while the active model's wiring comes from connectome data. Never an uploaded brain.
+                "biological_connectome": model == "connectome",
+                "whole_brain_connectome": model == "connectome" and bool(circuit.get("build", {}).get("whole_brain")),
+                "connectome_circuit": circuit, "connectome_circuits_available": len(list_circuits()),
                 "body_morphology_sex": "female", "male_body_available": False,
                 "shutdown_available": app.state.shutdown_callback is not None,
                 "neural_units": 6 if model == "engineered" else circuit.get("neurons"),
@@ -132,6 +141,13 @@ def create_app(config: RunConfig | None = None, render: bool = True):
 
     @app.post("/api/interventions")
     async def interventions(body: Interventions):
+        config = worker.get_snapshot()["config"]
+        if config["neural_model"] == "connectome":
+            circuit = ConnectomeParameters.model_validate(config["connectome_parameters"]).circuit
+            try:
+                check_cell_types(silenced_types(body), circuit)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
         return await command("interventions", body.model_dump())
 
     @app.post("/api/speed")
@@ -155,13 +171,29 @@ def create_app(config: RunConfig | None = None, render: bool = True):
     async def connectome_parameters(body: ConnectomeParameters):
         return await command("connectome_parameters", body.model_dump())
 
+    def current_parameters():
+        return ConnectomeParameters.model_validate(worker.get_snapshot()["config"]["connectome_parameters"])
+
     @app.get("/api/connectome/circuit")
     def connectome_circuit():
-        config = worker.get_snapshot()["config"]
+        parameters = current_parameters()
         try:
-            return circuit_summary(ConnectomeParameters.model_validate(config["connectome_parameters"]))
+            return _summary(parameters.model_dump_json(), load_circuit(parameters.circuit).sha256)
         except (OSError, ValueError) as exc:
             raise HTTPException(404, f"Connectome circuit unavailable: {exc}") from exc
+
+    @app.get("/api/connectome/circuits")
+    def connectome_circuits():
+        return {"circuits": list_circuits(), "active": current_parameters().circuit}
+
+    @app.get("/api/connectome/paths")
+    def connectome_paths(source: str, target: str, max_hops: int = 4, limit: int = 10):
+        if not 1 <= max_hops <= 6 or not 1 <= limit <= 50:
+            raise HTTPException(422, "Choose 1-6 hops and 1-50 paths.")
+        try:
+            return trace_paths(current_parameters(), source, target, max_hops, limit)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/batch/start")
     async def batch_start(body: BatchRequest):

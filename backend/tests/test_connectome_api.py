@@ -13,7 +13,7 @@ from digitalfly.main import create_app
 from digitalfly.neural.connectome import CIRCUIT_PATH
 
 ROOT = Path(__file__).resolve().parents[2]
-CONNECTOME = RunConfig(engine="toy", neural_model="connectome_dna02")
+CONNECTOME = RunConfig(engine="toy", neural_model="connectome")
 
 
 @pytest.fixture
@@ -28,19 +28,21 @@ def client(tmp_path, monkeypatch):
 
 def test_state_capabilities_and_circuit_describe_the_connectome_model(client):
     state = client.post("/api/step", json={}).json()
-    assert state["config"]["neural_model"] == "connectome_dna02"
+    assert state["config"]["neural_model"] == "connectome"
     assert len(state["sample"]["rates"]) == 5 and state["connectome"]["type_rates"]
     assert "data-derived" in state["provenance"]["neural_model"]
     assert "CC BY-NC 4.0" in state["provenance"]["connectivity_source"]
     capabilities = client.get("/api/capabilities").json()
-    assert capabilities["active_neural_model"] == "connectome_dna02"
+    assert capabilities["active_neural_model"] == "connectome" and capabilities["active_dynamics"] == "rate"
     assert capabilities["biological_connectome"] and not capabilities["whole_brain_connectome"]
     assert capabilities["connectome_circuit"]["sha256"] == hashlib.sha256(CIRCUIT_PATH.read_bytes()).hexdigest()
     circuit = client.get("/api/connectome/circuit").json()
-    names = [t["name"] for t in circuit["types"]]
-    assert names[circuit["dna02"]["type_index"]] == "DNa02" and len(names) == len(state["connectome"]["type_rates"])
+    names = {t["index"]: t["name"] for t in circuit["types"]}
+    readout = circuit["readouts"][0]
+    assert readout["cell_type"] == "DNa02" and names[readout["type_index"]] == "DNa02"
+    assert len(names) == len(state["connectome"]["type_rates"]) == circuit["types_total"] == circuit["types_shown"]
     assert len(circuit["edges"]["pre"]) == len(circuit["edges"]["synapses"]) > 0
-    assert set(circuit["edges"]["sign"]) <= {-1, 1} and circuit["dna02_inputs"]["left"]["synapses"]
+    assert set(circuit["edges"]["sign"]) <= {-1, 1} and readout["inputs"]["left"]["synapses"]
 
 
 def test_new_settings_are_validated(client):
@@ -48,7 +50,7 @@ def test_new_settings_are_validated(client):
         return client.post(path, json=body).status_code
     assert status("/api/reset", {**CONNECTOME.model_dump(), "neural_model": "whole_brain"}) == 422
     assert status("/api/reset", {**CONNECTOME.model_dump(), "connectome_parameters": {"global_gain": -1}}) == 422
-    assert status("/api/connectome/parameters", {"synapse_threshold": 3}) == 422
+    assert status("/api/connectome/parameters", {"synapse_threshold": 0}) == 422
     assert status("/api/connectome/parameters", {"tau_ms": "fast"}) == 422
     assert status("/api/interventions", {"silence_types": ["Not-a-type"]}) == 422
     assert status("/api/interventions", {"silence_dna02": "middle"}) == 422
@@ -87,7 +89,7 @@ def test_export_records_the_circuit_and_replays_exactly(client, tmp_path):
     run = Path(result["path"])
     metadata = json.loads((run / "metadata.json").read_text())
     neural = metadata["neural"]
-    assert neural["kind"] == "connectome_dna02" and neural["parameters"]["output_gain"] == 2
+    assert neural["kind"] == "connectome" and neural["parameters"]["output_gain"] == 2
     assert neural["circuit_sha256"] == hashlib.sha256(CIRCUIT_PATH.read_bytes()).hexdigest()
     assert neural["labels"]["signs"] == "assumed" and neural["license"].startswith("CC BY-NC 4.0")
     header = (run / "telemetry.csv").read_text().splitlines()[0].split(",")
@@ -101,7 +103,7 @@ def test_export_records_the_circuit_and_replays_exactly(client, tmp_path):
 
 
 def test_comparisons_accept_model_and_dna02_conditions(client, tmp_path):
-    config = RunConfig(engine="toy", neural_model="connectome_dna02", speed=2, protocol=Protocol(duration_steps=10))
+    config = RunConfig(engine="toy", neural_model="connectome", speed=2, protocol=Protocol(duration_steps=10))
     body = {"config": config.model_dump(), "seeds": [42],
             "conditions": ["dna02_left_off", "dna02_both_off", "cell_type_off", "engineered_model"], "cell_type": "DNa03"}
     assert client.post("/api/batch/start", json={**body, "cell_type": None}).status_code == 422
@@ -128,7 +130,7 @@ def test_comparisons_accept_model_and_dna02_conditions(client, tmp_path):
 @pytest.mark.flygym
 def test_connectome_model_drives_flygym_repeatably():
     from digitalfly.simulation.experiment import Experiment
-    config = RunConfig(neural_model="connectome_dna02")
+    config = RunConfig(neural_model="connectome")
     exp = Experiment(config, render=False)
     try:
         assert exp.status == "paused", exp.error
@@ -142,3 +144,41 @@ def test_connectome_model_drives_flygym_repeatably():
         assert exp.sample.model_dump() == first
     finally:
         exp.close()
+
+
+def test_circuit_list_paths_and_dynamics_switching(client):
+    listed = client.get("/api/connectome/circuits").json()
+    assert listed["active"] == "fafb783-dna02"
+    assert any(c["name"] == "fafb783-dna02" and c["committed"] and c["neurons"] == 3000 for c in listed["circuits"])
+    paths = client.get("/api/connectome/paths", params={"source": "DNa03", "target": "DNa02", "max_hops": 2}).json()
+    assert paths["paths"] and all(p["cell_types"][0] == "DNa03" and p["cell_types"][-1] == "DNa02" for p in paths["paths"])
+    assert all(0 < p["strength"] <= 1 and p["net_sign"] in (-1, 1) for p in paths["paths"])
+    assert client.get("/api/connectome/paths", params={"source": "Nope", "target": "DNa02"}).status_code == 422
+    assert client.get("/api/connectome/paths", params={"source": "DNa03", "target": "DNa02", "max_hops": 9}).status_code == 422
+    # Dynamics and circuit are fixed for a run; switching them takes a reset.
+    assert client.post("/api/connectome/parameters", json={"dynamics": "spiking"}).status_code == 409
+    state = client.post("/api/reset", json={**CONNECTOME.model_dump(), "connectome_parameters": {"dynamics": "spiking"}}).json()
+    assert state["config"]["connectome_parameters"]["dynamics"] == "spiking"
+    assert client.get("/api/capabilities").json()["active_dynamics"] == "spiking"
+    unknown = {**CONNECTOME.model_dump(), "connectome_parameters": {"circuit": "no-such-circuit"}}
+    assert client.post("/api/reset", json=unknown).status_code == 422
+
+
+def test_spiking_runs_export_and_replay_exactly(client):
+    config = {**CONNECTOME.model_dump(), "seed": 9, "connectome_parameters": {"dynamics": "spiking"}}
+    client.post("/api/reset", json=config)
+    client.post("/api/stimulus", json={"x": 10, "y": 6, "intensity": 1})
+    for _ in range(10):
+        client.post("/api/step", json={})
+    client.post("/api/interventions", json={"silence_dna02": "left"})
+    for _ in range(10):
+        client.post("/api/step", json={})
+    run = Path(client.post("/api/export", json={}).json()["path"])
+    neural = json.loads((run / "metadata.json").read_text())["neural"]
+    assert neural["dynamics"] == "spiking" and neural["spiking_constants"]["delay_ms"] == 1.8
+    replay = subprocess.run([sys.executable, str(ROOT / "scripts/replay.py"), str(run)],
+                            capture_output=True, text=True, timeout=180)
+    assert replay.returncode == 0, replay.stderr
+    report = json.loads(replay.stdout)
+    assert report["passed"] and report["maximum_absolute_error"] == 0
+

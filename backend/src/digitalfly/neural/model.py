@@ -59,8 +59,8 @@ class RateCircuit:
                 "parameters": self.parameters.model_dump(),
                 "kind": "engineered", "equation": "r += dt/tau * (clip(W @ r + B @ sensors + bias, 0, 1) - r)"}
 
-    def reset(self):
-        self.rates.fill(0)
+    def reset(self, seed: int | None = None):
+        self.rates.fill(0)  # deterministic: the seed only matters to stochastic models
 
     def apply_silencing(self, interventions: Interventions):
         self.rates[GROUPS[interventions.silence]] = 0
