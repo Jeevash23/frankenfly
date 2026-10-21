@@ -106,7 +106,7 @@ class Experiment:
         if circuit.kind == "connectome":
             scheduled = [e.interventions for e in config.protocol.events if e.interventions] if config.protocol else []
             for interventions in [config.initial_interventions] + scheduled:
-                circuit.silenced(interventions)  # a cell type this circuit lacks fails here, before anything changes
+                circuit.manipulation(interventions)  # a cell type or side this circuit lacks fails here, before anything changes
         reuse = self.body is not None and self.body.name == config.engine and self.body.sensor_model == config.sensor_model
         body = self.body if reuse else (FlyGymBody if config.engine == "flygym" else ToyBody)(
             config.seed, self.render_enabled, config.sensor_model)
@@ -293,7 +293,7 @@ class Experiment:
         # Checked against the circuit that is running, and kept only once they apply.
         interventions.for_model(self.circuit.kind)
         if self.circuit.kind == "connectome":
-            self.circuit.silenced(interventions)
+            self.circuit.manipulation(interventions)
         previous, self.interventions = self.interventions, interventions
         if self.body is not None and self.status != "error":
             try:
@@ -301,12 +301,16 @@ class Experiment:
             except Exception:
                 self.interventions = previous
                 raise
+        others = ""
         if self.circuit.kind == "connectome":
             silenced = ", ".join([f"DNa02 {interventions.silence_dna02}"] * (interventions.silence_dna02 != "none")
-                                 + interventions.silence_types) or "none"
+                                 + interventions.silence_types
+                                 + [c.target for c in interventions.cell_types if c.mode == "silence"]) or "none"
+            others = "".join(f" · {c.label(self.circuit.parameters.dynamics)}"
+                             for c in interventions.cell_types if c.mode != "silence")
         else:
             silenced = interventions.silence
-        self.event("interventions", f"Inputs L {'off' if interventions.zero_left else 'on'} / R {'off' if interventions.zero_right else 'on'} · silence {silenced}", {**interventions.model_dump(), "source": source})
+        self.event("interventions", f"Inputs L {'off' if interventions.zero_left else 'on'} / R {'off' if interventions.zero_right else 'on'} · silence {silenced}{others}", {**interventions.model_dump(), "source": source})
 
     def set_parameters(self, parameters: NeuralParameters):
         self._schedule_room("parameters")
@@ -349,12 +353,15 @@ class Experiment:
         readout = {circuit.data.type_names.index(name) for name, _, _ in circuit.readouts}
         order = [int(i) for i in np.argsort(-means, kind="stable") if i not in readout][:TRACE_TYPES]
         traces = np.array([row[order] for row in self.type_history]) if self.type_history else np.zeros((0, len(order)))
+        manipulation = circuit.manipulation(self.interventions)
         return {"circuit": circuit.data.key, "circuit_sha256": circuit.data.sha256,
                 "dynamics": circuit.parameters.dynamics, "unit_names": circuit.unit_names,
                 "readout_types": [name for name, _, _ in circuit.readouts],
                 "type_rates": np.round(means, 4).tolist(), "turn": circuit.turn(),
                 "motor_clipped_fraction": circuit.motor_clipped_fraction,
-                "silenced_neurons": int(len(circuit.silenced(self.interventions))),
+                "silenced_neurons": int(len(manipulation.silenced)),
+                "manipulated_neurons": {"silence": int(len(manipulation.silenced)), "scale": int(len(manipulation.scaled)),
+                                        "activate": int(len(manipulation.activated))},
                 "trace_t": [s.t for s in self.history][-len(traces):] if len(traces) else [],
                 "top_types": [{"index": i, "name": circuit.data.type_names[i],
                                "trace": np.round(traces[:, k], 4).tolist()} for k, i in enumerate(order)]}

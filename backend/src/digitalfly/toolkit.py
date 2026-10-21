@@ -89,6 +89,7 @@ def describe_config(config: RunConfig) -> dict:
                     "speed_types": "+".join(p.speed_types), "output_gain": p.output_gain, "global_gain": p.global_gain})
     i = config.initial_interventions
     row["silenced"] = "+".join([f"DNa02 {i.silence_dna02}"] * (i.silence_dna02 != "none") + i.silence_types
+                               + [c.target if c.mode == "silence" else c.label(p.dynamics) for c in i.cell_types]
                                + [f"{i.silence} units"] * (i.silence != "none")) or "none"
     return row
 

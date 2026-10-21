@@ -10,7 +10,7 @@ import time
 import uuid
 import psutil
 from digitalfly.api.models import (State, RunConfig, Stimulus, Interventions, Speed, NeuralParameters,
-    ConnectomeParameters, BatchRequest, check_cell_types, silenced_types)
+    ConnectomeParameters, BatchRequest, check_interventions)
 from digitalfly.simulation.experiment import Experiment, RECORD_LIMIT
 from digitalfly.simulation.engines import CONTROL_DT
 
@@ -170,6 +170,8 @@ class SimulationWorker:
     @staticmethod
     def _trial_config(request: BatchRequest, condition: str, seed: int) -> RunConfig:
         """One trial's configuration, validated in full like any reset, so an invalid one fails before the first trial."""
+        if any(custom.label == condition for custom in request.custom_conditions):
+            return request.custom_config(condition, seed)
         overrides = {"seed": seed, "controller": "baseline" if condition == "baseline" else "neural",
             "initial_interventions": Interventions(zero_left=condition == "left_sensor_off",
                 silence="descending" if condition == "descending_off" else "none",
@@ -283,7 +285,7 @@ class SimulationWorker:
             if exp.circuit.kind == "connectome":
                 # The circuit this run loaded, not the file of that name, which may have been rebuilt since.
                 try:
-                    check_cell_types(silenced_types(interventions), exp.circuit.data)
+                    check_interventions(interventions, exp.circuit.data, exp.circuit.parameters.dynamics)
                 except ValueError as exc:
                     raise Rejected(str(exc)) from exc
             exp.set_interventions(interventions)
@@ -300,7 +302,7 @@ class SimulationWorker:
         elif name == "batch_start":
             request = BatchRequest.model_validate(payload)
             trials = [(condition, seed, self._trial_config(request, condition, seed))
-                      for seed in request.seeds for condition in request.conditions]
+                      for seed in request.seeds for condition in request.condition_names]
             self.batch_request, self.trials, self.trial_index = request, trials, 0
             self.workbench = exp.config.model_copy(update={"initial_interventions": exp.interventions.model_copy()},
                                                    deep=True)

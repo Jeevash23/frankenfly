@@ -11,6 +11,9 @@ What each part is:
 Rate dynamics, an Euler update every 1 ms for every neuron i:
   r_i += dt/tau × (clip(sum_j W_ij r_j + input_i, 0, 1) − r_i),  W_ij = sign(j) × synapses(j → i) × global_gain
 Spiking dynamics: the leaky integrate-and-fire model and parameters of Shiu et al. 2024, stepped at 0.1 ms.
+Interventions (engineered manipulations, docs/ARCHITECTURE.md): silenced neurons are clamped to rest and send nothing;
+a scaled neuron sends s × its activity, to its targets and to the readout; an activated neuron's rate is clamped to the
+value (rate) or it gets independent Poisson input at the value in Hz, with no refractory period (spiking).
 Turning: turn = output gain × Σ_types w_type × (mean right − mean left) over the readout types (w = 1 unless
 set; "mean" pooling divides by the number of types). A more active right DNa02 turns the fly right
 (Rayshubskiy et al. 2025); FlyGym's HybridTurningController turns right when the left legs' amplitude exceeds
@@ -25,6 +28,7 @@ import re
 from collections import deque
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 import numpy as np
 from scipy import sparse
 from digitalfly.api.models import ConnectomeParameters, Interventions, SensorState
@@ -269,6 +273,16 @@ def check_flyvis_inputs(data: CircuitData, input_types: list[str] | None = None)
                          "cell types as the sensor input, or another sensor model.")
 
 
+class Manipulation(NamedTuple):
+    """What one set of interventions does to a circuit's neurons (ConnectomeCircuit.manipulation)."""
+    silenced: np.ndarray  # neuron indices held at rest, sending nothing
+    scaled: np.ndarray  # neuron indices whose output is scaled
+    scale: np.ndarray | None  # output factor per neuron (1 elsewhere); None when nothing is scaled
+    activated: np.ndarray  # neuron indices activated
+    activation: np.ndarray  # per activated neuron: the clamped rate (rate dynamics) or a Poisson rate in Hz (spiking)
+    items: list  # each intervention, described for the run's provenance
+
+
 class SpikingState:
     """Leaky integrate-and-fire network after Shiu et al. 2024, stepped at 0.1 ms (forward Euler).
 
@@ -291,7 +305,11 @@ class SpikingState:
         self.refractory = np.full(n, round(LIF["refractory_ms"] / dt), dtype=np.int64)
         for side in inputs:
             self.refractory[side] = 0  # as for Poisson targets in Shiu et al.'s code
+        self.base_refractory = self.refractory
         self.decay_membrane, self.decay_synapse = dt / LIF["tau_membrane_ms"], dt / LIF["tau_synapse_ms"]
+        # Interventions (see manipulate): none until the circuit applies some.
+        self.manipulation, self.scale, self.scaled_weights = None, None, None
+        self.activated, self.activation_chance = np.array([], dtype=np.int64), np.array([])
         self.configure(active, signs, parameters)
         self.reset(0)
 
@@ -307,6 +325,27 @@ class SpikingState:
         self.kick = LIF["poisson_scale"] * p.synapse_weight_mv
         self.rate_decay = math.exp(-LIF["dt_ms"] / p.rate_window_ms)
         self.rate_jump = 1000 / p.rate_window_ms  # Hz added per spike, so a steady f Hz train averages f
+        self._scale_weights()
+
+    def manipulate(self, manipulation: "Manipulation"):
+        """Interventions from the next substep: each neuron's spikes deliver scale × its weights, and activated
+        neurons receive independent Poisson input at their rate in Hz, each event adding the sensor input's kick
+        (250 × w_syn) to v, with no refractory period (as Poisson targets in Shiu et al.'s code)."""
+        if manipulation is self.manipulation:
+            return
+        self.manipulation, self.scale, self.activated = manipulation, manipulation.scale, manipulation.activated
+        self.activation_chance = np.minimum(1., manipulation.activation * LIF["dt_ms"] / 1000)
+        self.refractory = self.base_refractory
+        if len(self.activated):
+            self.refractory = self.base_refractory.copy()
+            self.refractory[self.activated] = 0
+        self._scale_weights()
+
+    def _scale_weights(self):
+        if self.scale is None:
+            self.scaled_weights = None
+        else:  # CSC columns are presynaptic neurons
+            self.scaled_weights = self.weights * self.scale[np.repeat(np.arange(self.n), np.diff(self.indptr))]
 
     def reset(self, seed: int):
         self.v = np.full(self.n, LIF["v_rest_mv"])
@@ -331,6 +370,8 @@ class SpikingState:
             inputs = [targets]
             chances = [np.minimum(1., p.input_gain * drive[targets] * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000)]
         v, g, blocked = self.v, self.g, self.blocked
+        weights = self.weights if self.scaled_weights is None else self.scaled_weights
+        activated = self.activated
         total = 0
         for _ in range(self.substeps if substeps is None else substeps):
             np.subtract(blocked, 1, out=blocked, where=blocked > 0)
@@ -353,12 +394,14 @@ class SpikingState:
                 if lengths.sum():
                     offsets = np.repeat(starts - np.cumsum(lengths) + lengths, lengths) + np.arange(lengths.sum())
                     # The target slot was emptied when it was last delivered, one substep ago.
-                    np.add.at(self.queue[(slot + self.delay) % self.slots], self.indices[offsets], self.weights[offsets])
+                    np.add.at(self.queue[(slot + self.delay) % self.slots], self.indices[offsets], weights[offsets])
             g += self.queue[slot]
             self.queue[slot] = 0
             for population, chance in zip(inputs, chances):
                 if np.any(chance > 0):  # a scalar per side, or one value per neuron (FlyVis)
                     v[population[self.rng.random(len(population)) < chance]] += self.kick
+            if len(activated):  # activation interventions: independent Poisson input
+                v[activated[self.rng.random(len(activated)) < self.activation_chance]] += self.kick
             v[spikes], g[spikes] = LIF["v_reset_mv"], 0
             blocked[spikes] = self.refractory[spikes]
             self.rate_hz *= self.rate_decay
@@ -379,8 +422,8 @@ class ConnectomeCircuit:
         self.data = None
         self.spiking = None
         self._seed = 0
-        self._silence_key = None
-        self._silenced = np.array([], dtype=np.int64)
+        self._manipulation_key = self._manipulation = None
+        self._applied = None  # the Manipulation last applied: scaled output shows in the activity
         self.visual = None  # FlyVis responses (eyes × types) when the FlyVis sensor drives the circuit
         self._history = self._lowpassed = None  # the motor path's delay line and low-passed command, when on
         self._motor_steps = self._motor_clipped = 0
@@ -389,15 +432,18 @@ class ConnectomeCircuit:
 
     def configure(self, parameters: ConnectomeParameters):
         """Apply parameters. A live edit keeps the network state: the rates, or in spiking dynamics v, g, the delay
-        queue, rates, step count and random generator, as long as circuit and input population are unchanged."""
-        data = load_circuit(self.path or parameters.circuit)
+        queue, rates, step count and random generator, as long as circuit and input population are unchanged. It
+        also keeps the loaded circuit, never reading the file again: the cache may have dropped it since."""
+        source, data = self.path or parameters.circuit, self.data
+        if data is None or (data.path != source if isinstance(source, Path) else data.key != source):
+            data = load_circuit(source)
         if self.visual is not None:  # FlyVis drives the circuit: its input neurons must be reachable
             check_flyvis_inputs(data, parameters.input_types)
         self._visual_checked = self.visual is not None
         if data is not self.data:
             self.data = data
             self.rates = np.zeros(len(data.ids))
-            self._silence_key = None
+            self._manipulation_key = self._applied = None
             self._history = self._lowpassed = None
         self.parameters = parameters.model_copy(deep=True)
         p = self.parameters
@@ -452,40 +498,96 @@ class ConnectomeCircuit:
         elif self._history is None:  # switched on: the delay line starts full of the current command
             self._restart_motor_path()
 
+    def manipulation(self, interventions: Interventions) -> Manipulation:
+        """What the interventions do to this circuit's neurons. Raises ValueError when they do not fit it: a cell type
+        or side it lacks, or an activation its dynamics cannot take. Cached for the last interventions seen."""
+        key = (self.parameters.dynamics, interventions.silence_dna02, tuple(interventions.silence_types),
+               tuple((c.name, c.side, c.mode, c.value) for c in interventions.cell_types))
+        if key != self._manipulation_key:
+            self._manipulation, self._manipulation_key = self._compile(interventions), key
+        return self._manipulation
+
+    def _compile(self, interventions: Interventions) -> Manipulation:
+        data, spiking = self.data, self.parameters.dynamics == "spiking"
+        interventions.for_dynamics(self.parameters.dynamics)
+        chosen, items = [], []
+
+        def item(name, side, mode, value, neurons, field):
+            effect = {"silence": "no output: held at rest" + (", no spikes" if spiking else ", rate 0"),
+                      "scale": f"output × {value:g} to its targets and the readout",
+                      "activate": f"independent Poisson input at {value:g} Hz to each neuron, no refractory period"
+                                  if spiking else f"rate clamped to {value:g}"}[mode]
+            items.append({"cell_type": name, "side": side, "mode": mode, "value": None if mode == "silence" else value,
+                          "neurons": int(neurons), "effect": effect, "field": field})
+        if interventions.silence_dna02 != "none":
+            if "DNa02" not in data.type_members:
+                raise ValueError(f"The {data.key} circuit has no DNa02 neurons to silence.")
+            sides = ["left", "right"] if interventions.silence_dna02 == "both" else [interventions.silence_dna02]
+            chosen += [data.members("DNa02", side) for side in sides]
+            item("DNa02", interventions.silence_dna02, "silence", 0, sum(map(len, chosen)), "silence_dna02")
+        for name in interventions.silence_types:
+            chosen.append(data.members(name))
+            item(name, "both", "silence", 0, len(chosen[-1]), "silence_types")
+        scale, scaled, activated, activation = None, [], [], []
+        for c in interventions.cell_types:
+            members = data.members(c.name, None if c.side == "both" else c.side)
+            if not len(members):
+                raise ValueError(f"{c.name} has no {c.side} neurons in the {data.key} circuit.")
+            if c.mode == "silence":
+                chosen.append(members)
+            elif c.mode == "scale":
+                scale = np.ones(len(data.ids)) if scale is None else scale
+                scale[members] *= c.value
+                scaled.append(members)
+            else:
+                activated.append(members)
+                activation.append(np.full(len(members), float(c.value)))
+            item(c.name, c.side, c.mode, c.value, len(members), "cell_types")
+        silenced = np.unique(np.concatenate(chosen)).astype(np.int64) if chosen else np.array([], dtype=np.int64)
+        scaled = np.unique(np.concatenate(scaled)).astype(np.int64) if scaled else np.array([], dtype=np.int64)
+        activated, activation = (np.concatenate(activated).astype(np.int64), np.concatenate(activation)) if activated \
+            else (np.array([], dtype=np.int64), np.array([]))
+        free = ~np.isin(activated, silenced)  # silencing wins
+        return Manipulation(silenced, scaled, scale, activated[free], activation[free], items)
+
     def silenced(self, interventions: Interventions) -> np.ndarray:
-        key = (interventions.silence_dna02, tuple(interventions.silence_types))
-        if key != self._silence_key:
-            data = self.data
-            chosen = []
-            if interventions.silence_dna02 != "none":
-                if "DNa02" not in data.type_members:
-                    raise ValueError(f"The {data.key} circuit has no DNa02 neurons to silence.")
-                sides = ["left", "right"] if interventions.silence_dna02 == "both" else [interventions.silence_dna02]
-                chosen += [data.members("DNa02", side) for side in sides]
-            chosen += [data.members(name) for name in interventions.silence_types]
-            self._silenced = np.unique(np.concatenate(chosen)).astype(np.int64) if chosen else np.array([], dtype=np.int64)
-            self._silence_key = key
-        return self._silenced
+        return self.manipulation(interventions).silenced
+
+    @property
+    def _output_scale(self) -> np.ndarray | None:
+        return None if self._applied is None else self._applied.scale
 
     @property
     def activity(self) -> np.ndarray:
-        """Rates for the rate model; for the spiking model, firing rate ÷ the rate scale."""
+        """Rates for the rate model; for the spiking model, firing rate ÷ the rate scale. Scaled neurons show their
+        output, scale × that activity, which is what their targets and the readout receive."""
         if self.spiking is not None:
-            return self.spiking.rate_hz / self.parameters.spiking.rate_scale_hz
-        return self.rates
+            activity = self.spiking.rate_hz / self.parameters.spiking.rate_scale_hz
+        else:
+            activity = self.rates
+        scale = self._output_scale
+        return activity if scale is None else activity * scale
 
     def _activity_of(self, neurons: np.ndarray) -> np.ndarray:
         """activity[neurons], without computing it for every neuron."""
         if self.spiking is not None:
-            return self.spiking.rate_hz[neurons] / self.parameters.spiking.rate_scale_hz
-        return self.rates[neurons]
+            activity = self.spiking.rate_hz[neurons] / self.parameters.spiking.rate_scale_hz
+        else:
+            activity = self.rates[neurons]
+        scale = self._output_scale
+        return activity if scale is None else activity * scale[neurons]
 
     def apply_silencing(self, interventions: Interventions):
-        silenced = self.silenced(interventions)
+        """Apply interventions at once, between steps: silenced neurons go to rest and, with rate dynamics, activated
+        ones to their clamped rate; scaled output shows in the activity from now on."""
+        m = self._applied = self.manipulation(interventions)
+        silenced = m.silenced
         if self.spiking is not None:
             self.spiking.v[silenced], self.spiking.g[silenced], self.spiking.rate_hz[silenced] = LIF["v_reset_mv"], 0, 0
         else:
             self.rates[silenced] = 0
+            if len(m.activated):
+                self.rates[m.activated] = m.activation
 
     def reset(self, seed: int | None = None):
         if seed is not None:
@@ -518,18 +620,22 @@ class ConnectomeCircuit:
         return float(drive[self.input_left].mean()), float(drive[self.input_right].mean())
 
     def advance(self, sensors: SensorState, interventions: Interventions, dt: float = .001):
-        silenced = self.silenced(interventions)
+        m = self._applied = self.manipulation(interventions)
+        silenced = m.silenced
         visual = self._visual_drive if self.visual is not None else None
         if self.spiking is not None:
             substeps = dt * 1000 / LIF["dt_ms"]  # the spiking network follows dt in whole 0.1 ms substeps
             if round(substeps) < 1 or not math.isclose(substeps, round(substeps)):
                 raise ValueError(f"Spiking dynamics step in multiples of {LIF['dt_ms']:g} ms, not {dt * 1000:g} ms.")
+            self.spiking.manipulate(m)
             self.spiking.advance(sensors.left, sensors.right, silenced, visual, round(substeps))
             self.spiking.rate_hz[silenced] = 0
         else:
-            rates = self.rates
+            rates, clamped = self.rates, len(m.activated) > 0
             rates[silenced] = 0
-            drive = self.W @ rates
+            if clamped:
+                rates[m.activated] = m.activation
+            drive = self.W @ (rates if m.scale is None else rates * m.scale)
             gain = self.parameters.input_gain
             if visual is not None:
                 drive += gain * visual
@@ -539,6 +645,8 @@ class ConnectomeCircuit:
             np.clip(drive, 0, 1, out=drive)
             rates += dt / self.tau * (drive - rates)
             rates[silenced] = 0
+            if clamped:
+                rates[m.activated] = m.activation
             if not np.isfinite(rates).all():
                 raise FloatingPointError("Nonfinite neural state; simulation paused.")
         self._advanced = True
@@ -658,11 +766,15 @@ class ConnectomeCircuit:
                                + f"; {motor}. "
                                "Direction: higher right DNa02 → rightward turn (Rayshubskiy et al. 2025); larger left amplitude turns right (FlyGym HybridTurningController)."),
             "motor_clipped_fraction": self.motor_clipped_fraction,
+            # The interventions in force when described (for an export: at its end; events hold the schedule).
+            "interventions": self._applied.items if self._applied is not None else [],
             "labels": {"structure": "data-derived", "signs": "assumed", "dynamics": "engineered" if not spiking else "published model (Shiu et al. 2024 parameters)",
                        "input_mapping": "engineered, unsigned FlyVis bridge" if flyvis else "engineered",
                        "output_mapping": "engineered, direction from literature",
                        "motor_path": "engineered (readout weights and pooling, delay, low-pass)",
-                       "motor_clipped_fraction": "engineered diagnostic"},
+                       "motor_clipped_fraction": "engineered diagnostic",
+                       "interventions": "engineered manipulations; activation as Poisson drive (spiking) or a clamped "
+                                        "rate (rate) approximates optogenetic activation and is not calibrated"},
         }
 
 

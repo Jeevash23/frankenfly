@@ -8,7 +8,7 @@ Python world/body pose
 selected sensor encoder ← stimulus
   (geometric, rendered compound eye, or FlyVis eyes → FlyWire bridge)
         ↓                          ← sensory channel interventions
-selected neural model              ← silencing (groups, or DNa02 / cell types)
+selected neural model              ← silencing (groups, or DNa02 / cell types); cell-type scaling and activation
   · engineered: six leaky rate units (default)
   · connectome: a FlyWire v783 circuit (committed or built locally),
     rate units or Shiu et al. 2024 spiking neurons
@@ -71,6 +71,32 @@ With `motor_delay_ms = motor_tau_ms = 0` (the defaults) the path is off and `mot
 
 The toy adapter uses speed `12 × mean(motor)` mm/s and yaw rate `4 × (right − left)` rad/s. It has no collision or leg physics. Seed initializes a small heading offset. The FlyGym model instead resolves MuJoCo contact, actuated joints and adhesion.
 
+### Connectome interventions
+
+Every connectome intervention is an **engineered manipulation**: none models a particular genetic tool, and activation as Poisson drive (spiking) or as a clamped rate (rate) approximates optogenetic activation without calibration to any opsin, light level or measured firing rate. `Interventions` keeps `silence_dna02` and `silence_types` and adds `cell_types`, up to 32 entries `{name, side: "both" | "left" | "right" (default both), mode: "silence" | "scale" | "activate", value}`. A `silence_types` entry means `{name, side: "both", mode: "silence"}`. Each side of a cell type takes one entry: "both" covers left and right, and the older fields count, so `[{A, both, silence}, {A, left, scale}]` or `silence_types: [A]` with any `{A, …}` entry is refused (422); `silence_dna02` and `silence_types` may still overlap each other as before. "both" means every neuron of the type, midline ones included; "left" and "right" need neurons of the type on that side in the circuit the run has loaded.
+
+For an addressed neuron `i` with activity `a_i` (the rate in rate dynamics; the firing rate ÷ the rate scale in spiking dynamics) and output factor `s_i` (1 unless scaled):
+
+```text
+silence   rate:     a_i = 0 before and after every neural update (unchanged from v0.5)
+          spiking:  v_i = v_reset and g_i = 0 every 0.1 ms substep, so i never fires; its firing rate reads 0
+scale     o_i = s_i × a_i, 0 ≤ s_i ≤ 2, is what i sends:
+          rate:     r ← r + dt/τ × [clip(W (s ⊙ r) + input, 0, 1) − r]
+          spiking:  each spike of i adds s_i × sign × synapses × w_syn to its targets' g, 1.8 ms later
+          the readout (turn, speed drive), the recorded rates and the type means use o_i; i's own state is unchanged
+activate  rate:     a_i = value, 0 ≤ value ≤ 1 in the rate model's dimensionless units, before and after every update
+          spiking:  in every 0.1 ms substep, independently per neuron, with probability value × 0.1 ms ÷ 1000 ms
+                    (value in Hz, 0–500): v_i += 250 × w_syn, the sensor input's Poisson kick; i has no refractory
+                    period while activated (as Poisson targets in Shiu et al.'s code), so it fires at about value Hz
+                    plus what its synaptic input adds
+```
+
+Scaling below 1 is graded inhibition of transmission, above 1 a boost; it has no single biological counterpart. Activated neurons draw from the run's random generator only while an activation is in force, and a neutral setting (`scale` by 1) computes exactly what no intervention does. With no `cell_types` the arithmetic is the v0.5 arithmetic, bit for bit, in both dynamics.
+
+Interventions apply live (`POST /api/interventions`, recorded as an `interventions` event that `scripts/replay.py` re-applies), as `initial_interventions`, as protocol events (each event replaces the interventions in force, so "silence at 1 s, restore at 2 s" is two events, at steps 100 and 200), and as comparison conditions. They are validated in `RunConfig` (422), and live in the worker against the loaded circuit and its dynamics (422; a rate activation above 1 too). The engineered model refuses them as it refuses `silence_types`: 422 in a configuration, 409 live. `metadata.neural.interventions` lists the interventions in force when the run is described (for an export, at its end; events hold the schedule) as `{cell_type, side, mode, value, neurons, effect, field}`, and `labels.interventions` labels them; the live `connectome` block keeps `silenced_neurons` and adds `manipulated_neurons: {silence, scale, activate}`.
+
+**Comparisons.** `BatchRequest.custom_conditions` adds labelled conditions `{label (1–40 characters, not a built-in condition name), interventions | null, connectome_parameters | null}`. A trial of one holds those interventions (none when null) and the configuration's connectome parameters with the given fields changed; only the fields a run can change live are allowed (not `circuit`, `dynamics` or the populations), and a partial `spiking` keeps the other spiking settings. Built-in and custom conditions together number at most six, run in that order for every seed, and count toward the 30,000-interval limit; `conditions` may be empty when custom ones are given. Every custom trial's configuration is validated before the first trial starts, and its record carries `condition` = its label.
+
 ## Timing
 
 | Stage | Deterministic interval |
@@ -126,13 +152,13 @@ Complete methods, data licensing and limitations are in [RESEARCH.md](RESEARCH.m
 
 ## v0.3 connectome model
 
-`RunConfig.neural_model` selects `engineered` (default) or `connectome_dna02`; `connectome_parameters` holds the latter's global settings. Switching models resets the experiment. `neural/connectome.py` loads and validates the committed circuit once per process (`load_circuit`, cached by file and modification time) and implements the same interface as the engineered `RateCircuit`: `configure`, `reset`, `advance`, `apply_silencing`, `motor`, `readout`, `description`.
+`RunConfig.neural_model` selects `engineered` (default) or `connectome_dna02`; `connectome_parameters` holds the latter's global settings. Switching models resets the experiment. `neural/connectome.py` loads and validates the committed circuit once per process (`load_circuit`, cached by file and modification time; a live parameter edit keeps the circuit the run loaded and never reads the file again) and implements the same interface as the engineered `RateCircuit`: `configure`, `reset`, `advance`, `apply_silencing`, `motor`, `readout`, `description`.
 
-- **Interventions.** `silence` (engineered groups) and `silence_dna02` / `silence_types` (connectome) are each rejected with a 409 when the other model is active. Cell-type names are validated in the worker against the circuit the run has loaded, not the file of that name (422), and interventions replace the current ones only once they apply. Silenced neurons are clamped like the engineered units.
+- **Interventions.** `silence` (engineered groups) and `silence_dna02` / `silence_types` / `cell_types` (connectome) are each rejected with a 409 when the other model is active. Cell-type names and sides are validated in the worker against the circuit the run has loaded, not the file of that name (422), and interventions replace the current ones only once they apply. Silenced neurons are clamped like the engineered units. Per-side silencing, scaling and activation: see [Connectome interventions](#connectome-interventions).
 - **API.** `POST /api/connectome/parameters` records a `connectome_parameters` event; `GET /api/connectome/circuit` returns a cell-type view for the current parameters (types with counts, hop layer, transmitters and sides; type-to-type connections aggregated by sign; per-side DNa02 inputs). `/api/capabilities` lists both models and the circuit's hash and coverage.
 - **State.** Samples record five readouts for the connectome model (DNa02 L/R, mean visual input L/R, circuit mean); the circuit mean makes replay sensitive to the whole hidden state. The snapshot adds a display-only `connectome` block at the 10 Hz publish rate: per-type mean rates, the turn command and the traces of the five most active types, from a 201-sample buffer aligned with `history`. Per-neuron rates never leave the worker.
 - **Exports.** Schema 3. `metadata.neural` carries the circuit file, its SHA-256, the parameters, sign rules, input and output mapping and the data/assumed/engineered labels; telemetry rate columns follow the model's readout names. `replay.py` compares whichever rate columns a run recorded and re-applies connectome parameter events; it first checks the circuit file's SHA-256 against the recorded one and refuses a changed circuit unless given `--allow-circuit-mismatch`.
-- **Comparisons.** Conditions add `engineered_model` and `connectome_model` (switch the model for that trial), `dna02_left_off`, `dna02_right_off`, `dna02_both_off` and `cell_type_off` (with `BatchRequest.cell_type`). Model-specific conditions are validated against the configuration's model.
+- **Comparisons.** Conditions add `engineered_model` and `connectome_model` (switch the model for that trial), `dna02_left_off`, `dna02_right_off`, `dna02_both_off` and `cell_type_off` (with `BatchRequest.cell_type`). Model-specific conditions are validated against the configuration's model. v0.6 adds labelled custom conditions (see [Connectome interventions](#connectome-interventions)).
 - **Data.** `scripts/build_circuit.py` and its pyarrow dependency are build-only; the app reads only the committed 1.1 MB JSON and needs nothing beyond the runtime lock (SciPy was already installed with FlyGym and is now declared).
 
 The connectome view in the browser lays cell types out by hop distance to DNa02 and laterality, never anatomy; it draws the 140 strongest type-to-type connections plus every connection of the selected type. The browser caches each circuit summary by circuit name, the SHA-256 of the loaded file (from the live snapshot) and the structural parameters (synapse threshold, sign of other transmitters, populations), never gains or time constants, and drops the cache when a build finishes. In the atlas, the two female DNa02 skeletons are tinted with the live readout, labeled as model output.

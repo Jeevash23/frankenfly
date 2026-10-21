@@ -212,6 +212,28 @@ motor = 1.4 × clip([forward + turn, forward − turn], 0, 1)    # [left legs, r
 
 Readout, input and speed populations are set by cell type in **Neural atlas → Live circuit → Populations**. They decide which rates are recorded, so changing them starts a fresh run.
 
+### Interventions
+
+Besides silencing DNa02 and whole cell types, `Interventions.cell_types` manipulates any cell type on the left, the right or both sides (up to 32 entries, one per side of a type):
+
+| Mode | Value | Rate dynamics | Spiking dynamics |
+| --- | --- | --- | --- |
+| `silence` | ignored | activity held at 0 | held at rest, never fires |
+| `scale` | 0–2 | what the neurons send (to their targets and the readout) × value | each spike's synaptic effect × value |
+| `activate` | rate 0–1 (rate) or Hz 0–500 (spiking) | rate clamped to the value | independent Poisson input at the value in Hz, the sensor input's kick, no refractory period |
+
+All three are **engineered manipulations**. Activation approximates optogenetic activation and is not calibrated to any opsin, light level or recorded firing rate; scaling is graded inhibition (< 1) or a boost (> 1) of transmission without a single biological counterpart. With no `cell_types` the model computes exactly what v0.5 did. The equations are in [ARCHITECTURE.md](ARCHITECTURE.md#connectome-interventions).
+
+They apply through `POST /api/interventions`, as a configuration's `initial_interventions`, as protocol events ("activate at step 100, restore at step 200" is two events) and as comparison conditions; every change is a step-stamped event, and runs replay exactly. For example, with spiking dynamics (rate dynamics would take an activation from 0 to 1):
+
+```json
+{"cell_types": [{"name": "DNa02", "side": "left", "mode": "silence"},
+                {"name": "LC10a", "side": "right", "mode": "scale", "value": 0.5},
+                {"name": "DNp09", "mode": "activate", "value": 80}]}
+```
+
+An export's `metadata.neural.interventions` lists those in force at its end, with neuron counts; the live view counts silenced, scaled and activated neurons. A comparison's `custom_conditions` run labelled conditions of your own: interventions and/or changes to the live-editable connectome parameters (gains, tonic drive, threshold, time constant, motor path, readout weights and pooling, spiking settings), as `{"label": "gain 3", "connectome_parameters": {"output_gain": 3}}`.
+
 ### Parameters and how the defaults were chosen
 
 Only global parameters exist: synapse threshold (1–1000, applied on top of the circuit's build threshold), global gain, input gain, output gain, tonic drive, τ, the transmitter switch, the speed gain and, for spiking, the weight per synapse, the input rate, the rate window and the rate scale. Edit them in **Neural atlas → Live circuit**; changes are recorded and replayed. The motor path's readout weights, pooling, delay and low-pass are set through the API (`POST /api/connectome/parameters`) or the toolkit (for example `--set connectome_parameters.motor_delay_ms=180`), and are live-editable and replayed in the same way. Circuit, dynamics and populations are fixed for a run.
@@ -513,9 +535,9 @@ Statistics cover only the imported subset: total nodes, directed edges, synapses
 
 Events use integer control-step boundaries. Durations and target/intervention values are validated; event indices must be unique, ascending and before the protocol’s end. Manual workbench edits, timed events and parameter changes are distinguished in the event schedule. The replay tool applies manual edits and lets the saved protocol reproduce its own timed events.
 
-Comparison conditions are held for a whole trial, so comparison protocols accept scheduled stimulus changes only. Besides the v0.2 conditions, a comparison can switch the model for a trial (**Engineered model**, **Connectome model**) or, with the connectome model selected, silence the left, right or both DNa02 or one named cell type. Conditions that need a particular model are rejected with the other one, and **Engineered model** is rejected with FlyVis eyes, which drive only the connectome model. Every trial's configuration is validated in full before the first trial starts, so a combination that could not be replayed fails up front. The same distinct seeds are applied to every selected condition. Initial interventions are serialized in each trial’s initial configuration. The worker blocks parameter/stimulus/reset commands while a comparison is active, preventing accidental changes to its controlled conditions; speed is allowed, since it only paces the run. Finished trials are exported before the next trial resets the body.
+Comparison conditions are held for a whole trial, so comparison protocols accept scheduled stimulus changes only. Besides the v0.2 conditions, a comparison can switch the model for a trial (**Engineered model**, **Connectome model**) or, with the connectome model selected, silence the left, right or both DNa02 or one named cell type. `custom_conditions` (API) add labelled conditions with their own interventions (any of the above, including per-side scaling and activation of cell types) and, with the connectome model, changes to its live-editable parameters; trial records carry the label as their condition. Conditions that need a particular model are rejected with the other one, and **Engineered model** is rejected with FlyVis eyes, which drive only the connectome model. Every trial's configuration is validated in full before the first trial starts, so a combination that could not be replayed fails up front. The same distinct seeds are applied to every selected condition. Initial interventions are serialized in each trial’s initial configuration. The worker blocks parameter/stimulus/reset commands while a comparison is active, preventing accidental changes to its controlled conditions; speed is allowed, since it only paces the run. Finished trials are exported before the next trial resets the body.
 
-Limits: 5 seeds, 4 conditions, 30,000 total control intervals. UI durations are 0.1–15 simulated seconds per trial. The API supports longer individual protocols within the existing 30,000-sample recording bound. Runs are CPU-limited; requested speed is a pacing ceiling, not a performance promise. `POST /api/batch/start` with `"max_speed": true` runs the trials unpaced, as fast as the computer allows; the results are the same, since speed never changes the computation.
+Limits: 5 seeds, 4 built-in conditions and 6 conditions in all with custom ones, 30,000 total control intervals. UI durations are 0.1–15 simulated seconds per trial. The API supports longer individual protocols within the existing 30,000-sample recording bound. Runs are CPU-limited; requested speed is a pacing ceiling, not a performance promise. `POST /api/batch/start` with `"max_speed": true` runs the trials unpaced, as fast as the computer allows; the results are the same, since speed never changes the computation.
 
 Replay a saved directory:
 
