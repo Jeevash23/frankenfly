@@ -28,7 +28,7 @@ The exclusions are defined in [.gitignore](../.gitignore). They preserve existin
 
 Before a public commit, inspect `git status --short` and `git diff --cached`. Ignore rules do not remove files that were already tracked or erase prior history; any such files need separate review. Force-adding an ignored file also bypasses the exclusions. `data/atlas/`, `data/circuits/` and `data/recordings/` are not ignored, so a file copied into them by hand (a downloaded recording, a circuit built with `--committed`) can be committed by accident.
 
-Run exports intentionally retain scientific configuration, timestamps, generated run identifiers and software/platform metadata for reproducibility. Local errors and diagnostics can include absolute paths. Review any record you deliberately choose to share.
+Run exports intentionally retain scientific configuration, timestamps, generated run identifiers and software/platform metadata for reproducibility. Local errors and diagnostics can include absolute paths. For a run you mean to publish, export it share-safe (`POST /api/export` with `{"share_safe": true}`, see [usage](USAGE.md#saved-runs-and-replay)): the export leaves out the operating-system string, makes paths relative to the project or replaces them with `<local>`, and replaces the computer's name in errors and log messages. Review any record you deliberately choose to share.
 
 ## Scientific identifiers and attribution
 

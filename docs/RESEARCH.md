@@ -358,6 +358,8 @@ toolkit.ablation_scan(toolkit.ConnectomeParameters(circuit="fafb783-steering"), 
 
 Parallel workers use separate processes (`spawn`), so call the Python functions with `workers > 1` from a script file, not an interactive prompt. Each worker is limited to (CPU cores ÷ workers) OpenMP, MKL and OpenBLAS threads, set before the workers start so that NumPy and PyTorch pick the limit up; `ablation_scan` uses the same limit.
 
+For trials longer than the app's recording limit (30,000 samples, 300 simulated seconds), create the experiment with `Experiment(config, render=False, record=False)` from `digitalfly.simulation.experiment`. It keeps no per-sample recording, so it has no length limit, while the current sample, `metrics`, events and the bounded display history still update; such a run cannot be exported. Recording does not feed back into the simulation, so results are identical either way.
+
 ### Comparing with real flies
 
 `digitalfly.compare` fits rotational velocity to the right − left firing rate of a readout pair, choosing the lag (0–0.5 s) with the best r²: the relation Rayshubskiy et al. measured for DNa02. It reads a recording in one documented CSV (or NumPy) format, with columns `t_s`, `rate_left_hz`, `rate_right_hz`, `rotational_velocity_deg_s` (rightward positive) and optionally `forward_velocity_mm_s`, and it reads exported DigitalFly runs directly, converting spiking activity back to spikes/s:

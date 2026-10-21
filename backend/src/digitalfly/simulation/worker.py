@@ -164,6 +164,7 @@ class SimulationWorker:
         elif name == "step":
             if exp.status != "paused":
                 raise ValueError("Step is available only while paused.")
+            exp.check_advance()  # a finished protocol or full recording: refused, and the run stays valid
             start = time.perf_counter()
             exp.event("step", "Advanced one control interval · 10 ms")
             try:
@@ -200,7 +201,7 @@ class SimulationWorker:
             self.batch["status"] = "cancelled"
             exp.event("batch_cancel", "Comparison cancelled; current partial trial retained for export")
         elif name == "export":
-            result = exp.export()
+            result = exp.export(share_safe=bool(payload.get("share_safe")))
             exp.event("export", f"Saved {len(exp.records)} samples locally")
             return result
         else:
