@@ -24,6 +24,8 @@ RECORD_LIMIT = 30000
 EVENT_LIMIT = 10000  # manual input changes, the schedule a replay re-applies; bookkeeping events do not count
 SCHEDULE_KINDS = {"stimulus", "interventions", "parameters", "connectome_parameters"}
 MERGED_KINDS = SCHEDULE_KINDS | {"speed"}  # repeats within one control step keep only the last value
+BOOKKEEPING_KINDS = {"run", "pause", "step", "speed", "export"}  # never replayed
+BOOKKEEPING_LIMIT = 10000  # logged per run; later ones are left out after one marker event
 SCHEMA_VERSION = 4  # 4 adds lockfiles, optional dependencies, vision.flyvis/bridge and share_safe
 DEPENDENCIES = ["flygym", "mujoco", "numpy", "fastapi", "pydantic", "numba", "scipy"]
 OPTIONAL_DEPENDENCIES = ["llvmlite", "pillow", "torch", "torchvision", "flyvis"]
@@ -138,7 +140,7 @@ class Experiment:
         self.trail = deque(maxlen=600)
         self.records: list[Sample] = []
         self.events: list[Event] = []
-        self.schedule_events = 0
+        self.schedule_events = self.bookkeeping_events = 0
         self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.compute_s = self.active_wall_s = 0.
@@ -164,11 +166,19 @@ class Experiment:
     def event(self, kind: str, message: str, payload: dict | None = None):
         """Log an event. Manual input changes count toward EVENT_LIMIT; protocol and bookkeeping events (run,
         pause, step, speed, export, ...) never do. A repeat of an input or speed change within the same control
-        step replaces the previous one: only the last value ever applied, so replay is unchanged."""
+        step replaces the previous one: only the last value ever applied, so replay is unchanged. Past
+        BOOKKEEPING_LIMIT run, pause, step, speed and export events, one marker says that later ones are left out."""
         payload = payload or {}
         if self._merges(kind, payload.get("source")):
             self.events[-1] = self.events[-1].model_copy(update={"message": message, "payload": payload})
             return
+        if kind in BOOKKEEPING_KINDS:
+            self.bookkeeping_events += 1
+            if self.bookkeeping_events > BOOKKEEPING_LIMIT:
+                if self.bookkeeping_events == BOOKKEEPING_LIMIT + 1:
+                    self.event("log_limit", "Further run, pause, step, speed and export events omitted "
+                                            f"({BOOKKEEPING_LIMIT:,} logged); they do not affect replay")
+                return
         self.events.append(Event(seq=len(self.events), step=self.step_index, t=self.t,
                                  kind=kind, message=message, payload=payload))
         if kind in SCHEDULE_KINDS and payload.get("source") != "protocol":
