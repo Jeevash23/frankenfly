@@ -10,6 +10,10 @@ node -e 'const [m,n]=process.versions.node.split(".").map(Number); if(m<22 || (m
 is_python312() {
   [ -n "$1" ] && "$1" -c 'import sys; assert sys.version_info[:2] == (3,12)' 2>/dev/null
 }
+# 3.12 is the default and the recorded replay stack; PYTHON_BIN may also select 3.13 or 3.14.
+is_supported_python() {
+  [ -n "$1" ] && "$1" -c 'import sys; assert (3,12) <= sys.version_info[:2] < (3,15)' 2>/dev/null
+}
 if [ ! -x backend/.venv/bin/python ]; then
   if [ -n "${PYTHON_BIN:-}" ]; then
     DIGITALFLY_PYTHON="$PYTHON_BIN"
@@ -28,16 +32,25 @@ if [ ! -x backend/.venv/bin/python ]; then
     fi
     echo "Using uv-managed Python: $DIGITALFLY_PYTHON"
   fi
-  if ! is_python312 "$DIGITALFLY_PYTHON"; then
+  if [ -n "${PYTHON_BIN:-}" ]; then
+    if ! is_supported_python "$DIGITALFLY_PYTHON"; then
+      echo "PYTHON_BIN must be Python 3.12, 3.13 or 3.14 (3.12 recommended). System Python will not be changed."
+      exit 1
+    fi
+  elif ! is_python312 "$DIGITALFLY_PYTHON"; then
     echo "Python 3.12 is required. Install a local Python 3.12 (or uv), then run PYTHON_BIN=/path/to/python3.12 ./scripts/setup.sh. System Python will not be changed."
     exit 1
   fi
   "$DIGITALFLY_PYTHON" -m venv backend/.venv
 fi
-backend/.venv/bin/python -c 'import sys; assert sys.version_info[:2] == (3,12), "Project environment requires Python 3.12"'
+backend/.venv/bin/python -c 'import sys; assert (3,12) <= sys.version_info[:2] < (3,15), "Project environment requires Python 3.12, 3.13 or 3.14"'
+if ! is_python312 backend/.venv/bin/python; then
+  echo "Note: Python 3.12 is the recorded stack. On other versions FlyVis is unavailable and exact replay of recorded runs is not guaranteed."
+fi
 export PIP_CACHE_DIR="$PROJECT_ROOT/.cache/pip"
 export PIP_TOOLS_CACHE_DIR="$PROJECT_ROOT/.cache/pip-tools"
-backend/.venv/bin/python -m pip install --disable-pip-version-check pip-tools==7.5.3 setuptools==84.0.0
+# pip itself, pip-tools and setuptools come from a hashed lock too, before any other install.
+backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-tools.lock
 backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock
 backend/.venv/bin/python -m pip install --no-deps --no-build-isolation -e backend
 mkdir -p .cache
