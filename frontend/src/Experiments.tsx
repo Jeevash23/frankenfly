@@ -16,7 +16,7 @@ import type {Command, Condition, Config, Protocol, SavedRun, State} from './type
 import type {Pending} from './useSimulation';
 import {fmt} from './format';
 import {describeError} from './errors';
-import {libraryCaption, mergeRuns, PAGE, readRunPage, runsQuery} from './library';
+import {deleteBlock, libraryCaption, mergeRuns, PAGE, readRunPage, runsQuery} from './library';
 import {
   conditionNames,
   conditionProblem,
@@ -648,93 +648,101 @@ export default function Experiments({
                 </tr>
               </thead>
               <tbody>
-                {shownRuns.map((run) => (
-                  <tr key={run.key} className={selected.includes(run.key) ? 'selected' : ''}>
-                    <td>
-                      <input
-                        type="checkbox"
-                        aria-label={`Compare run ${run.key}`}
-                        checked={selected.includes(run.key)}
-                        disabled={!selected.includes(run.key) && selected.length >= 4}
-                        onChange={(e) =>
-                          setSelected((prev) =>
-                            e.target.checked
-                              ? [...prev, run.key]
-                              : prev.filter((k) => k !== run.key),
-                          )
-                        }
-                      />
-                    </td>
-                    <td>
-                      <strong>
-                        {run.trial
-                          ? conditionName(run.trial.condition) +
-                            (run.trial.cell_type ? ` (${run.trial.cell_type})` : '')
-                          : (run.config.protocol?.name ?? 'Workbench run')}
-                      </strong>
-                      <small>
-                        {new Date(run.created_utc).toLocaleString()} · {run.samples} samples
-                        {run.error ? ' · interrupted' : ''}
-                      </small>
-                    </td>
-                    <td>
-                      {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
-                      <small>
-                        {{vision: 'Compound eye', flyvis: 'FlyVis eyes', geometric: 'Geometric'}[
-                          run.config.sensor_model
-                        ] ?? 'Geometric'}{' '}
-                        ·{' '}
-                        {normalizeModel(run.config.neural_model) === 'connectome'
-                          ? `connectome · ${run.config.connectome_parameters?.circuit ?? 'fafb783-dna02'}${run.config.connectome_parameters?.dynamics === 'spiking' ? ' · spiking' : ''}`
-                          : 'engineered'}
-                      </small>
-                    </td>
-                    <td>{run.config.seed}</td>
-                    <td>{fmt(run.metrics.duration_s ?? (run.samples - 1) * 0.01)} s</td>
-                    <td>{fmt(run.metrics.mean_speed_mm_s)} mm/s</td>
-                    <td>
-                      <a href={run.download_url} download aria-label={`Download run ${run.key}`}>
-                        <ArrowDownToLine size={15} />
-                      </a>
-                    </td>
-                    <td className="run-delete">
-                      {confirming === run.key ? (
-                        <span role="group" aria-label={`Delete run ${run.key}?`}>
+                {shownRuns.map((run) => {
+                  const blocked = deleteBlock(run, state?.run_id, active ? state!.batch!.id : null);
+                  return (
+                    <tr key={run.key} className={selected.includes(run.key) ? 'selected' : ''}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          aria-label={`Compare run ${run.key}`}
+                          checked={selected.includes(run.key)}
+                          disabled={!selected.includes(run.key) && selected.length >= 4}
+                          onChange={(e) =>
+                            setSelected((prev) =>
+                              e.target.checked
+                                ? [...prev, run.key]
+                                : prev.filter((k) => k !== run.key),
+                            )
+                          }
+                        />
+                      </td>
+                      <td>
+                        <strong>
+                          {run.trial
+                            ? conditionName(run.trial.condition) +
+                              (run.trial.cell_type ? ` (${run.trial.cell_type})` : '')
+                            : (run.config.protocol?.name ?? 'Workbench run')}
+                        </strong>
+                        <small>
+                          {new Date(run.created_utc).toLocaleString()} · {run.samples} samples
+                          {run.error ? ' · interrupted' : ''}
+                        </small>
+                      </td>
+                      <td>
+                        {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
+                        <small>
+                          {{vision: 'Compound eye', flyvis: 'FlyVis eyes', geometric: 'Geometric'}[
+                            run.config.sensor_model
+                          ] ?? 'Geometric'}{' '}
+                          ·{' '}
+                          {normalizeModel(run.config.neural_model) === 'connectome'
+                            ? `connectome · ${run.config.connectome_parameters?.circuit ?? 'fafb783-dna02'}${run.config.connectome_parameters?.dynamics === 'spiking' ? ' · spiking' : ''}`
+                            : 'engineered'}
+                        </small>
+                      </td>
+                      <td>{run.config.seed}</td>
+                      <td>{fmt(run.metrics.duration_s ?? (run.samples - 1) * 0.01)} s</td>
+                      <td>{fmt(run.metrics.mean_speed_mm_s)} mm/s</td>
+                      <td>
+                        <a href={run.download_url} download aria-label={`Download run ${run.key}`}>
+                          <ArrowDownToLine size={15} />
+                        </a>
+                      </td>
+                      <td className="run-delete">
+                        {confirming === run.key ? (
+                          <span role="group" aria-label={`Delete run ${run.key}?`}>
+                            <button
+                              className="text-button"
+                              aria-busy={deleting === run.key}
+                              onClick={() => {
+                                if (!deleting) void remove(run.key);
+                              }}
+                            >
+                              {deleting === run.key ? 'Deleting…' : 'Delete'}
+                            </button>
+                            <button
+                              className="text-button"
+                              autoFocus
+                              onClick={() => {
+                                if (deleting) return;
+                                setConfirming(null);
+                                setRefocus(run.key);
+                              }}
+                            >
+                              Keep
+                            </button>
+                          </span>
+                        ) : (
                           <button
-                            className="text-button"
-                            aria-busy={deleting === run.key}
-                            onClick={() => {
-                              if (!deleting) void remove(run.key);
-                            }}
+                            className="icon-button"
+                            aria-label={
+                              blocked
+                                ? `Delete run ${run.key}: ${blocked}`
+                                : `Delete run ${run.key}`
+                            }
+                            title={blocked ?? 'Delete this run and its ZIP from runs/'}
+                            disabled={!!blocked}
+                            data-delete={run.key}
+                            onClick={() => setConfirming(run.key)}
                           >
-                            {deleting === run.key ? 'Deleting…' : 'Delete'}
+                            <Trash2 size={14} />
                           </button>
-                          <button
-                            className="text-button"
-                            autoFocus
-                            onClick={() => {
-                              if (deleting) return;
-                              setConfirming(null);
-                              setRefocus(run.key);
-                            }}
-                          >
-                            Keep
-                          </button>
-                        </span>
-                      ) : (
-                        <button
-                          className="icon-button"
-                          aria-label={`Delete run ${run.key}`}
-                          title="Delete this run and its ZIP from runs/"
-                          data-delete={run.key}
-                          onClick={() => setConfirming(run.key)}
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             {total !== null && runs.length < total && (

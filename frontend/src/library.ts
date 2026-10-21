@@ -14,19 +14,29 @@ export function runsQuery(offset: number, includeEmpty: boolean, limit = PAGE): 
   return `/api/runs?${query}`;
 }
 
-// A page from the server: a list of runs, or {runs: [...]} from servers before v0.6. The total
-// comes from the X-Total-Count header; null when the server does not send it.
+// A page from the server: {runs: [...]}, with the total in the X-Total-Count header; the total is
+// null when the server does not send it (before v0.6).
 export function readRunPage(
   body: unknown,
   totalHeader: string | null,
 ): {runs: SavedRun[]; total: number | null} {
-  const runs = Array.isArray(body)
-    ? body
-    : Array.isArray((body as {runs?: unknown} | null)?.runs)
-      ? (body as {runs: SavedRun[]}).runs
-      : [];
+  const runs = (body as {runs?: unknown} | null)?.runs;
   const total = totalHeader && /^\s*\d+\s*$/.test(totalHeader) ? Number(totalHeader) : null;
-  return {runs, total};
+  return {runs: Array.isArray(runs) ? runs : [], total};
+}
+
+// Why a saved run cannot be deleted now, or null. The server refuses runs saved from the live run
+// (their keys start with its run ID) and trials of the comparison still running.
+export function deleteBlock(
+  run: Pick<SavedRun, 'key' | 'trial'>,
+  liveRunId: string | undefined,
+  activeBatchId: string | null,
+): string | null {
+  if (liveRunId && run.key.startsWith(liveRunId))
+    return 'Saved from the current run. Start a new run (Reset) to delete it.';
+  if (activeBatchId && run.trial?.batch_id === activeBatchId)
+    return 'A trial of the comparison that is still running.';
+  return null;
 }
 
 // Appends a page, skipping runs already listed: runs saved meanwhile shift the offsets.
