@@ -18,7 +18,6 @@ and the .csv while it runs; a trial that fails becomes a row with an error, and 
 trials already saved. Every result describes this simulation, not fly behavior.
 """
 import argparse
-import csv
 import json
 import sys
 from datetime import datetime, timezone
@@ -89,15 +88,8 @@ def shown(path):
     return path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
 
 
-def write_csv(path, rows):
-    """Rows as CSV, leaving out list and dict values; returns the columns."""
-    flat = [{k: v for k, v in r.items() if not isinstance(v, (list, dict))} for r in rows]
-    fields = list(dict.fromkeys(k for r in flat for k in r))
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(flat)
-    return fields
+# Rows as CSV; trial rows appended to .jsonl and .csv as they finish (resumable). Both live in digitalfly.toolkit.
+write_csv, TrialLog = toolkit.write_csv, toolkit.TrialLog
 
 
 def save(stem, rows, report, circuits=()):
@@ -106,38 +98,6 @@ def save(stem, rows, report, circuits=()):
     if rows:
         write_csv(stem.with_suffix(".csv"), rows)
     print(f"\nSaved {shown(stem)}.json" + (f" and {shown(stem)}.csv" if rows else ""))
-
-
-class TrialLog:
-    """Trial rows appended to <stem>.jsonl and <stem>.csv as they finish, so a failing or interrupted sweep keeps
-    every finished trial. With resume, rows already in the JSONL without an error are reused by config hash."""
-
-    def __init__(self, stem, resume):
-        self.jsonl, self.csv = stem.with_suffix(".jsonl"), stem.with_suffix(".csv")
-        self.saved, self.rows, self.fields = {}, [], []
-        if resume and self.jsonl.is_file():
-            for line in self.jsonl.read_text().splitlines():
-                row = json.loads(line) if line.strip() else {}
-                if row.get("config_hash") and not row.get("error"):
-                    self.saved[row["config_hash"]] = row
-        elif not resume:
-            self.jsonl.unlink(missing_ok=True)
-        self.rows = list(self.saved.values())
-        if self.rows:
-            self.fields = write_csv(self.csv, self.rows)
-        else:
-            self.csv.unlink(missing_ok=True)
-
-    def add(self, row):
-        with self.jsonl.open("a") as handle:
-            handle.write(json.dumps(row, default=str) + "\n")
-        self.rows.append(row)
-        flat = {k: v for k, v in row.items() if not isinstance(v, (list, dict))}
-        if not self.fields or set(flat) - set(self.fields):  # a new column: rewrite with the wider header
-            self.fields = write_csv(self.csv, self.rows)
-            return
-        with self.csv.open("a", newline="") as handle:
-            csv.DictWriter(handle, fieldnames=self.fields).writerow(flat)
 
 
 def interval(ci, fmt="{:.1f}", scale=1, unit=""):
@@ -217,6 +177,10 @@ def trials(args):
             print("| " + " | ".join(str(v) for v in p["condition"].values()) + f" | {p['pairs']} | "
                   + (f"{reached['mean_difference']:+.2f} ({interval(reached['ci95'], '{:+.2f}')}) | "
                      f"{final['mean_difference']:+.1f} ({interval(final['ci95'], '{:+.1f}')}) |" if p["pairs"] else "— | — |"))
+    clipped = [r["motor_clipped_fraction"] for r in rows if r.get("motor_clipped_fraction") is not None]
+    if clipped:
+        print(f"\nConnectome trials: the motor command left [0, 1] and was clipped in {sum(clipped) / len(clipped):.0%} "
+              f"of control intervals on average (at most {max(clipped):.0%}; column motor_clipped_fraction).")
     errors = sum(bool(r["error"]) for r in rows)
     circuits = [c.connectome_parameters.circuit for c in configs if c.neural_model == "connectome"]
     save(stem, rows, {"command": "trials", "base": base.model_dump(), "vary": varied, "duration_s": args.duration,
@@ -354,7 +318,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
     t = commands.add_parser("trials", help="Closed-loop trials over targets, seeds and varied settings")
-    t.add_argument("--duration", type=float, default=10.0, help="Simulated seconds per trial (default 10)")
+    t.add_argument("--duration", type=float, default=10.0,
+                   help="Simulated seconds per trial (default 10; trials keep no recording, so any length works)")
     t.add_argument("--bearings", help=f"Target bearings in degrees; positive = left (default {DEFAULTS['bearings']})")
     t.add_argument("--distances", help=f"Target distances in mm (default {DEFAULTS['distances']})")
     t.add_argument("--seeds", help=f"Seeds, e.g. 1-5 or 1,7,9 (default {DEFAULTS['seeds']})")
@@ -383,7 +348,8 @@ def main():
     p.add_argument("--limit", type=int, default=10)
     p.set_defaults(handler=paths)
     j = commands.add_parser("jump", help="Record and export a run whose target jumps to a random side (for compare)")
-    j.add_argument("--duration", type=float, default=60.0, help="Simulated seconds, below the 300 s recording limit (default 60)")
+    j.add_argument("--duration", type=float, default=60.0,
+                   help="Simulated seconds, at most 299.99: the exported run is recorded (default 60)")
     j.add_argument("--every", type=float, default=2.0, help="Seconds between jumps (default 2)")
     j.add_argument("--distance", type=float, default=10.0, help="Target distance after each jump, mm (default 10)")
     j.add_argument("--max-bearing", type=float, default=120.0, help="Largest jump from the heading, degrees (default 120)")

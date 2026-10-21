@@ -13,13 +13,16 @@ Every run is built from a validated RunConfig, so a result is reproduced by its 
 seed. The model's labels still apply: wiring data-derived, signs assumed, dynamics and the sensor
 and motor mappings engineered. Results describe this simulation, not flies.
 
-A trial that raises becomes a row with an `error` text instead of ending the sweep. `summarize`
+A trial that raises becomes a row with an `error` text instead of ending the sweep; `TrialLog` saves rows
+as they finish and finds the ones a resumed sweep can skip. Trials keep no per-sample recording, so they
+have no length limit. `summarize`
 adds 95% intervals: Wilson score intervals for fractions, percentile bootstrap intervals for means
 (2,000 resamples from a fixed seed, so a report repeats) and paired differences between conditions
 over trials with the same seed and target.
 """
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
+import csv
 import hashlib
 import inspect
 import itertools
@@ -145,13 +148,28 @@ def provenance(circuits=(), command: list[str] | None = None) -> dict:
             "python": platform.python_version(), "platform": platform.platform(), "packages": packages}
 
 
+def recorded_steps(duration_s: float) -> int:
+    """Control steps in `duration_s` for an experiment that records every sample, checked against the recording
+    limit before anything runs (the reset's sample counts too, so the longest run is 299.99 s)."""
+    from digitalfly.simulation.experiment import RECORD_LIMIT
+    steps = round(duration_s / CONTROL_DT)
+    if steps > RECORD_LIMIT - 1:
+        raise ValueError(f"{duration_s:g} simulated s does not fit the recording limit of {RECORD_LIMIT:,} samples: a "
+                         f"recorded run lasts at most {(RECORD_LIMIT - 1) * CONTROL_DT:g} s.")
+    return steps
+
+
 def run_trial(config: RunConfig | dict, duration_s: float = 10.0, reach_mm: float = REACH_MM, turn_deg: float = TURN_DEG,
               trajectory_every: int = 0, experiment=None) -> dict:
-    """One closed-loop trial from a reset: the configuration, behavior metrics and, if asked, a trajectory
-    sampled every `trajectory_every` control steps (10 ms each)."""
+    """One closed-loop trial from a reset: the configuration, behavior metrics (with `motor_clipped_fraction` for
+    the connectome model) and, if asked, a trajectory sampled every `trajectory_every` control steps (10 ms each).
+    Its own experiment keeps no per-sample recording (record=False), so a trial has no length limit; a recording
+    `experiment` passed in is checked against its limit first. Recording never changes the results."""
     from digitalfly.simulation.experiment import Experiment
     config = config if isinstance(config, RunConfig) else RunConfig.model_validate(config)
-    exp = experiment or Experiment(config, render=False)
+    if experiment is not None and experiment.recording:
+        recorded_steps(duration_s)
+    exp = experiment or Experiment(config, render=False, record=False)
     try:
         if experiment is not None:
             exp.reset(config)
@@ -187,6 +205,8 @@ def run_trial(config: RunConfig | dict, duration_s: float = 10.0, reach_mm: floa
                   "net_turn_deg": math.degrees(net),
                   "mean_yaw_rate_first_2s_deg_s": math.degrees(float(np.mean(yaw_rates))) if yaw_rates else 0.,
                   "mean_speed_mm_s": exp.metrics["mean_speed_mm_s"]}
+        if exp.circuit.kind == "connectome":  # engineered diagnostic: control intervals with a clipped motor command
+            result["motor_clipped_fraction"] = exp.circuit.motor_clipped_fraction
         if trajectory_every:
             result["trajectory"] = trajectory
         return result
@@ -203,16 +223,18 @@ TRIAL_SETTINGS = {name: p.default for name, p in inspect.signature(run_trial).pa
 def jumping_target_run(config: RunConfig | dict, duration_s: float = 60.0, every_s: float = 2.0, distance_mm: float = 10.0,
                        max_bearing_deg: float = 120.0, seed: int = 0, export_dir=None) -> dict:
     """A run whose target jumps to a new random bearing (±max_bearing_deg from the current heading) every
-    `every_s` seconds, so turning varies in both directions; exported like an app run (for `compare`)."""
+    `every_s` seconds, so turning varies in both directions; exported like an app run (for `compare`). The export
+    needs the full recording, so `duration_s` must fit the recording limit (checked before the run starts)."""
     from digitalfly.simulation.experiment import Experiment
     config = config if isinstance(config, RunConfig) else RunConfig.model_validate(config)
+    steps = recorded_steps(duration_s)
     rng = np.random.default_rng(seed)
     exp = Experiment(config, render=False)
     try:
         if exp.status != "paused":
             raise RuntimeError(exp.error or "The experiment did not start.")
         steps_per_jump = max(1, round(every_s / CONTROL_DT))
-        for step in range(round(duration_s / CONTROL_DT)):
+        for step in range(steps):
             if step % steps_per_jump == 0:
                 pose = exp.sample.pose
                 angle = pose.yaw + math.radians(rng.uniform(-max_bearing_deg, max_bearing_deg))
@@ -252,7 +274,7 @@ def _run_in_worker(task):
         exp = _experiments.get(engine)
         if exp is None:
             from digitalfly.simulation.experiment import Experiment
-            exp = _experiments[engine] = Experiment(config, render=False)
+            exp = _experiments[engine] = Experiment(config, render=False, record=False)
         return index, {**run_trial(config, experiment=exp, **kwargs), "error": None,
                        "config_hash": config_hash(config, **kwargs)}
     except Exception as exc:
@@ -324,6 +346,51 @@ def run_trials(configs: list[RunConfig | dict], workers: int = 1, on_result=None
         finally:
             pool.shutdown(wait=True, cancel_futures=True)
     return rows
+
+
+def write_csv(path, rows) -> list[str]:
+    """Rows as CSV, leaving out list and dict values; returns the columns."""
+    flat = [{k: v for k, v in r.items() if not isinstance(v, (list, dict))} for r in rows]
+    fields = list(dict.fromkeys(k for r in flat for k in r))
+    with Path(path).open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(flat)
+    return fields
+
+
+class TrialLog:
+    """Trial rows appended to <stem>.jsonl and <stem>.csv as they finish (pass `add` to run_trials' on_result), so
+    a failing or interrupted sweep keeps every finished trial. With resume, rows already in the JSONL without an
+    error are kept in `saved` by config hash, for the caller to skip; without it both files start empty."""
+
+    def __init__(self, stem, resume=False):
+        stem = Path(stem)
+        self.jsonl, self.csv = stem.with_suffix(".jsonl"), stem.with_suffix(".csv")
+        self.saved, self.rows, self.fields = {}, [], []
+        if resume and self.jsonl.is_file():
+            for line in self.jsonl.read_text().splitlines():
+                row = json.loads(line) if line.strip() else {}
+                if row.get("config_hash") and not row.get("error"):
+                    self.saved[row["config_hash"]] = row
+        elif not resume:
+            self.jsonl.unlink(missing_ok=True)
+        self.rows = list(self.saved.values())
+        if self.rows:
+            self.fields = write_csv(self.csv, self.rows)
+        else:
+            self.csv.unlink(missing_ok=True)
+
+    def add(self, row):
+        with self.jsonl.open("a") as handle:
+            handle.write(json.dumps(row, default=str) + "\n")
+        self.rows.append(row)
+        flat = {k: v for k, v in row.items() if not isinstance(v, (list, dict))}
+        if not self.fields or set(flat) - set(self.fields):  # a new column: rewrite with the wider header
+            self.fields = write_csv(self.csv, self.rows)
+            return
+        with self.csv.open("a", newline="") as handle:
+            csv.DictWriter(handle, fieldnames=self.fields).writerow(flat)
 
 
 def hold(parameters: ConnectomeParameters, left: float, right: float, ms: int = 500,
