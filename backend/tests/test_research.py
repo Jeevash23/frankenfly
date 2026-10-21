@@ -107,7 +107,8 @@ def test_sequential_batch_saves_matched_trials_and_rejects_mutation(tmp_path, mo
             assert m['recorded_samples']==26 and m['metrics']['protocol_complete']
             if m['trial']['condition']=='descending_off': assert m['metrics']['path_length_mm']==0
             else:assert m['metrics']['path_length_mm']>0
-        assert client.post('/api/run',json={}).status_code==409
+        # The workbench returns to its configuration from before the comparison.
+        assert state['config']['protocol'] is None and state['config']['speed']==.25 and state['sample']['step']==0
     assert not app.state.worker.thread.is_alive()
 
 

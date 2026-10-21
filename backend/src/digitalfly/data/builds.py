@@ -36,6 +36,10 @@ def catalog():
     return json.loads(CATALOG.read_text())
 
 
+def catalog_ready() -> bool:
+    return CATALOG.is_file()
+
+
 class BuildManager:
     def __init__(self):
         self.lock = threading.Lock()
@@ -47,13 +51,24 @@ class BuildManager:
         with self.lock:
             return {**self.state, "log": list(self.lines)[-40:]}
 
-    def start(self, request: BuildRequest):
+    def building(self) -> str | None:
+        """The name of the circuit a running build will write, if a build is running."""
+        with self.lock:
+            running = self.process is not None and self.process.poll() is None
+            return self.state.get("name") if running else None
+
+    def start(self, request: BuildRequest, in_use: set[str] = frozenset()):
+        """Start a build. `in_use` names the circuits the simulation has loaded: rebuilding one of them in place would
+        leave the running experiment on wiring that no longer matches its file."""
         from digitalfly.neural.connectome import CIRCUIT_DIR
         if not PREPARED.is_file():
             raise FileNotFoundError("Prepare the FlyWire data once first: backend/.venv/bin/python scripts/build_circuit.py prepare "
                                     "(it needs the build-only data lock and the cached or downloaded FlyWire files).")
         if any((CIRCUIT_DIR / f"{request.name}{suffix}").exists() for suffix in (".json", ".npz")):
             raise ValueError(f"{request.name} is a built-in circuit. Choose another name.")
+        if request.name in in_use:
+            raise ValueError(f"The running experiment uses the {request.name} circuit, so it cannot be rebuilt now. "
+                             "Choose another name, or reset onto another circuit or model first.")
         command = self.command(request)
         with self.lock:
             if self.process is not None and self.process.poll() is None:
