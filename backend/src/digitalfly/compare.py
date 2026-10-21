@@ -12,11 +12,13 @@ Recordings use one documented CSV format (or a NumPy archive with the same colum
     rate_right_hz             firing rate of the right neuron(s)
     rotational_velocity_deg_s rightward (clockwise seen from above) positive
     forward_velocity_mm_s     optional
+    valid                     optional, 1 or 0; samples marked 0 (such as stimulation epochs) are left out of fits
 
 DigitalFly runs exported from the app are read directly from their telemetry.csv. Model rates are
 dimensionless for rate dynamics; spiking runs are converted back to spikes/s with the run's rate
 scale. `rayshubskiy_recording` converts the paired DNa02 recordings of Rayshubskiy et al. 2025
-(Harvard Dataverse doi:10.7910/DVN/0NCLP1, CC0) to this format; nothing here downloads data.
+(Harvard Dataverse doi:10.7910/DVN/0NCLP1, CC0) to this format and, by default, marks the samples
+during and shortly after the optogenetic stimulus as not valid; nothing here downloads data.
 """
 import csv
 import json
@@ -28,19 +30,24 @@ COLUMNS = ["t_s", "rate_left_hz", "rate_right_hz", "rotational_velocity_deg_s"]
 
 
 class Recording:
-    """Uniformly resampled time series of one readout pair and turning."""
+    """Uniformly resampled time series of one readout pair and turning. `valid` (optional, one flag per input
+    sample) marks samples the fits must leave out; a resampled bin is valid only if both neighbours are."""
 
     def __init__(self, t, left, right, rotation, forward=None, source="", units="spikes/s", readout="DNa02",
-                 bin_s=0.01):
+                 bin_s=0.01, valid=None):
         t, left, right, rotation = (np.asarray(a, dtype=np.float64) for a in (t, left, right, rotation))
         if not (len(t) == len(left) == len(right) == len(rotation)) or len(t) < 3:
             raise ValueError("A recording needs at least three samples of time, both rates and rotation.")
         if not np.all(np.isfinite([t, left, right, rotation])) or np.any(np.diff(t) <= 0):
             raise ValueError("Times must increase and every value must be a finite number.")
+        valid = np.ones(len(t), dtype=bool) if valid is None else np.asarray(valid, dtype=bool)
+        if len(valid) != len(t):
+            raise ValueError("The valid flags need one value per sample.")
         grid = np.arange(t[0], t[-1] + bin_s / 2, bin_s)
         self.t = grid
         self.left, self.right, self.rotation = (np.interp(grid, t, a) for a in (left, right, rotation))
         self.forward = None if forward is None else np.interp(grid, t, np.asarray(forward, dtype=np.float64))
+        self.valid = np.interp(grid, t, valid.astype(np.float64)) > 1 - 1e-9
         self.source, self.units, self.readout, self.bin_s = source, units, readout, bin_s
 
     @property
@@ -59,12 +66,14 @@ def load_recording(path: str | Path, readout: str = "DNa02", bin_s: float = 0.01
             rows = list(csv.DictReader(handle))
         if not rows:
             raise ValueError(f"{path.name} has no rows.")
-        data = {key: np.array([float(r[key]) for r in rows]) for key in rows[0] if key in COLUMNS + ["forward_velocity_mm_s"]}
+        data = {key: np.array([float(r[key]) for r in rows]) for key in rows[0]
+                if key in COLUMNS + ["forward_velocity_mm_s", "valid"]}
     missing = [c for c in COLUMNS if c not in data]
     if missing:
         raise ValueError(f"{path.name} lacks the columns {', '.join(missing)}. Expected: {', '.join(COLUMNS)}.")
     return Recording(data["t_s"], data["rate_left_hz"], data["rate_right_hz"], data["rotational_velocity_deg_s"],
-                     data.get("forward_velocity_mm_s"), source=path.name, readout=readout, bin_s=bin_s)
+                     data.get("forward_velocity_mm_s"), source=path.name, readout=readout, bin_s=bin_s,
+                     valid=None if data.get("valid") is None else np.asarray(data["valid"]) > 0)
 
 
 def model_recording(run: str | Path, readout: str | None = None, bin_s: float = 0.01) -> Recording:
@@ -95,11 +104,15 @@ def model_recording(run: str | Path, readout: str | None = None, bin_s: float = 
 
 
 def fit_turning(recording: Recording, max_lag_s: float = 0.5) -> dict:
-    """rotation(t + lag) ≈ gain × (right − left)(t) + offset, choosing the lag (0..max) with the best r²."""
-    x, y = recording.difference, recording.rotation
+    """rotation(t + lag) ≈ gain × (right − left)(t) + offset, choosing the lag (0..max) with the best r².
+    A pair of samples counts only when both are valid."""
+    x, y, valid = recording.difference, recording.rotation, recording.valid
     best = None
     for k in range(0, int(round(max_lag_s / recording.bin_s)) + 1):
         xs, ys = x[:len(x) - k] if k else x, y[k:]
+        keep = valid[:len(valid) - k] & valid[k:] if k else valid
+        if not keep.all():
+            xs, ys = xs[keep], ys[keep]
         if len(xs) < 3 or np.ptp(xs) == 0:
             continue
         gain, offset = np.polyfit(xs, ys, 1)
@@ -118,13 +131,17 @@ def fit_turning(recording: Recording, max_lag_s: float = 0.5) -> dict:
 def fit_filter(recording: Recording, max_lag_s: float = 0.5, ridge: float = 1.0, folds: int = 5) -> dict:
     """A linear filter from the right − left difference to rotation (lags 0..max_lag_s), fitted by ridge
     regression, with r² measured on held-out contiguous blocks (k-fold), as a fairer measure of how much
-    turning the readout predicts than the single-lag fit. Rayshubskiy et al. used linear filters this way."""
-    x, y = recording.difference, recording.rotation
+    turning the readout predicts than the single-lag fit. Rayshubskiy et al. used linear filters this way.
+    A row counts only when its rotation and every lagged input are valid."""
+    x, y, valid = recording.difference, recording.rotation, recording.valid
     lags = int(round(max_lag_s / recording.bin_s)) + 1
     if len(x) < lags * folds * 2:
         raise ValueError("The recording is too short for this many lags and folds.")
     design = np.stack([np.concatenate([np.zeros(k), x[:len(x) - k]]) for k in range(lags)], axis=1)[lags:]
     target = y[lags:]
+    usable = np.all([valid[lags - k:len(valid) - k] for k in range(lags)], axis=0)
+    if usable.sum() < lags * folds * 2:
+        raise ValueError("Too few valid samples for this many lags and folds.")
     edges = np.linspace(0, len(target), folds + 1).astype(int)
     predicted = np.empty_like(target)
 
@@ -138,9 +155,10 @@ def fit_filter(recording: Recording, max_lag_s: float = 0.5, ridge: float = 1.0,
     for k in range(folds):
         test = np.zeros(len(target), dtype=bool)
         test[edges[k]:edges[k + 1]] = True
-        kernel, intercept = solve(design[~test], target[~test])
+        kernel, intercept = solve(design[~test & usable], target[~test & usable])
         predicted[test] = design[test] @ kernel + intercept
-    kernel, intercept = solve(design, target)
+    kernel, intercept = solve(design[usable], target[usable])
+    target, predicted = target[usable], predicted[usable]
     total = float(np.sum((target - target.mean()) ** 2))
     r2 = 1 - float(np.sum((target - predicted) ** 2)) / total if total > 0 else 0.0
     peak = int(np.argmax(np.abs(kernel)))
@@ -191,6 +209,16 @@ def steering_curve(t, x, y, yaw, target, bins=np.arange(-180, 181, 30)) -> list[
 # a fit made with it is therefore not an independent test of turning direction.
 RAYSHUBSKIY_YAW_TO_DEG_S = 0.000395 / 0.000436
 RAYSHUBSKIY_SPIKES = {"height": 2.5, "prominence": 15.0, "window_s": 10.0, "bin_s": .0125, "sigma_s": .025}
+# Samples while the optogenetic stimulus is on, and this long after it, are left out of fits by default
+# (engineered choice: the fits' default longest lag, so no lag pairs a stimulated sample with a later one).
+STIMULUS_MARGIN_S = 0.5
+
+
+def stimulus_mask(stim, t_stim, t, margin_s: float = STIMULUS_MARGIN_S) -> np.ndarray:
+    """True at each time in `t` when the stimulus was on then or within the preceding `margin_s` seconds."""
+    on = np.concatenate([[0], np.cumsum(np.asarray(stim, dtype=np.float64).ravel() > 0)])
+    t_stim, t = np.asarray(t_stim, dtype=np.float64).ravel(), np.asarray(t, dtype=np.float64)
+    return on[np.searchsorted(t_stim, t, side="right")] > on[np.searchsorted(t_stim, t - margin_s, side="left")]
 
 
 def detect_spikes(voltage, fs: int, height: float = 2.5, prominence: float = 15.0, window_s: float = 10.0) -> np.ndarray:
@@ -234,9 +262,12 @@ def firing_rate(spikes: np.ndarray, fs: int, t_out, t0: float = 0.0, bin_s: floa
 
 
 def rayshubskiy_recording(path: str | Path, readout: str = "DNa02", bin_s: float = 0.01,
-                          positive_yaw: str = "right") -> tuple[Recording, dict]:
+                          positive_yaw: str = "right", exclude_stimulus: bool = True,
+                          stimulus_margin_s: float = STIMULUS_MARGIN_S) -> tuple[Recording, dict]:
     """A dual (left + right) recording from the Rayshubskiy et al. 2025 dataset, and a summary of the conversion.
-    `positive_yaw` says which way the file's positive yaw turns ("right", inferred; or "left")."""
+    `positive_yaw` says which way the file's positive yaw turns ("right", inferred; or "left"). With
+    `exclude_stimulus` (default) the samples during the optogenetic stimulus and `stimulus_margin_s` after it
+    are marked not valid, so fits use spontaneous walking only; False keeps them, as before v0.6."""
     if positive_yaw not in ("right", "left"):
         raise ValueError("positive_yaw is 'right' or 'left'.")
     import scipy.io
@@ -253,25 +284,46 @@ def rayshubskiy_recording(path: str | Path, readout: str = "DNa02", bin_s: float
     rates = {side: firing_rate(idx, fs, t_ball, t0, p["bin_s"], p["sigma_s"]) for side, idx in spikes.items()}
     rotation = (1 if positive_yaw == "right" else -1) * np.asarray(data["yaw"], dtype=np.float64) * RAYSHUBSKIY_YAW_TO_DEG_S
     duration = len(np.asarray(data["ephys_A"])) / fs
-    stim = np.asarray(data.get("stim", np.zeros(1)), dtype=np.float64)
+    stim = np.asarray(data.get("stim", np.zeros(1)), dtype=np.float64).ravel()
+    excluded = np.zeros(len(t_ball), dtype=bool)
+    if exclude_stimulus and "stim" in data:
+        t_ephys = np.asarray(data["t_ephys"], dtype=np.float64).ravel()
+        t_stim = t_ephys if len(stim) == len(t_ephys) else t_ball if len(stim) == len(t_ball) else None
+        if t_stim is None:
+            raise ValueError(f"The stim channel has {len(stim)} samples, matching neither the ephys nor the ball clock; "
+                             "pass exclude_stimulus=False (--include-stimulus) to fit without masking it.")
+        excluded = stimulus_mask(stim, t_stim, t_ball, stimulus_margin_s)
     summary = {"source": Path(path).name, "duration_s": duration, "ephys_hz": fs, "ball_hz": int(data["ball_SR"]),
                "spikes": {side: int(len(idx)) for side, idx in spikes.items()},
                "mean_rate_hz": {side: len(idx) / duration for side, idx in spikes.items()},
                "stimulus_fraction": float((stim > 0).mean()),
+               "stimulus": {"excluded": bool(exclude_stimulus), "margin_s": stimulus_margin_s if exclude_stimulus else None,
+                            "excluded_fraction": float(excluded.mean()),
+                            "rule": ("ball samples with the stimulus on, or on within the margin before them, are "
+                                     "left out of fits" if exclude_stimulus else "stimulus epochs included in fits")},
                "conversion": {"left": "ephys_A", "right": "ephys_B",
                               "rotation_deg_s": f"{'' if positive_yaw == 'right' else '−'}yaw × 0.000395 / 0.000436 "
                                                 f"(positive = rightward; the file's positive yaw taken as {positive_yaw}ward)",
                               "positive_yaw": positive_yaw,
                               "spike_detection": p}}
     recording = Recording(t_ball, rates["left"], rates["right"], rotation, source=Path(path).name,
-                          readout=readout, bin_s=bin_s)
+                          readout=readout, bin_s=bin_s, valid=~excluded)
     return recording, summary
 
 
+def rate_summary(recording: Recording) -> dict:
+    """Mean, median and 99th percentile of each side's rate over the valid samples."""
+    valid = recording.valid
+    return {side: {"mean": float(np.mean(r[valid])), "median": float(np.median(r[valid])),
+                   "p99": float(np.percentile(r[valid], 99))} if valid.any() else None
+            for side, r in (("left", recording.left), ("right", recording.right))} | {"units": recording.units}
+
+
 def save_recording(recording: Recording, path: str | Path):
-    """Write a recording in the documented CSV format."""
+    """Write a recording in the documented CSV format (with the valid column when any sample is excluded)."""
+    flagged = not recording.valid.all()
     with Path(path).open("w", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(COLUMNS)
-        for row in zip(recording.t, recording.left, recording.right, recording.rotation):
-            writer.writerow([f"{row[0]:.4f}", f"{row[1]:.4f}", f"{row[2]:.4f}", f"{row[3]:.4f}"])
+        writer.writerow(COLUMNS + ["valid"] * flagged)
+        for row in zip(recording.t, recording.left, recording.right, recording.rotation, recording.valid):
+            writer.writerow([f"{row[0]:.4f}", f"{row[1]:.4f}", f"{row[2]:.4f}", f"{row[3]:.4f}"] + [int(row[4])] * flagged)

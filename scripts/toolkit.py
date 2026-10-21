@@ -290,11 +290,16 @@ def compare(args):
     fly, conversion = None, None
     if args.recording:
         if args.recording.endswith(".mat"):
-            fly, conversion = cmp.rayshubskiy_recording(args.recording, args.readout or "DNa02",
-                                                        positive_yaw=args.positive_yaw)
+            fly, conversion = cmp.rayshubskiy_recording(args.recording, args.readout or "DNa02", positive_yaw=args.positive_yaw,
+                                                        exclude_stimulus=not args.include_stimulus)
+            stim = conversion["stimulus"]
             print(f"Converted {conversion['source']}: {conversion['duration_s']:.0f} s, spikes left {conversion['spikes']['left']:,} "
                   f"({conversion['mean_rate_hz']['left']:.1f}/s), right {conversion['spikes']['right']:,} "
-                  f"({conversion['mean_rate_hz']['right']:.1f}/s); the file's positive yaw taken as {args.positive_yaw}ward.\n")
+                  f"({conversion['mean_rate_hz']['right']:.1f}/s); the file's positive yaw taken as {args.positive_yaw}ward. "
+                  f"Stimulus on {conversion['stimulus_fraction']:.1%} of the time; "
+                  + (f"{stim['excluded_fraction']:.1%} of the samples left out of the fits (stimulus on, or within "
+                     f"{stim['margin_s']:g} s after)." if stim["excluded"] else "stimulus epochs included (--include-stimulus).")
+                  + "\n")
             if args.save_recording:
                 cmp.save_recording(fly, args.save_recording)
         else:
@@ -309,6 +314,7 @@ def compare(args):
         except ValueError:  # too short for a cross-validated filter
             return None
     filters = {k: filter_fit(r) if r else None for k, r in sources.items()}
+    rates = {k: cmp.rate_summary(r) if r else None for k, r in sources.items()}
     print("| Source | Readout | Best single lag | Gain at that lag | r² | Linear filter: held-out r² |")
     print("| --- | --- | --- | --- | --- | --- |")
     for label in sources:
@@ -317,7 +323,16 @@ def compare(args):
             held_out = f"{filt['heldout_r2']:.3f}" if filt else "too short"
             print(f"| {label}: {fit['source']} | {fit['readout']} | {fit['lag_s'] * 1000:.0f} ms | "
                   f"{fit['gain']:.4g} {fit['gain_units']} | {fit['r2']:.3f} | {held_out} |")
-    result = {"fits": fits, "filters": filters, "conversion": conversion}
+    print("\n| Source | Units | Left: mean, median, 99th percentile | Right: mean, median, 99th percentile |\n| --- | --- | --- | --- |")
+    for label, summary in rates.items():
+        if summary:
+            sides = [f"{s['mean']:.3g}, {s['median']:.3g}, {s['p99']:.3g}" if s else "n/a"
+                     for s in (summary["left"], summary["right"])]
+            print(f"| {label} | {summary['units']} | {sides[0]} | {sides[1]} |")
+    result = {"fits": fits, "filters": filters, "rates": rates, "conversion": conversion}
+    if args.run:
+        neural = json.loads((Path(args.run) / "metadata.json").read_text())["neural"]
+        result["run"] = {"path": args.run, "circuit": neural.get("circuit"), "circuit_sha256": neural.get("circuit_sha256")}
     if fly and model:
         result["comparison"] = cmp.compare(fly, model, args.max_lag)
         c = result["comparison"]
@@ -381,6 +396,8 @@ def main():
     m.add_argument("--recording", help="Fly recording: CSV/NPZ (columns in digitalfly/compare.py) or a Rayshubskiy et al. 2025 dual .mat")
     m.add_argument("--positive-yaw", choices=["right", "left"], default="right",
                    help="Which way the .mat file's positive yaw turns (default right, inferred; see the research guide)")
+    m.add_argument("--include-stimulus", action="store_true",
+                   help="Keep the .mat file's optogenetic stimulus epochs in the fits (default: leave them out)")
     m.add_argument("--save-recording", help="Also write the converted .mat recording as a CSV here")
     m.add_argument("--run", help="Exported DigitalFly run folder (runs/<id>)")
     m.add_argument("--readout", help="Readout cell type (default: the run's first readout, or DNa02)")
