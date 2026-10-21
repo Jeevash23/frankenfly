@@ -27,7 +27,7 @@ Structural reconstructions for display, not an executable connectome: the female
 
 ## recordings/
 
-`downloads.json` lists each recorded-fly dataset DigitalFly can compare with: today one paired left/right DNa02 recording from Rayshubskiy et al. 2025. No recording is committed. `scripts/fetch_recording.py NAME` downloads the file into the ignored `.cache/recordings/` and keeps it only if its size, MD5 and SHA-256 match. Keep raw recordings there, not in this folder: `data/recordings/` is not ignored by git. See [comparing with real flies](../docs/RESEARCH.md#comparing-with-real-flies).
+`downloads.json` lists each recorded-fly dataset DigitalFly can compare with: today one paired left/right DNa02 recording from Rayshubskiy et al. 2025. No recording is committed. `scripts/fetch_recording.py NAME` downloads the file into the ignored `.cache/recordings/` and keeps it only if its size, MD5 and SHA-256 match. Keep raw recordings there: git ignores everything in `data/recordings/` except `downloads.json` and `LICENSE.md`. See [comparing with real flies](../docs/RESEARCH.md#comparing-with-real-flies).
 
 ## Local, ignored folders
 
