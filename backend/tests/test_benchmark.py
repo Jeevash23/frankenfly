@@ -27,7 +27,8 @@ def test_the_neural_step_benchmark(toy_brain, tmp_path):
     whole["provenance"]["build"]["whole_brain"] = True
     (toy_brain.parent / "toy-whole.json").write_text(json.dumps(whole))
     # Committed circuits and local whole-brain builds; other local circuits only when named.
-    assert benchmark.neural_circuits() == ["fafb783-dna02", "fafb783-steering", "toy-whole"]
+    assert benchmark.neural_circuits() == ["fafb783-dna02", "fafb783-dna02-balanced", "fafb783-steering",
+                                           "fafb783-steering-balanced", "toy-whole"]
     timed = benchmark.time_neural_step("toy-whole", "spiking", steps=20, warmup=2)
     assert timed["neurons"] == 10 and timed["whole_brain"] and timed["ms_per_step"] > 0 and timed["steps"] == 20
     done = run("--neural", "--circuit", "fafb783-dna02", "--steps", "5", "--warmup", "1", "--out", str(tmp_path / "neural.json"))
