@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import Field
 from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, StrictModel, NeuralParameters,
-    ConnectomeParameters, BatchRequest)
+    ConnectomeParameters, BatchRequest, state_schema)
 from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
 from digitalfly.neural.model import NAMES as ENGINEERED_UNITS, RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog, catalog_ready
@@ -327,6 +327,11 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             return run_detail(key)
         except (OSError, ValueError, KeyError) as exc:
             raise HTTPException(404, "Saved run not found or unreadable.") from exc
+
+    @app.get("/api/schema/state")
+    def state_json_schema():
+        """JSON Schema of the State that /api/ws and /api/status send."""
+        return state_schema()
 
     @app.get("/api/atlas")
     def atlas():

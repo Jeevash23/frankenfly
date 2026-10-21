@@ -11,7 +11,8 @@ from typing import NamedTuple
 import uuid
 import psutil
 from digitalfly.api.models import (State, RunConfig, Stimulus, Interventions, Speed, NeuralParameters,
-    ConnectomeParameters, BatchRequest, check_interventions)
+    ConnectomeParameters, BatchRequest, check_interventions, construct, Batch, ConnectomeLive, Provenance, RunMetrics,
+    Vision)
 from digitalfly.simulation.experiment import Experiment, RECORD_LIMIT
 from digitalfly.simulation.engines import CONTROL_DT
 
@@ -143,9 +144,10 @@ class SimulationWorker:
             memory_mb=psutil.Process().memory_info().rss / 1e6, frame_revision=self.frame_revision,
             rendering=exp.body is not None and exp.body.renderer is not None,
             render_error=exp.body.render_error if exp.body else None,
-            recording_samples=len(exp.records), recording_limit=RECORD_LIMIT, provenance=exp.provenance,
-            metrics=exp.metrics, vision=exp.body.vision if exp.body else {}, batch=self.batch,
-            connectome=exp.connectome_snapshot()).model_dump()
+            recording_samples=len(exp.records), recording_limit=RECORD_LIMIT,
+            provenance=construct(Provenance, exp.provenance), metrics=construct(RunMetrics, exp.metrics),
+            vision=construct(Vision, exp.body.vision if exp.body else {}), batch=construct(Batch, self.batch),
+            connectome=construct(ConnectomeLive, exp.connectome_snapshot())).model_dump()
         with self.lock:
             previous = self.snapshot
         # A new revision only when something besides the memory reading changed: clients skip the rest.
