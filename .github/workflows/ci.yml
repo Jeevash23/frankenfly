@@ -1,6 +1,6 @@
-# Light checks for a private repository: one Ubuntu job, cached dependencies,
-# superseded runs cancelled. FlyGym physics tests need an OpenGL context and are
-# skipped here; run ./scripts/check.sh locally for the full suite.
+# Backend tests on every supported Python, the frontend on Node 24 and on the oldest
+# supported Node, the FlyGym physics tests (GLFW on a virtual X display, as check.sh does
+# without a display or EGL) and a dependency audit. Superseded runs are cancelled.
 name: CI
 
 on:
@@ -16,31 +16,59 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  checks:
+  backend:
+    name: Backend tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the recorded replay stack; 3.13 and 3.14 run the app without FlyVis.
+        python: ['3.12', '3.13', '3.14']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: backend/requirements.lock
+          cache-dependency-path: |
+            backend/requirements-tools.lock
+            backend/requirements.lock
 
-      - name: Install the hashed backend lock
+      # pip itself comes from the hashed tools lock before anything else, as in setup.sh.
+      # pip check also fails when pyproject's pins and the lock disagree.
+      - name: Install the hashed tool and backend locks
         run: |
           python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-tools.lock
           backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock
+          backend/.venv/bin/python -m pip install --disable-pip-version-check --no-deps --no-build-isolation -e backend
+          backend/.venv/bin/python -m pip check
 
       - name: Backend tests without FlyGym physics
         run: backend/.venv/bin/python -m pytest backend/tests -m 'not flygym' -q
 
-      # The oldest supported Node release, so CI also checks the lower bound.
-      - uses: actions/setup-node@v4
+  frontend:
+    name: Frontend checks (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 24 is the default (LTS); 22.12.0 is the oldest release package.json allows.
+        node: ['24', '22.12.0']
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
         with:
-          node-version: '22.12.0'
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -53,3 +81,85 @@ jobs:
           npm --prefix frontend run typecheck
           npm --prefix frontend test
           npm --prefix frontend run build
+
+  physics:
+    name: FlyGym physics tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements-tools.lock
+            backend/requirements.lock
+
+      # Xvfb plus Mesa's software OpenGL; GLFW (bundled with the glfw wheel) loads the X11 libraries.
+      - name: Install Xvfb and Mesa OpenGL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth libgl1 libglx-mesa0 libgl1-mesa-dri \
+            libx11-6 libxrandr2 libxinerama1 libxcursor1 libxi6 libxxf86vm1 libxkbcommon0
+
+      - name: Install the hashed tool and backend locks
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-tools.lock
+          backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock
+
+      # Includes the bitwise check of the fast controller path against FlyGym's own controller.
+      - name: FlyGym physics tests
+        run: xvfb-run -a env MUJOCO_GL=glfw backend/.venv/bin/python -m pytest backend/tests -m flygym -q
+
+  security:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: .github/requirements-audit.txt
+
+      - name: Install pip-audit from its hashed lock
+        run: |
+          python -m venv "$RUNNER_TEMP/audit"
+          "$RUNNER_TEMP/audit/bin/python" -m pip install --disable-pip-version-check --require-hashes -r .github/requirements-audit.txt
+
+      # Audits the pins as written, without installing them. pip-audit cannot look up the
+      # local "+cpu" PyTorch builds of the vision lock and lists them as skipped.
+      - name: Audit the Python locks
+        run: |
+          # Pillow 12.3.0 advisories, all fixed only in Pillow 13, which FlyGym 2.1.0 (pillow<13)
+          # does not allow yet. None is reachable: DigitalFly only encodes JPEG frames (and the
+          # demo GIF) from arrays and decodes only its own JPEG frames. It never opens PDF, GIF,
+          # PPM/PGM, TIFF or EPS input. Remove these when FlyGym allows Pillow 13.
+          ignore=(
+            GHSA-p4wg-p73j-c528  # CVE-2026-112895: PdfParser recursion when appending to a PDF
+            GHSA-65qm-jvmh-6pqg  # CVE-2026-112400: GIF seek keeps a rejected size (GIF decoding)
+            GHSA-58r4-6rv3-gfh8  # CVE-2026-112397: zero-width PPM/PGM image in ImageMorph
+            GHSA-pchr-8j38-3x4p  # CVE-2026-112896: out-of-bounds read re-saving a loaded TIFF
+            GHSA-q45j-58j2-45rg  # CVE-2026-112897: uninitialised pixels from short TIFF JPEG strips
+            GHSA-462x-pgg6-55fp  # CVE-2026-112395: tiled-TIFF decode buffer size
+            GHSA-c6hw-5grf-ff96  # CVE-2026-112404: out-of-bounds read in TIFF tile and RGBA decoding
+            GHSA-vx6w-vv9f-6gvg  # CVE-2026-112899: EPS load(scale) past the decompression-bomb limit
+          )
+          "$RUNNER_TEMP/audit/bin/pip-audit" --disable-pip --require-hashes --progress-spinner off \
+            "${ignore[@]/#/--ignore-vuln=}" \
+            -r backend/requirements.lock -r backend/requirements-data.lock \
+            -r backend/requirements-vision.lock -r backend/requirements-tools.lock
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      # Reads package-lock.json only; nothing is installed.
+      - name: Audit the frontend lockfile
+        run: npm --prefix frontend audit --audit-level=high
