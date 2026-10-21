@@ -350,6 +350,146 @@ def circuits(args):
               f"{c['cell_types']:,} | {', '.join(c['seeds'])} | {', '.join(c['readout_types']) or '—'} |")
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Assumption sensitivity (`robustness`) and the readout table (`readouts`), from digitalfly.robustness:
+#   scripts/toolkit.py readouts                                   # "What the circuits compute": DNa02 R − L at 0.6 s
+#   scripts/toolkit.py robustness --set circuit=fafb783-steering  # bias conclusions over sign rule, threshold, dynamics
+#   scripts/toolkit.py robustness --vary circuit=fafb783-dna02,fafb783-dna02-balanced --vary seed=1,2,3 --analyses bias,reach
+
+def assumption_axes(pairs):
+    """--vary for robustness: as for trials, plus a JSON list of objects or null as one axis (readout_weights=[null,{…}]);
+    names are ConnectomeParameters fields with or without the prefix, or seed."""
+    result = {}
+    for pair in pairs:
+        key, sep, raw = pair.partition("=")
+        if not sep:
+            sys.exit(f"Use KEY=V1,V2 for --vary, not {pair!r}.")
+        found = value(raw) if raw.startswith(("[{", "[null")) else axes([pair])[key.strip()]
+        result[key.strip().removeprefix(PREFIX)] = found if isinstance(found, list) else [found]
+    return result
+
+
+def cell(value):
+    return "—" if value is None else f"{value:+.3f}" if isinstance(value, float) else str(value)
+
+
+def robustness(args):
+    from digitalfly import robustness as rb
+    base, grid = parameters(args.set), assumption_axes(args.vary) or rb.DEFAULT_AXES
+    analyses = [a.strip() for a in args.analyses.split(",") if a.strip()]
+    if set(analyses) - set(rb.ANALYSES) or not analyses:
+        sys.exit(f"Choose --analyses from {', '.join(rb.ANALYSES)}.")
+    if args.resume and not args.out:
+        sys.exit("--resume needs --out naming the earlier output.")
+    settings = {"tolerance": args.tolerance}
+    if args.ms:
+        settings.update(ms=args.ms, average_ms=args.average_ms)
+    if "reach" in analyses:
+        settings.update(reach_seeds=numbers(args.reach_seeds, int), reach_duration_s=args.reach_duration)
+    variants = rb.variants(base, grid, seed=args.seed)
+    stem = output_stem("robustness", args.out)
+    log = TrialLog(stem, args.resume)
+    hashes = [rb.variant_hash(v, analyses, settings) for v in variants]
+    todo = [k for k, h in enumerate(hashes) if h not in log.saved]
+    print(f"Evaluating {len(todo)} of {len(variants)} variants ({', '.join(analyses)}) on {args.workers} worker(s); "
+          f"finished variants go to {shown(log.jsonl)} …", flush=True)
+
+    def finished(index, row):
+        log.add({**row, "variant": todo[index]})
+        print(f"Variant {todo[index]} " + (f"failed: {row['error']}" if row["error"] else "done"), flush=True)
+    new = dict(zip(todo, rb.run([variants[k] for k in todo], analyses, workers=args.workers, on_result=finished, **settings)))
+    rows = [{**(new[k] if k in new else log.saved[h]), "variant": k} for k, h in enumerate(hashes)]
+    names = list(grid)
+    columns = []
+    if "bias" in analyses:
+        columns += [("equal_input_turn", "Equal input"), ("turn_target_right", "Target right (0.3 / 0.7)"),
+                    ("turn_target_left", "Target left (0.7 / 0.3)"), ("mirror_asymmetry", "Mirror asymmetry")]
+    if "readouts" in analyses:
+        columns += [(f"turn_at_{b:g}", rb.target_label(b)) for b in rb.BEARINGS]
+    if "reach" in analyses:
+        columns += [("reached", "Reached"), ("first_turns_toward", "First turn toward")]
+    print(f"\nCircuit {base.circuit} unless varied. Turn commands (positive = rightward); variant 0 is the baseline.\n")
+    print("| # | " + " | ".join(names + [label for _, label in columns]) + " |")
+    print("|" + " --- |" * (len(names) + len(columns) + 1))
+    for row in rows:
+        settings_cells = [str(row.get(n)) for n in names]
+        if row["error"]:
+            print(f"| {row['variant']} | " + " | ".join(settings_cells) + f" | failed: {row['error']} |")
+            continue
+        values = []
+        for key, _ in columns:
+            if key == "reached":
+                values.append(f"{row['reached']}/{row['reach_trials']}")
+            elif key == "first_turns_toward":
+                values.append(f"{row['first_turns_toward']}/{row['lateral_trials']}")
+            elif key == "mirror_asymmetry" and row.get(key) is not None:
+                values.append(f"{row[key]:.3f}")
+            else:
+                values.append(cell(row.get(key)))
+        print(f"| {row['variant']} | " + " | ".join(settings_cells + values) + " |")
+    result = rb.report(rows, names, base=base.model_dump(), grid=grid, analyses=analyses, settings=settings)
+    print("\n| Conclusion | Baseline | Same in | Differs in |\n| --- | --- | --- | --- |")
+    for item in result["survival"]:
+        differs = ", ".join(f"#{k}" for k in item["differs_in"]) or "—"
+        if item["differs_only_with"]:
+            differs += " (exactly the variants with " + ", ".join(f"{a}={v}" for a, v in item["differs_only_with"].items()) + ")"
+        print(f"| {item['description']} | {item['baseline']} | {item['holds']}/{item['variants']} | {differs} |")
+    print(f"\nA turn within ±{args.tolerance:g} counts as none. {rb.SCOPE}")
+    circuits = list(dict.fromkeys(v["parameters"].circuit for v in variants))
+    save(stem, rows, result, circuits)
+    if result["errors"]:
+        sys.exit(f"{result['errors']} of {len(rows)} variants failed (see the error column); they are left out of the "
+                 "comparison. Rerun with --resume and the same --out to retry only those.")
+
+
+def readouts(args):
+    from digitalfly import robustness as rb
+    p = parameters(args.set)
+    table = rb.readout_table(p, numbers(args.bearings), args.distance, ms=args.ms, average_ms=args.average_ms,
+                             seed=args.seed, tolerance=args.tolerance)
+    types = table["readout_types"]
+    print(f"Circuit {p.circuit}, {p.dynamics} dynamics. Open loop: the fly held at the origin, the target held still "
+          f"{args.distance:g} mm away, geometric sensor; activity after {args.ms} ms"
+          + (f" (averaged over the last {args.average_ms} ms)" if args.average_ms else "") + ". Positive = rightward.\n")
+    print("| Target | Sensor left / right | " + " | ".join(f"{t} R − L" for t in types) + " | Turn command | Turn command means |")
+    print("|" + " --- |" * (len(types) + 4))
+    for row in table["rows"]:
+        means = row["direction"].capitalize() + {True: ", toward", False: ", away", None: ""}[row["toward"]]
+        print(f"| {row['target']} | {row['sensor_left']:.3f} / {row['sensor_right']:.3f} | "
+              + " | ".join(f"{row['right_minus_left'][t]:+.3f}" for t in types) + f" | {row['turn']:+.3f} | {means} |")
+    rows = [{**{k: v for k, v in r.items() if k != "right_minus_left"},
+             **{f"{t} right_minus_left": r["right_minus_left"][t] for t in types}} for r in table["rows"]]
+    save(output_stem("readouts", args.out), rows, {"command": "readouts", "parameters": p.model_dump(), **table}, [p.circuit])
+
+
+def add_assumption_commands(commands):
+    r = commands.add_parser("robustness", help="Rerun bias, readout and reach analyses across modelling assumptions")
+    r.add_argument("--vary", action="append", default=[],
+                   help="KEY=V1,V2: one assumption axis (repeatable); default: other_transmitters × synapse_threshold × dynamics")
+    r.add_argument("--analyses", default="bias", help="Comma-separated: bias, readouts, reach (default bias)")
+    r.add_argument("--tolerance", type=float, default=.01, help="Turn commands within ±this count as no turn")
+    r.add_argument("--ms", type=int, default=0, help="Clamp length for every open-loop analysis (default: as published)")
+    r.add_argument("--average-ms", type=int, default=0, help="With --ms: average over this final window")
+    r.add_argument("--seed", type=int, default=0, help="Seed of the open-loop analyses unless seed is an axis")
+    r.add_argument("--reach-seeds", default="1-3", help="Seeds of the reach trials (toy body, ±45° and ±90° at 12 mm)")
+    r.add_argument("--reach-duration", type=float, default=5.0, help="Simulated seconds per reach trial (default 5)")
+    r.add_argument("--workers", type=int, default=1, help="Parallel processes, one variant each (default 1)")
+    r.add_argument("--resume", action="store_true", help="Skip variants already saved without an error in --out's .jsonl")
+    r.set_defaults(handler=robustness)
+    o = commands.add_parser("readouts", help="Readout R − L and turn command for a target held at fixed bearings")
+    o.add_argument("--bearings", default="45,90,0,-45,-90", help="Target bearings, degrees; positive = left")
+    o.add_argument("--distance", type=float, default=12.0, help="Target distance, mm (default 12)")
+    o.add_argument("--ms", type=int, default=600, help="Milliseconds of held input before reading (default 600)")
+    o.add_argument("--average-ms", type=int, default=0, help="Average over this final window (spiking)")
+    o.add_argument("--seed", type=int, default=0)
+    o.add_argument("--tolerance", type=float, default=.01, help="Turn commands within ±this mean no turn")
+    o.set_defaults(handler=readouts)
+    for sub in (r, o):
+        sub.add_argument("--set", action="append", default=[], help="KEY=VALUE ConnectomeParameters setting (repeatable)")
+        sub.add_argument("--out", help="Output file stem (.csv and .json are written)")
+# ---------------------------------------------------------------------------------------------------------------------
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     commands = parser.add_subparsers(dest="command", required=True)
@@ -413,6 +553,7 @@ def main():
     for sub in (t, b, a, p):
         sub.add_argument("--out", help="Output file stem (.csv and .json are written)")
     j.add_argument("--out", help="Output file stem for the report (.json); the run itself goes to --export-dir")
+    add_assumption_commands(commands)
     args = parser.parse_args()
     try:
         args.handler(args)
