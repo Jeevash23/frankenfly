@@ -260,13 +260,8 @@ class SpikingState:
 
     def __init__(self, data: CircuitData, active: np.ndarray, signs: np.ndarray, parameters: ConnectomeParameters,
                  inputs: tuple[np.ndarray, np.ndarray]):
-        p = parameters.spiking
         n = len(data.ids)
-        weights = signs[data.pre[active]] * data.synapses[active] * p.synapse_weight_mv
-        matrix = sparse.csc_matrix((weights, (data.post[active], data.pre[active])), shape=(n, n))
-        matrix.sum_duplicates()
-        self.indptr, self.indices, self.weights = matrix.indptr, matrix.indices, matrix.data
-        self.n, self.inputs, self.parameters = n, inputs, parameters
+        self.data, self.n, self.inputs = data, n, inputs
         dt = LIF["dt_ms"]
         self.substeps = round(1 / dt)
         self.delay = round(LIF["delay_ms"] / dt)
@@ -275,10 +270,21 @@ class SpikingState:
         for side in inputs:
             self.refractory[side] = 0  # as for Poisson targets in Shiu et al.'s code
         self.decay_membrane, self.decay_synapse = dt / LIF["tau_membrane_ms"], dt / LIF["tau_synapse_ms"]
-        self.kick = LIF["poisson_scale"] * p.synapse_weight_mv
-        self.rate_decay = math.exp(-dt / p.rate_window_ms)
-        self.rate_jump = 1000 / p.rate_window_ms  # Hz added per spike, so a steady f Hz train averages f
+        self.configure(active, signs, parameters)
         self.reset(0)
+
+    def configure(self, active: np.ndarray, signs: np.ndarray, parameters: ConnectomeParameters):
+        """Weights and parameter-dependent constants. Keeps v, g, the delay queue, rates, the step count and the
+        random generator, so a live parameter edit continues the run; spikes already queued keep their weights."""
+        p, data, n = parameters.spiking, self.data, self.n
+        weights = signs[data.pre[active]] * data.synapses[active] * p.synapse_weight_mv
+        matrix = sparse.csc_matrix((weights, (data.post[active], data.pre[active])), shape=(n, n))
+        matrix.sum_duplicates()
+        self.indptr, self.indices, self.weights = matrix.indptr, matrix.indices, matrix.data
+        self.parameters = parameters
+        self.kick = LIF["poisson_scale"] * p.synapse_weight_mv
+        self.rate_decay = math.exp(-LIF["dt_ms"] / p.rate_window_ms)
+        self.rate_jump = 1000 / p.rate_window_ms  # Hz added per spike, so a steady f Hz train averages f
 
     def reset(self, seed: int):
         self.v = np.full(self.n, LIF["v_rest_mv"])
@@ -289,9 +295,11 @@ class SpikingState:
         self.step_index = 0
         self.rng = np.random.default_rng([int(seed), 0x5B1])
 
-    def advance(self, left: float, right: float, silenced: np.ndarray, drive: np.ndarray | None = None):
-        """One 1 ms neural step: ten 0.1 ms substeps. Returns the number of spikes. With `drive` (one value per
-        neuron, from FlyVis), each neuron's Poisson rate follows its own drive instead of its side's sensor."""
+    def advance(self, left: float, right: float, silenced: np.ndarray, drive: np.ndarray | None = None,
+                substeps: int | None = None):
+        """One neural step of `substeps` 0.1 ms substeps (by default ten: 1 ms). Returns the number of spikes. With
+        `drive` (one value per neuron, from FlyVis), each neuron's Poisson rate follows its own drive instead of its
+        side's sensor."""
         p = self.parameters
         if drive is None:  # the v0.4 arithmetic, unchanged, so recorded spiking runs replay exactly
             chances = [min(1., p.input_gain * value * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000) for value in (left, right)]
@@ -302,7 +310,7 @@ class SpikingState:
             chances = [np.minimum(1., p.input_gain * drive[targets] * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000)]
         v, g, blocked = self.v, self.g, self.blocked
         total = 0
-        for _ in range(self.substeps):
+        for _ in range(self.substeps if substeps is None else substeps):
             np.subtract(blocked, 1, out=blocked, where=blocked > 0)
             free = blocked == 0
             # Masked arithmetic instead of boolean indexing: the same values, several times faster.
@@ -355,6 +363,8 @@ class ConnectomeCircuit:
         self.configure(parameters or ConnectomeParameters())
 
     def configure(self, parameters: ConnectomeParameters):
+        """Apply parameters. A live edit keeps the network state: the rates, or in spiking dynamics v, g, the delay
+        queue, rates, step count and random generator, as long as circuit and input population are unchanged."""
         data = load_circuit(self.path or parameters.circuit)
         if data is not self.data:
             self.data = data
@@ -389,8 +399,12 @@ class ConnectomeCircuit:
         active = (data.synapses >= p.synapse_threshold) & (signs[data.pre] != 0)
         n = len(data.ids)
         if p.dynamics == "spiking":
-            self.spiking = SpikingState(data, active, signs, p, (self.input_left, self.input_right))
-            self.spiking.reset(self._seed)
+            inputs, state = (self.input_left, self.input_right), self.spiking
+            if state is not None and state.data is data and all(map(np.array_equal, state.inputs, inputs)):
+                state.configure(active, signs, p)
+            else:
+                self.spiking = SpikingState(data, active, signs, p, inputs)
+                self.spiking.reset(self._seed)
             self.W = None
         else:
             self.spiking = None
@@ -464,7 +478,10 @@ class ConnectomeCircuit:
         silenced = self.silenced(interventions)
         visual = self._visual_drive if self.visual is not None else None
         if self.spiking is not None:
-            self.spiking.advance(sensors.left, sensors.right, silenced, visual)
+            substeps = dt * 1000 / LIF["dt_ms"]  # the spiking network follows dt in whole 0.1 ms substeps
+            if round(substeps) < 1 or not math.isclose(substeps, round(substeps)):
+                raise ValueError(f"Spiking dynamics step in multiples of {LIF['dt_ms']:g} ms, not {dt * 1000:g} ms.")
+            self.spiking.advance(sensors.left, sensors.right, silenced, visual, round(substeps))
             self.spiking.rate_hz[silenced] = 0
             return
         rates = self.rates
