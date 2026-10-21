@@ -24,8 +24,6 @@ import io
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
@@ -87,16 +85,22 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def fetch(url, start=None, end=None):
-    """GET a URL, or the byte range [start, end), and return the body."""
-    headers = {"User-Agent": "digitalfly-build-circuit"}
-    if start is not None:
-        headers["Range"] = f"bytes={start}-{end - 1}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:
-        data = response.read()
-    if start is not None and len(data) != end - start:
-        raise IOError(f"Expected {end - start} bytes from {url}, received {len(data)}.")
-    return data
+def fetch(url, start=None, end=None, path=None, size=None, missing_ok=False):
+    """GET a URL and return the body, or its byte range [start, end), or stream it into `path` (resuming a partial
+    file there; `size` marks it complete) and return the path. Network errors are retried with backoff from where
+    the transfer stopped (digitalfly.data.downloads). A download that still fails ends the build with a one-line
+    message, except a 404 with missing_ok, which returns None."""
+    if str(ROOT / "backend/src") not in sys.path:
+        sys.path.insert(0, str(ROOT / "backend/src"))
+    from digitalfly.data.downloads import DownloadError, download, fetch_bytes
+    try:
+        if path is not None:
+            return download(url, path, size, agent="digitalfly-build-circuit")
+        return fetch_bytes(url, start, end, agent="digitalfly-build-circuit")
+    except DownloadError as exc:
+        if missing_ok and exc.status == 404:
+            return None
+        sys.exit(f"Download failed: {exc}. Run the command again to resume.")
 
 
 def write_atomic(path, write):
@@ -132,15 +136,12 @@ def meta_file(offline):
         pinned = f"{source['url']}?generation={source['gcs_generation']}"
         print(f"Downloading {pinned} …", flush=True)
         CACHE.mkdir(parents=True, exist_ok=True)
-        try:
-            data = fetch(pinned)
-        except urllib.error.HTTPError as exc:
-            if exc.code != 404:
-                raise
+        part, size = path.with_suffix(".part"), (recorded(source["name"]) or {}).get("bytes")
+        if fetch(pinned, path=part, size=size, missing_ok=True) is None:
             print(f"Generation {source['gcs_generation']} is no longer served; trying {source['url']} …", flush=True)
-            data = fetch(source["url"])
-        path.with_suffix(".part").write_bytes(data)
-        path.with_suffix(".part").rename(path)
+            part.unlink(missing_ok=True)  # never resume another object's bytes
+            fetch(source["url"], path=part, size=size)
+        part.rename(path)
     data = path.read_bytes()
     record = {**source, "bytes": len(data), "sha256": sha256(data)}
     previous = recorded(source["name"])

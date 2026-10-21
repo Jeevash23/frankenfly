@@ -3,16 +3,19 @@
     backend/.venv/bin/python scripts/fetch_flyvis.py
 
 The archive is kept only if its size and SHA-256 match the values below, which are also the checksum
-that FlyVis 1.2.0's own download command expects. Install the optional vision lock first
-(backend/requirements-vision.lock). FlyVis and its pretrained models are MIT licensed.
+that FlyVis 1.2.0's own download command expects. Network errors are retried with backoff, and an
+interrupted download resumes from its .part file when the command runs again. Install the optional
+vision lock first (backend/requirements-vision.lock). FlyVis and its pretrained models are MIT licensed.
 """
 import hashlib
 import sys
-import urllib.request
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "backend/src"))
+from digitalfly.data.downloads import DownloadError, download  # noqa: E402
+
 TARGET = ROOT / ".cache/flyvis"
 ARCHIVE = {
     "name": "results_pretrained_models.zip",
@@ -40,11 +43,11 @@ def main():
     if not archive.is_file():
         archive.parent.mkdir(parents=True, exist_ok=True)
         print(f"Downloading {ARCHIVE['bytes'] / 1e6:.1f} MB of pretrained FlyVis networks …", flush=True)
-        request = urllib.request.Request(ARCHIVE["url"], headers={"User-Agent": "digitalfly-fetch-flyvis"})
-        with urllib.request.urlopen(request, timeout=300) as response:
-            data = response.read()
         part = archive.with_suffix(".part")
-        part.write_bytes(data)
+        try:
+            download(ARCHIVE["url"], part, ARCHIVE["bytes"], agent="digitalfly-fetch-flyvis")
+        except DownloadError as exc:
+            sys.exit(f"Download failed: {exc}. Run the command again to resume.")
         part.rename(archive)
     data = archive.read_bytes()
     if len(data) != ARCHIVE["bytes"] or hashlib.sha256(data).hexdigest() != ARCHIVE["sha256"]:
