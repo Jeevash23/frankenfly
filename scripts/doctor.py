@@ -2,6 +2,7 @@
 
     python3 scripts/doctor.py              # any Python 3.8+; the project environment is inspected separately
     python3 scripts/doctor.py --port 8001 --python /path/to/other/venv/bin/python
+    python3 scripts/doctor.py --backend-only   # after ./scripts/setup.sh --backend-only: no interface expected
 
 It only reads and probes: nothing is installed, downloaded, changed or stopped. Exits 1 if a check fails.
 """
@@ -19,6 +20,11 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 VENV_PYTHON = ROOT / "backend/.venv/bin/python"
 SETUP = "./scripts/setup.sh"
+# The repository's Dockerfile sets DIGITALFLY_CONTAINER=image; other containers are recognised by their marker files.
+IMAGE = os.environ.get("DIGITALFLY_CONTAINER") == "image"
+CONTAINER = IMAGE or Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
+REBUILD = "rebuild the image: docker build -t digitalfly . (see docs/INSTALL.md)"
+BACKEND_ONLY = False
 failures = []
 
 
@@ -102,7 +108,7 @@ print(json.dumps({"fixes": GL_FIXES, "results": {backend: probe_gl(backend) for 
 
 def check_python():
     if not VENV_PYTHON.is_file():
-        report("fail", "Python", f"the project environment {VENV_PYTHON} is missing",
+        report("fail", "Python", f"the project environment {VENV_PYTHON} is missing", REBUILD if IMAGE else
                f"{SETUP} (needs Python 3.12; PYTHON_BIN=/path/to/python3.12 {SETUP} to choose one)")
         return None
     pins = lock_pins(ROOT / "backend/requirements.lock")
@@ -122,7 +128,7 @@ def check_python():
 def check_lock(pins, installed):
     missing = sorted(n for n, v in installed.items() if v is None)
     differ = sorted(f"{n} {v} (lock {pins[n][0]})" for n, v in installed.items() if v is not None and v != pins[n][0])
-    fix = "backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements.lock"
+    fix = REBUILD if IMAGE else "backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements.lock"
     if missing or differ:
         listed = (["missing: " + ", ".join(missing[:8])] if missing else []) + (["differ: " + ", ".join(differ[:8])] if differ else [])
         report("fail", "Locked packages", f"{len(missing) + len(differ)} of {len(installed)} do not match "
@@ -132,6 +138,9 @@ def check_lock(pins, installed):
 
 
 def check_node():
+    if IMAGE or BACKEND_ONLY:
+        report("info", "Node/npm", "not needed: " + ("the image ships the built interface" if IMAGE else "--backend-only"))
+        return
     spec = json.loads((ROOT / "frontend/package.json").read_text()).get("engines", {}).get("node", "")
     fix = f"install Node.js {spec} with npm (nodejs.org or your package manager); only needed to build the interface"
     try:
@@ -152,8 +161,12 @@ def check_frontend():
     index = ROOT / "frontend/dist/index.html"
     sources = [*(ROOT / "frontend/src").rglob("*"), ROOT / "frontend/package-lock.json", ROOT / "frontend/index.html",
                ROOT / "frontend/vite.config.ts"]
-    if not index.is_file():
-        report("fail", "Frontend build", "frontend/dist is missing", f"{SETUP}, or npm --prefix frontend ci && npm --prefix frontend run build")
+    if not index.is_file() and BACKEND_ONLY:
+        report("info", "Frontend build", "not built (--backend-only); the toolkit, replay and tests do not need it",
+               f"{SETUP} without --backend-only, for the web interface")
+    elif not index.is_file():
+        report("fail", "Frontend build", "frontend/dist is missing", REBUILD if IMAGE else
+               f"{SETUP}, or npm --prefix frontend ci && npm --prefix frontend run build")
     elif any(path.is_file() and path.stat().st_mtime > index.stat().st_mtime for path in sources):
         report("fail", "Frontend build", "frontend/dist is older than frontend/src; the launcher refuses a stale build",
                "npm --prefix frontend run build")
@@ -173,6 +186,9 @@ def check_gl():
         report("warn", "OpenGL", "could not probe (the project environment does not import)", "fix the checks above, then rerun")
         return
     results, fixes = probe["results"], probe["fixes"]
+    if CONTAINER:
+        fixes = ("in a container: build from the repository's Dockerfile, which installs Mesa EGL and OSMesa, or add "
+                 "libegl1 libgl1-mesa-dri to your image; otherwise " + fixes)
     working = [b for b in candidates if results.get(b) is None]
     failed = "; ".join(f"{b}: {results[b][:90]}" for b in candidates if results.get(b) is not None)
     if explicit and results.get(explicit) is not None:
@@ -198,9 +214,8 @@ def check_extras():
         report("info", "FlyVis eyes", "installed, but the pretrained networks are missing (optional)",
                "backend/.venv/bin/python scripts/fetch_flyvis.py")
     else:
-        report("info", "FlyVis eyes", "not installed (optional)",
-               "backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-vision.lock, "
-               "then backend/.venv/bin/python scripts/fetch_flyvis.py")
+        report("info", "FlyVis eyes", "not installed (optional)", "rebuild the image with --build-arg EXTRAS=flyvis"
+               if IMAGE else f"{SETUP} --with flyvis (the vision lock, then scripts/fetch_flyvis.py)")
     prepared = (ROOT / ".cache/circuits/fafb783-catalog.json").is_file() and (ROOT / ".cache/circuits/fafb783-connectome.npz").is_file()
     if prepared:
         report("ok", "Circuit builder", "FlyWire archive prepared in .cache/circuits/" + (f"; pyarrow {extras['pyarrow']}" if extras["pyarrow"] else ""))
@@ -209,7 +224,8 @@ def check_extras():
                "backend/.venv/bin/python scripts/build_circuit.py prepare")
     else:
         report("info", "Circuit builder", "not prepared, pyarrow not installed (optional; committed circuits work without it)",
-               "backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-data.lock, then scripts/build_circuit.py prepare")
+               "rebuild the image with --build-arg EXTRAS=builder" if IMAGE
+               else f"{SETUP} --with builder (the data lock, then scripts/build_circuit.py prepare)")
 
 
 def size(path: Path) -> int:
@@ -269,17 +285,23 @@ def check_port(port: int):
             ours = json.loads(response.read()).get("service") == "DigitalFly"
     except Exception:
         ours = False
+    if IMAGE and ours:
+        report("info", "Port", f"{port} is in use by this container's DigitalFly server (expected with docker exec)")
+        return
     report("warn", "Port", f"{port} is in use" + (" by a running DigitalFly server" if ours else ""),
-           f"stop that server (Ctrl+C or Quit), or start on another port: ./scripts/start.sh --port {port + 1}")
+           f"stop that server (Ctrl+C or Quit), or start on another port: ./scripts/start.sh --port {port + 1}"
+           + (f"; from the host, publish another port instead: docker run -p 127.0.0.1:{port + 1}:8000 ..." if CONTAINER else ""))
 
 
 def main():
     parser = argparse.ArgumentParser(description="Check what DigitalFly needs on this computer.")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--python", type=Path, default=VENV_PYTHON, help="The project environment's Python")
+    parser.add_argument("--backend-only", action="store_true", help="Do not expect Node.js or the built interface")
     args = parser.parse_args()
-    globals()["VENV_PYTHON"] = args.python
-    print(f"DigitalFly doctor · {ROOT}\n", flush=True)
+    globals().update(VENV_PYTHON=args.python, BACKEND_ONLY=args.backend_only)
+    print(f"DigitalFly doctor · {ROOT}" + (" · DigitalFly container image" if IMAGE else " · in a container" if CONTAINER else "")
+          + "\n", flush=True)
     environment = check_python()
     if environment is not None:
         check_lock(*environment)

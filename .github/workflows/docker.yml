@@ -1,0 +1,106 @@
+# Builds the container image when the Dockerfile, the locks or the scripts it runs change, and on
+# main. Nothing is pushed to any registry. The smoke test starts the image as a user would, checks
+# the doctor, a FlyGym reset, headless EGL rendering and the Host/Origin checks, then stops it.
+name: Docker image
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - docker-compose.yml
+      - .devcontainer/**
+      - backend/pyproject.toml
+      - backend/requirements*.lock
+      - frontend/package.json
+      - frontend/package-lock.json
+      - scripts/setup.sh
+      - scripts/start.sh
+      - scripts/launch.py
+      - scripts/doctor.py
+      - .github/workflows/docker.yml
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  image:
+    name: Build and smoke-test the image
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the application image and the dev container target
+        run: |
+          docker build --build-arg REVISION=${{ github.sha }} -t digitalfly:ci .
+          docker build --target dev -t digitalfly-dev:ci .
+
+      - name: Doctor inside the image
+        run: docker run --rm digitalfly:ci python scripts/doctor.py
+
+      - name: Start the container
+        run: |
+          docker run -d --name digitalfly --init -p 127.0.0.1:8001:8000 \
+            -e DIGITALFLY_ALLOWED_ORIGINS=http://localhost:8001 digitalfly:ci
+          # /api/health answers first; commands wait until the FlyGym body has initialized.
+          for _ in $(seq 1 90); do
+            status=$(curl -fsS http://127.0.0.1:8001/api/status 2>/dev/null \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin)["status"])' 2>/dev/null || true)
+            echo "status: ${status:-not answering yet}"
+            if [ -n "$status" ] && [ "$status" != initializing ]; then
+              curl -fsS http://127.0.0.1:8001/api/health
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+      - name: FlyGym reset, steps and a headless frame
+        run: |
+          base=http://127.0.0.1:8001
+          post() { curl -fsS -X POST -H 'Content-Type: application/json' -H 'Origin: http://localhost:8001' -d "$2" "$base$1"; }
+          post /api/reset '{"engine": "flygym", "sensor_model": "vision"}' > /dev/null
+          for _ in 1 2 3; do post /api/step '{}' > /dev/null; done
+          curl -fsS "$base/api/status" | python3 -c '
+          import json, sys
+          s = json.load(sys.stdin)
+          assert s["status"] == "paused" and s["error"] is None, s["error"]
+          assert s["config"]["engine"] == "flygym" and s["sample"]["t"] > 0, s["sample"]
+          assert s["rendering"], s["render_error"]
+          print("FlyGym at t =", s["sample"]["t"], "s, rendering")'
+          curl -fsS -o frame.jpg -w '%{content_type} %{size_download} bytes\n' "$base/api/frame"
+          test "$(head -c 2 frame.jpg | od -An -tx1 | tr -d ' ')" = ffd8
+
+      - name: Host and Origin checks stay on
+        run: |
+          status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(status -X POST -H 'Content-Type: application/json' -H 'Origin: http://evil.example' -d '{}' http://127.0.0.1:8001/api/pause)" = 403
+          test "$(status -H 'Host: evil.example' http://127.0.0.1:8001/api/health)" = 400
+
+      - name: Healthcheck and a clean stop
+        run: |
+          for _ in $(seq 1 30); do
+            health=$(docker inspect -f '{{.State.Health.Status}}' digitalfly)
+            [ "$health" = healthy ] && break
+            sleep 5
+          done
+          echo "health: $health"; test "$health" = healthy
+          docker stop -t 30 digitalfly
+          code=$(docker inspect -f '{{.State.ExitCode}}' digitalfly)
+          echo "exit code: $code"; [ "$code" = 0 ] || [ "$code" = 143 ]
+
+      - name: Container log
+        if: always()
+        run: docker logs digitalfly || true

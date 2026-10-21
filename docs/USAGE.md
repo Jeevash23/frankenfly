@@ -11,7 +11,9 @@
 ./scripts/start.sh --config steering-circuit       # start from a preset (see below) or a configuration file
 ```
 
-The app opens paused at http://127.0.0.1:8000. To stop the server, click **Quit** in the upper-right corner, optionally saving the current run first, or press **Control+C** in the terminal that started it. Closing the browser tab or pressing Pause does not stop the server.
+Installing, Docker, the dev container, headless servers and updating after `git pull` are covered in [INSTALL](INSTALL.md).
+
+The app opens paused at http://127.0.0.1:8000. The server listens on this computer only; containers need the explicit option described in [Listening beyond localhost](INSTALL.md#listening-beyond-localhost). To stop the server, click **Quit** in the upper-right corner, optionally saving the current run first, or press **Control+C** in the terminal that started it. Closing the browser tab or pressing Pause does not stop the server.
 
 Extra browser tabs on the same computer share one simulation: Run, Reset, interventions and Quit affect all of them. A copy of the project on another computer runs independently, with its own saved runs.
 
@@ -83,7 +85,7 @@ The builder needs the FlyWire data prepared once (see [the research guide](RESEA
 
 ## FlyVis eyes
 
-With the optional vision install (see [dependencies](DEPENDENCIES.md#v05-optional-flyvis-vision-and-recorded-fly-data)), **Sensor model → FlyVis eyes** runs the rendered eye images through FlyVis, a connectome-constrained network of the fly's optic lobe, and lets its cell types drive the circuit's visual neurons through FlyWire wiring. It needs the FlyGym body and the connectome model, and the circuit needs a FlyVis bridge: the committed circuits have one; for a circuit you build, run `backend/.venv/bin/python scripts/build_circuit.py flyvis-bridge --circuit NAME`. The bridge reaches only visual projection neurons, so a sensor input of other cell types is refused with FlyVis eyes. The first start builds FlyVis's network cache (about 10 seconds). Runs are slow, about 0.1–0.15× real time, and replay exactly. **Through the eyes** then shows the luminance FlyVis receives.
+With the optional vision install (`./scripts/setup.sh --with flyvis`; see [dependencies](DEPENDENCIES.md#v05-optional-flyvis-vision-and-recorded-fly-data)), **Sensor model → FlyVis eyes** runs the rendered eye images through FlyVis, a connectome-constrained network of the fly's optic lobe, and lets its cell types drive the circuit's visual neurons through FlyWire wiring. It needs the FlyGym body and the connectome model, and the circuit needs a FlyVis bridge: the committed circuits have one; for a circuit you build, run `backend/.venv/bin/python scripts/build_circuit.py flyvis-bridge --circuit NAME`. The bridge reaches only visual projection neurons, so a sensor input of other cell types is refused with FlyVis eyes. The first start builds FlyVis's network cache (about 10 seconds). Runs are slow, about 0.1–0.15× real time, and replay exactly. **Through the eyes** then shows the luminance FlyVis receives.
 
 ## Batch experiments and analysis
 
@@ -101,7 +103,7 @@ backend/.venv/bin/python scripts/toolkit.py compare --run runs/YOUR_RUN_FOLDER
 
 `readouts` prints the turn command for a target held still at fixed bearings (the research guide's table "What the circuits compute"). `robustness` reruns the bias and readout analyses, and optionally short reach trials, under several modelling assumptions (sign rule, synapse threshold, readout pooling and weights, dynamics, circuit, seed) and reports which conclusions hold in every variant; it saves and resumes like `trials`. See [How sensitive is a result to the modelling assumptions?](RESEARCH.md#how-sensitive-is-a-result-to-the-modelling-assumptions)
 
-To compare with a real fly, fetch the recorded DNa02 data once (71 MB) and compare it with an exported run:
+To compare with a real fly, fetch the recorded DNa02 data once (71 MB; `./scripts/setup.sh --with recording` does the same) and compare it with an exported run:
 
 ```sh
 backend/.venv/bin/python scripts/fetch_recording.py rayshubskiy2025-a2_d_13.mat
@@ -192,7 +194,7 @@ The app runs a single experiment, so the browser shows what the script does, and
 
 ## Troubleshooting
 
-**Not sure what is wrong:** run `python3 scripts/doctor.py`. It checks Python and the project environment, that installed packages match `backend/requirements.lock`, Node and npm against `frontend/package.json`, whether the built interface is current, which OpenGL backends render, the optional FlyVis and circuit-builder installs, the cache folders, free disk space and port 8000. It prints one line per check with the command that fixes it, and changes nothing.
+**Not sure what is wrong:** run `python3 scripts/doctor.py`. It checks Python and the project environment, that installed packages match `backend/requirements.lock`, Node and npm against `frontend/package.json`, whether the built interface is current, which OpenGL backends render, the optional FlyVis and circuit-builder installs, the cache folders, free disk space and port 8000. It prints one line per check with the command that fixes it, and changes nothing. After `./scripts/setup.sh --backend-only`, add `--backend-only` so that it does not expect Node.js or the interface; inside the Docker image it points its fixes at rebuilding the image. For install and update problems, see [INSTALL](INSTALL.md#install-problems).
 
 **Port occupied:** the launcher stops with a message and never kills other processes. Stop your previous server with Ctrl+C, or start on another port with `--port 8001`. The development launcher needs both 8000 and 5173.
 
@@ -206,7 +208,7 @@ The app runs a single experiment, so the browser shows what the script does, and
 
 **Body viewport disabled:** `--no-render` keeps the real physics and shows the labeled pose map instead. If the body itself fails to initialize, the app shows the error and keeps FlyGym selected; it never switches to the toy demo silently. The toy demo is always labeled **"Toy demo: a kinematic body, not FlyGym physics."**
 
-**Linux rendering:** unless you set `MUJOCO_GL`, DigitalFly tries MuJoCo's default GLFW when there is a display, then EGL, then OSMesa, each in a short test process, and uses the first that renders. A `MUJOCO_GL` you set is never overridden. When none works (a server or container without graphics libraries), physics still runs without the 3D view, compound-eye vision is unavailable, and the message says what to do: start with `--toy`; run under a virtual display with `MUJOCO_GL=glfw xvfb-run -a ./scripts/start.sh`; or install EGL or OSMesa (Debian/Ubuntu: `sudo apt install libegl1`, or `libosmesa6`; recent Mesa releases no longer ship OSMesa). Setup never installs drivers or system packages.
+**Linux rendering:** unless you set `MUJOCO_GL`, DigitalFly tries MuJoCo's default GLFW when there is a display, then EGL, then OSMesa, each in a short test process, and uses the first that renders. A `MUJOCO_GL` you set is never overridden. When none works (a server or container without graphics libraries), physics still runs without the 3D view, compound-eye vision is unavailable, and the message says what to do: start with `--toy`; run under a virtual display with `MUJOCO_GL=glfw xvfb-run -a ./scripts/start.sh`; or install EGL or OSMesa (Debian/Ubuntu: `sudo apt install libegl1`, or `libosmesa6`; recent Mesa releases no longer ship OSMesa). Setup never installs drivers or system packages; the Docker image includes EGL and OSMesa. See [headless servers](INSTALL.md#headless-servers).
 
 **Scripting the running app:** use the Python client ([Scripting the app from Python](#scripting-the-app-from-python)). The REST schema is at http://127.0.0.1:8000/api/openapi.json (OpenAPI 3.1). Open it in the browser, or save it with `curl -o openapi.json http://127.0.0.1:8000/api/openapi.json` and load the file in any OpenAPI viewer or client generator. The app serves no interactive documentation page: one would need scripts from a CDN, which its security policy blocks. The state that `/api/ws` and `/api/status` send is described by `GET /api/schema/state` (JSON Schema); `backend/.venv/bin/python scripts/gen_types.py` turns both schemas into the frontend's TypeScript types (`frontend/src/api.gen.ts`), and `--check` fails when they are out of date.
 
@@ -214,7 +216,7 @@ The app runs a single experiment, so the browser shows what the script does, and
 
 **"The simulation has stopped … Restart DigitalFly":** the simulation thread ended, which a failing command or display update should no longer cause. Stop the server with Ctrl+C and start it again; please report what you did before it happened.
 
-**Builder not ready:** the **Build a circuit** tab and `build_circuit.py build` need the prepared FlyWire archive in `.cache/circuits/`. Run `backend/.venv/bin/python scripts/build_circuit.py prepare` once (it needs the build-only data lock; see the research guide).
+**Builder not ready:** the **Build a circuit** tab and `build_circuit.py build` need the prepared FlyWire archive in `.cache/circuits/`. Run `./scripts/setup.sh --with builder` once, which installs the build-only data lock and runs `scripts/build_circuit.py prepare` (see the research guide).
 
 **Spiking or whole-brain runs are slow:** the spiking 3,000-neuron circuit runs faster than real time on the reference laptop, but the whole brain takes about 7 ms of computing per 1 ms of neural time with spiking neurons and 3 ms with rate units, before the body's own cost. Use the toy body or the toolkit's parallel workers for long experiments.
 
