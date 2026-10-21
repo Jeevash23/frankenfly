@@ -320,10 +320,18 @@ export function AnatomyPanel({state}: {state: State | null}) {
           </p>
         </div>
         <div className="sex-selector" aria-label="Anatomical specimen">
-          <button className={sex === 'female' ? 'selected' : ''} onClick={() => setSex('female')}>
+          <button
+            className={sex === 'female' ? 'selected' : ''}
+            aria-pressed={sex === 'female'}
+            onClick={() => setSex('female')}
+          >
             <span>♀</span>Female <small>FAFB / FlyWire</small>
           </button>
-          <button className={sex === 'male' ? 'selected' : ''} onClick={() => setSex('male')}>
+          <button
+            className={sex === 'male' ? 'selected' : ''}
+            aria-pressed={sex === 'male'}
+            onClick={() => setSex('male')}
+          >
             <span>♂</span>Male <small>MaleCNS v1.0</small>
           </button>
         </div>
@@ -415,6 +423,7 @@ export function AnatomyPanel({state}: {state: State | null}) {
                 <button
                   key={neuron.id}
                   className={`neuron-list-row ${selected === neuron.id ? 'selected' : ''}`}
+                  aria-pressed={selected === neuron.id}
                   onClick={() => setSelected(neuron.id)}
                 >
                   <i
@@ -822,6 +831,7 @@ export function ConnectivityPanel({command, disabled}: {command: Command; disabl
                     <button
                       key={n.id}
                       className={selected === n.id ? 'selected' : ''}
+                      aria-pressed={selected === n.id}
                       onClick={() => setSelected(n.id)}
                     >
                       <strong>{n.label}</strong>

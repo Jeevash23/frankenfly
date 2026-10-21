@@ -75,7 +75,11 @@ export function SessionLog({
                 value={state?.config.controller ?? 'neural'}
                 onChange={(e) => reset({controller: e.target.value as Config['controller']})}
               >
-                <option value="neural">Engineered neural loop</option>
+                <option value="neural">
+                  {state?.config.neural_model === 'connectome'
+                    ? 'Connectome circuit loop'
+                    : 'Engineered neural loop'}
+                </option>
                 <option value="baseline">Controller-only baseline</option>
               </select>
               <ChevronDown size={14} />

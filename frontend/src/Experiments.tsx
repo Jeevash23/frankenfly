@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -13,7 +13,10 @@ import {
   Trash2,
 } from 'lucide-react';
 import type {Command, Condition, Config, Protocol, SavedRun, State} from './types';
+import type {Pending} from './useSimulation';
 import {fmt} from './format';
+import {describeError} from './errors';
+import {libraryCaption, mergeRuns, PAGE, readRunPage, runsQuery} from './library';
 import {
   conditionNames,
   conditionProblem,
@@ -43,11 +46,13 @@ const conditionName = (condition: string) =>
 export default function Experiments({
   state,
   command,
+  pending,
   disabled,
   onLoaded,
 }: {
   state: State | null;
   command: Command;
+  pending: Pending;
   disabled: boolean;
   onLoaded: () => void;
 }) {
@@ -58,38 +63,100 @@ export default function Experiments({
   const [conditions, setConditions] = useState<Condition[]>(['control', 'left_sensor_off']);
   const [cellType, setCellType] = useState('');
   const model = state?.config.neural_model ?? 'engineered';
+  const sensor = state?.config.sensor_model ?? 'geometric';
   const {circuit} = useCircuit(state);
   // DNa02 conditions need a circuit with DNa02; assume one until the circuit has loaded.
   const hasDNa02 = !circuit || circuit.types.some((t) => t.name === 'DNa02');
-  const available = conditionsFor(model, hasDNa02);
-  // Switching models or circuits drops conditions that are no longer available.
+  const available = conditionsFor(model, hasDNa02, sensor);
+  // Switching models, sensors or circuits drops conditions that are no longer available.
   useEffect(() => {
     setConditions((previous) => {
-      const kept = previous.filter((c) => conditionsFor(model, hasDNa02).includes(c));
+      const kept = previous.filter((c) => conditionsFor(model, hasDNa02, sensor).includes(c));
       return kept.length ? kept : ['control'];
     });
-  }, [model, hasDNa02]);
+  }, [model, hasDNa02, sensor]);
   const [runs, setRuns] = useState<SavedRun[]>([]);
+  // Runs matching the filter on the server; null when it does not say (servers before v0.6).
+  const [total, setTotal] = useState<number | null>(null);
+  const [listing, setListing] = useState(false);
+  const listRequest = useRef(0);
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  // Where focus goes once the confirm step closes: back to the row's delete button after Keep,
+  // to Refresh after the row is gone.
+  const [refocus, setRefocus] = useState<string | null>(null);
+  const refreshButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (refocus === null) return;
+    const row = document.querySelector<HTMLElement>(`[data-delete="${CSS.escape(refocus)}"]`);
+    (row ?? refreshButton.current)?.focus();
+    setRefocus(null);
+  }, [refocus]);
   const [selected, setSelected] = useState<string[]>([]);
   const [details, setDetails] = useState<SavedRun[]>([]);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [includeEmpty, setIncludeEmpty] = useState(false);
   const active = !!state?.batch && ['running', 'paused'].includes(state.batch.status);
-  const refresh = () =>
-    fetch('/api/runs')
-      .then((r) => {
+  // Loads runs from `offset` after `keep`; only the newest request's answer is used.
+  const list = (offset: number, limit: number, keep: SavedRun[]) => {
+    const id = ++listRequest.current;
+    setListing(true);
+    return fetch(runsQuery(offset, includeEmpty, limit))
+      .then(async (r) => {
         if (!r.ok)
           throw Error(
             'The run library could not be read. Check that the local server is still running, then press Refresh.',
           );
-        return r.json();
+        const page = readRunPage(await r.json(), r.headers.get('X-Total-Count'));
+        if (id !== listRequest.current) return;
+        setRuns(mergeRuns(keep, page.runs));
+        setTotal(page.total);
       })
-      .then((d) => setRuns(d.runs))
-      .catch((e) => setError(e.message));
+      .catch((e) => {
+        if (id === listRequest.current) setError(e.message);
+      })
+      .finally(() => {
+        if (id === listRequest.current) setListing(false);
+      });
+  };
+  // Reloads as many runs as are listed now, newest first.
+  const refresh = () => list(0, Math.max(PAGE, runs.length), []);
+  const loadMore = () => list(runs.length, PAGE, runs);
   useEffect(() => {
     void refresh();
   }, [state?.batch?.results.length]);
+  useEffect(() => {
+    void list(0, PAGE, []);
+  }, [includeEmpty]);
+  const remove = async (key: string) => {
+    setDeleting(key);
+    setError('');
+    setNotice('');
+    try {
+      const r = await fetch(`/api/runs/${encodeURIComponent(key)}`, {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}',
+        signal: AbortSignal.timeout(30000),
+      });
+      const data = await r.json().catch(() => ({}));
+      // 404: it is already gone. 405: a server before v0.6, which cannot delete runs.
+      if (r.status === 405)
+        throw Error('This version of the server cannot delete runs. Delete its folder in runs/.');
+      if (!r.ok && r.status !== 404) throw Error(describeError(data.detail, r.status));
+      setRuns((previous) => previous.filter((run) => run.key !== key));
+      setTotal((previous) => (previous === null ? null : Math.max(0, previous - 1)));
+      setSelected((previous) => previous.filter((k) => k !== key));
+      setNotice(`Run ${key} deleted.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The run could not be deleted.');
+    } finally {
+      setDeleting(null);
+      setConfirming(null);
+      setRefocus(key);
+    }
+  };
   useEffect(() => {
     let cancelled = false;
     Promise.all(
@@ -131,7 +198,7 @@ export default function Experiments({
     }
   };
   const batch = async () => {
-    if (!state) return;
+    if (!state || pending['batch/start']) return;
     setError('');
     setNotice('');
     const list = seeds.split(',').map((x) => Number(x.trim()));
@@ -147,7 +214,7 @@ export default function Experiments({
       setError('Use each seed only once.');
       return;
     }
-    const conditionError = conditionProblem(conditions, model, cellType, hasDNa02);
+    const conditionError = conditionProblem(conditions, model, cellType, hasDNa02, sensor);
     if (conditionError) {
       setError(conditionError);
       return;
@@ -171,6 +238,8 @@ export default function Experiments({
     );
   };
   const duration = protocol.duration_steps / 100;
+  // Servers before v0.6 ignore include_empty, so zero-step runs are also filtered here.
+  const shownRuns = runs.filter((run) => includeEmpty || run.samples > 1);
   const paths = details.flatMap((d) => d.trajectory ?? []);
   const extent = Math.max(10, ...paths.flatMap((p) => [Math.abs(p[1]), Math.abs(p[2])])) * 1.12;
   return (
@@ -471,8 +540,13 @@ export default function Experiments({
         </section>
       </div>
       {state?.batch && (
-        <section className={`batch-progress panel ${state.batch.status}`} role="status">
-          <div>
+        <section
+          className={`batch-progress panel ${state.batch.status}`}
+          aria-label="Comparison progress"
+        >
+          {/* Announced on transitions only (status, trial, condition, seed); the per-tick
+              simulated time below stays outside the live region. */}
+          <div role="status">
             <span className="eyebrow">{state.batch.status.toUpperCase()}</span>
             <h3>{state.batch.protocol}</h3>
             <p>
@@ -522,7 +596,14 @@ export default function Experiments({
             <span className="eyebrow">LOCAL EXPERIMENT RECORDS</span>
             <h2>Run library</h2>
           </div>
-          <button className="secondary-button" onClick={() => void refresh()}>
+          <button
+            ref={refreshButton}
+            className="secondary-button"
+            aria-busy={listing}
+            onClick={() => {
+              if (!listing) void refresh();
+            }}
+          >
             <RotateCcw size={13} />
             Refresh
           </button>
@@ -530,6 +611,7 @@ export default function Experiments({
         <div className="library-filter">
           <p className="library-hint">
             Select up to four saved runs to overlay their paths and compare measured outcomes.
+            {runs.length > 0 && ` ${libraryCaption(shownRuns.length, total)}.`}
           </p>
           <label>
             <input
@@ -540,7 +622,7 @@ export default function Experiments({
             Include zero-step runs
           </label>
         </div>
-        {!runs.length ? (
+        {!shownRuns.length ? (
           <section className="panel empty-research">
             <ArrowDownToLine size={26} />
             <h3>Your first record starts here.</h3>
@@ -560,64 +642,112 @@ export default function Experiments({
                   <th>Time</th>
                   <th>Mean speed</th>
                   <th>Files</th>
+                  <th>
+                    <span className="visually-hidden">Delete</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
-                {runs
-                  .filter((run) => includeEmpty || run.samples > 1)
-                  .map((run) => (
-                    <tr key={run.key} className={selected.includes(run.key) ? 'selected' : ''}>
-                      <td>
-                        <input
-                          type="checkbox"
-                          aria-label={`Compare run ${run.key}`}
-                          checked={selected.includes(run.key)}
-                          disabled={!selected.includes(run.key) && selected.length >= 4}
-                          onChange={(e) =>
-                            setSelected((prev) =>
-                              e.target.checked
-                                ? [...prev, run.key]
-                                : prev.filter((k) => k !== run.key),
-                            )
-                          }
-                        />
-                      </td>
-                      <td>
-                        <strong>
-                          {run.trial
-                            ? conditionName(run.trial.condition) +
-                              (run.trial.cell_type ? ` (${run.trial.cell_type})` : '')
-                            : (run.config.protocol?.name ?? 'Workbench run')}
-                        </strong>
-                        <small>
-                          {new Date(run.created_utc).toLocaleString()} · {run.samples} samples
-                          {run.error ? ' · interrupted' : ''}
-                        </small>
-                      </td>
-                      <td>
-                        {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
-                        <small>
-                          {{vision: 'Compound eye', flyvis: 'FlyVis eyes', geometric: 'Geometric'}[
-                            run.config.sensor_model
-                          ] ?? 'Geometric'}{' '}
-                          ·{' '}
-                          {normalizeModel(run.config.neural_model) === 'connectome'
-                            ? `connectome · ${run.config.connectome_parameters?.circuit ?? 'fafb783-dna02'}${run.config.connectome_parameters?.dynamics === 'spiking' ? ' · spiking' : ''}`
-                            : 'engineered'}
-                        </small>
-                      </td>
-                      <td>{run.config.seed}</td>
-                      <td>{fmt(run.metrics.duration_s ?? (run.samples - 1) * 0.01)} s</td>
-                      <td>{fmt(run.metrics.mean_speed_mm_s)} mm/s</td>
-                      <td>
-                        <a href={run.download_url} download aria-label={`Download run ${run.key}`}>
-                          <ArrowDownToLine size={15} />
-                        </a>
-                      </td>
-                    </tr>
-                  ))}
+                {shownRuns.map((run) => (
+                  <tr key={run.key} className={selected.includes(run.key) ? 'selected' : ''}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        aria-label={`Compare run ${run.key}`}
+                        checked={selected.includes(run.key)}
+                        disabled={!selected.includes(run.key) && selected.length >= 4}
+                        onChange={(e) =>
+                          setSelected((prev) =>
+                            e.target.checked
+                              ? [...prev, run.key]
+                              : prev.filter((k) => k !== run.key),
+                          )
+                        }
+                      />
+                    </td>
+                    <td>
+                      <strong>
+                        {run.trial
+                          ? conditionName(run.trial.condition) +
+                            (run.trial.cell_type ? ` (${run.trial.cell_type})` : '')
+                          : (run.config.protocol?.name ?? 'Workbench run')}
+                      </strong>
+                      <small>
+                        {new Date(run.created_utc).toLocaleString()} · {run.samples} samples
+                        {run.error ? ' · interrupted' : ''}
+                      </small>
+                    </td>
+                    <td>
+                      {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
+                      <small>
+                        {{vision: 'Compound eye', flyvis: 'FlyVis eyes', geometric: 'Geometric'}[
+                          run.config.sensor_model
+                        ] ?? 'Geometric'}{' '}
+                        ·{' '}
+                        {normalizeModel(run.config.neural_model) === 'connectome'
+                          ? `connectome · ${run.config.connectome_parameters?.circuit ?? 'fafb783-dna02'}${run.config.connectome_parameters?.dynamics === 'spiking' ? ' · spiking' : ''}`
+                          : 'engineered'}
+                      </small>
+                    </td>
+                    <td>{run.config.seed}</td>
+                    <td>{fmt(run.metrics.duration_s ?? (run.samples - 1) * 0.01)} s</td>
+                    <td>{fmt(run.metrics.mean_speed_mm_s)} mm/s</td>
+                    <td>
+                      <a href={run.download_url} download aria-label={`Download run ${run.key}`}>
+                        <ArrowDownToLine size={15} />
+                      </a>
+                    </td>
+                    <td className="run-delete">
+                      {confirming === run.key ? (
+                        <span role="group" aria-label={`Delete run ${run.key}?`}>
+                          <button
+                            className="text-button"
+                            aria-busy={deleting === run.key}
+                            onClick={() => {
+                              if (!deleting) void remove(run.key);
+                            }}
+                          >
+                            {deleting === run.key ? 'Deleting…' : 'Delete'}
+                          </button>
+                          <button
+                            className="text-button"
+                            autoFocus
+                            onClick={() => {
+                              if (deleting) return;
+                              setConfirming(null);
+                              setRefocus(run.key);
+                            }}
+                          >
+                            Keep
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          className="icon-button"
+                          aria-label={`Delete run ${run.key}`}
+                          title="Delete this run and its ZIP from runs/"
+                          data-delete={run.key}
+                          onClick={() => setConfirming(run.key)}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
+            {total !== null && runs.length < total && (
+              <button
+                className="text-button library-more"
+                aria-busy={listing}
+                onClick={() => {
+                  if (!listing) void loadMore();
+                }}
+              >
+                Load {Math.min(PAGE, total - runs.length)} more
+              </button>
+            )}
           </div>
         )}
         {details.length > 0 && (

@@ -151,6 +151,8 @@ export type Batch = {
 // Live, display-only activity of the connectome model (not recorded).
 export type ConnectomeLive = {
   circuit: string;
+  // SHA-256 of the circuit file loaded in the running model; absent from servers before v0.6.
+  circuit_sha256?: string;
   dynamics: Dynamics;
   unit_names: string[];
   readout_types: string[];

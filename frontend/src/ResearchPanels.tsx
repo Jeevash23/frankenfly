@@ -1,7 +1,8 @@
-import {useEffect, useState} from 'react';
+import {memo, useEffect, useState} from 'react';
 import {Activity, Eye, Network, ArrowRight} from 'lucide-react';
-import type {Command, NeuralParameters, State} from './types';
+import type {Command, NeuralParameters, Sample, State} from './types';
 import {fmt} from './format';
+import {eyeImageUrl} from './snapshot';
 const names = [
   'Sensory L',
   'Sensory R',
@@ -11,11 +12,56 @@ const names = [
   'Descending R',
 ];
 
+// Up to 6 × 201 contact segments, drawn again only when the history moves on (not while paused).
+const GaitRaster = memo(
+  function GaitRaster({legs, history}: {run: string; legs: string[]; history: Sample[]}) {
+    const end = history.at(-1)?.t ?? 0;
+    const start = Math.max(0, end - 4);
+    return (
+      <svg viewBox="0 0 520 142" role="img" aria-label="Six leg contact traces from MuJoCo physics">
+        {legs.map((leg, i) => (
+          <g key={leg}>
+            <text x="0" y={18 + i * 19}>
+              {leg.toUpperCase()}
+            </text>
+            <line x1="35" x2="514" y1={14 + i * 19} y2={14 + i * 19} stroke="#e3e7dc" />
+            {history
+              .filter((s) => s.t >= start)
+              .map((s, j) =>
+                s.body_signals.contact?.[i] ? (
+                  <rect
+                    key={j}
+                    x={35 + ((s.t - start) / Math.max(end - start, 0.02)) * 472}
+                    y={8 + i * 19}
+                    width={Math.max(1, (0.02 / Math.max(end - start, 0.02)) * 472)}
+                    height="9"
+                    rx="1"
+                    fill={i < 3 ? '#52765e' : '#b18b51'}
+                  />
+                ) : null,
+              )}
+          </g>
+        ))}
+        <text x="35" y="137">
+          {fmt(start, 1)} s
+        </text>
+        <text x="479" y="137">
+          {fmt(end, 1)} s
+        </text>
+      </svg>
+    );
+  },
+  (a, b) =>
+    a.run === b.run &&
+    a.legs.join() === b.legs.join() &&
+    a.history.length === b.history.length &&
+    a.history[0]?.t === b.history[0]?.t &&
+    a.history.at(-1)?.t === b.history.at(-1)?.t,
+);
+
 export function BodyMeasurements({state}: {state: State | null}) {
   const signals = state?.sample?.body_signals;
   const history = state?.history ?? [];
-  const end = state?.sample?.t ?? 0;
-  const start = Math.max(0, end - 4);
   return (
     <section className="panel body-panel">
       <div className="panel-heading">
@@ -47,41 +93,11 @@ export function BodyMeasurements({state}: {state: State | null}) {
         <div className="gait-grid">
           <div>
             <h3>Ground contact over time</h3>
-            <svg
-              viewBox="0 0 520 142"
-              role="img"
-              aria-label="Six leg contact traces from MuJoCo physics"
-            >
-              {signals.leg_order?.map((leg, i) => (
-                <g key={leg}>
-                  <text x="0" y={18 + i * 19}>
-                    {leg.toUpperCase()}
-                  </text>
-                  <line x1="35" x2="514" y1={14 + i * 19} y2={14 + i * 19} stroke="#e3e7dc" />
-                  {history
-                    .filter((s) => s.t >= start)
-                    .map((s, j) =>
-                      s.body_signals.contact?.[i] ? (
-                        <rect
-                          key={j}
-                          x={35 + ((s.t - start) / Math.max(end - start, 0.02)) * 472}
-                          y={8 + i * 19}
-                          width={Math.max(1, (0.02 / Math.max(end - start, 0.02)) * 472)}
-                          height="9"
-                          rx="1"
-                          fill={i < 3 ? '#52765e' : '#b18b51'}
-                        />
-                      ) : null,
-                    )}
-                </g>
-              ))}
-              <text x="35" y="137">
-                {fmt(start, 1)} s
-              </text>
-              <text x="479" y="137">
-                {fmt(end, 1)} s
-              </text>
-            </svg>
+            <GaitRaster
+              run={state?.run_id ?? ''}
+              legs={signals.leg_order ?? []}
+              history={history}
+            />
             <p className="microcopy">
               Contact threshold: 0.01 µN. Colored segments are sampled contacts.
             </p>
@@ -142,7 +158,7 @@ export function EyePanel({state}: {state: State | null}) {
             <span>Right eye</span>
           </div>
           <img
-            src={`/api/eyes?v=${state.vision.sample_time_s}-${state.revision}`}
+            src={eyeImageUrl(state)}
             alt="Actual FlyGym left and right compound-eye camera images"
           />
           <div className="retina-signal">
