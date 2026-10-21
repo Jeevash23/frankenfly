@@ -10,8 +10,11 @@ DNa02 left, right or both in each connectome model and measures the change in tu
 
 Every run starts from the default configuration and changes only the target, seed, model,
 circuit, dynamics and silencing. Results describe this simulation, not fly behavior. A JSON
-report goes to the ignored docs/evidence/ folder; Markdown tables are printed. The trials run
-through the research toolkit (digitalfly.toolkit), so the worker count does not change them.
+report goes to the ignored docs/evidence/ folder; Markdown tables are printed. Only a run of every
+model at the default duration writes evaluation-<engine>[-quick].json; a partial run (--models or
+--duration) adds those to the name, so it never replaces the full report. The trials run through
+the research toolkit (digitalfly.toolkit), so the worker count does not change them; a trial that
+fails is listed in the report's "errors" and left out of the tables.
 """
 import argparse
 import json
@@ -37,6 +40,17 @@ MODELS = {
 BEARINGS = [0, 45, -45, 90, -90, 180]
 DISTANCES = [12, 30]
 SEEDS = [1, 2, 3, 4, 5]
+DURATION_S = {"toy": 10., "flygym": 6.}
+
+
+def report_name(engine, quick, models, duration):
+    """The canonical file name for the full set of models at the default duration; a partial run names what it ran."""
+    name = f"evaluation-{engine}{'-quick' if quick else ''}"
+    if set(models) != set(MODELS):
+        name += "-" + "+".join(models)
+    if duration != DURATION_S[engine]:
+        name += f"-{duration:g}s"
+    return name + ".json"
 
 
 def config(engine, model, bearing, distance, seed, silence="none"):
@@ -100,7 +114,7 @@ def main():
     parser.add_argument("--models", default=",".join(MODELS), help=f"Comma-separated, from {', '.join(MODELS)}")
     parser.add_argument("--workers", type=int, default=1, help="Parallel processes (results do not depend on it)")
     args = parser.parse_args()
-    duration = args.duration or (10. if args.engine == "toy" else 6.)
+    duration = args.duration or DURATION_S[args.engine]
     seeds = SEEDS[:3] if args.quick else SEEDS
     distances = [12] if args.quick else DISTANCES
     models = [m for m in args.models.split(",") if m]
@@ -116,22 +130,30 @@ def main():
              for silence in ["none", "left", "right", "both"] for seed in seeds]
     results = toolkit.run_trials([config(args.engine, *item[1:]) for item in plan], workers=args.workers,
                                  duration_s=duration)
-    rows, silencing = [], []
+    rows, silencing, errors = [], [], []
     for (part, model, bearing, distance, seed, silence), result in zip(plan, results):
         row = {**result, "model": model, "bearing_deg": bearing, "distance_mm": distance, "silence_dna02": silence}
-        (rows if part == "behavior" else silencing).append(row)
+        (errors if row["error"] else rows if part == "behavior" else silencing).append(row)
+    circuits = [MODELS[m][1].get("connectome_parameters", {}).get("circuit", "fafb783-dna02")
+                for m in models if MODELS[m][1]["neural_model"] == "connectome"]
     report = {"engine": args.engine, "duration_s": duration, "seeds": seeds, "reach_threshold_mm": toolkit.REACH_MM,
               "turn_threshold_deg": toolkit.TURN_DEG, "models": {m: MODELS[m] for m in models},
               "wall_s": time.perf_counter() - started, "python": platform.python_version(),
-              "trials": rows, "silencing": silencing,
-              "scope": "Simulated behavior of engineered or connectome-constrained controllers; no biological validation."}
+              "trials": rows, "silencing": silencing, "errors": errors,
+              "scope": "Simulated behavior of engineered or connectome-constrained controllers; no biological validation.",
+              "provenance": toolkit.provenance(circuits)}
     evidence = ROOT / "docs/evidence"
     evidence.mkdir(parents=True, exist_ok=True)
-    (evidence / f"evaluation-{args.engine}{'-quick' if args.quick else ''}.json").write_text(json.dumps(report, indent=1))
+    path = evidence / report_name(args.engine, args.quick, models, duration)
+    path.write_text(json.dumps(report, indent=1))
     print(f"## {args.engine} · {duration:g} simulated s per trial · seeds {', '.join(map(str, seeds))}\n")
     print(behavior_table(rows) + "\n")
     if silencing:
         print(silencing_table(silencing))
+    print(f"\nSaved {path.relative_to(ROOT)}")
+    if errors:
+        sys.exit(f"{len(errors)} trials failed and are left out of the tables: "
+                 + "; ".join(sorted({e['error'] for e in errors})[:3]))
 
 
 if __name__ == "__main__":
