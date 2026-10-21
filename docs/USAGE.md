@@ -130,6 +130,8 @@ curl -X POST -H 'Content-Type: application/json' -d '{"share_safe": true}' http:
 
 The API also lists saved runs page by page (`GET /api/runs?offset=0&limit=100&include_empty=true`; the `X-Total-Count` header gives the total) and deletes one with `DELETE /api/runs/FOLDER_NAME`, which removes its folder and ZIP. The run being recorded cannot be deleted until you Reset.
 
+Exporting runs beside the simulation, so the fly, the display and other commands keep going while a long run is written; the export answers once its files are complete. With the connectome model, `"record_activity": "types"` in the configuration you reset with (`POST /api/reset`) also saves `activity_types.npz`, every cell type's mean activity at each control step ([signal definitions](RESEARCH.md#exported-signals)).
+
 ```sh
 backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER
 ```

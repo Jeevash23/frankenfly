@@ -68,6 +68,27 @@ Positions are millimeters and joint angles are radians. `get_joint_angles()` fol
 
 Export metadata includes `body_joint_order` so each joint position can be identified. `body_signals.jsonl` retains joint positions, leg force/contact values and oscillator phases for every recorded sample. Display history omits the large joint-angle arrays while retaining current joint state and bounded gait history.
 
+## Exported signals
+
+An export (metadata schema 5) holds `metadata.json`, `telemetry.csv`, `body_signals.jsonl` and, when asked for, `activity_types.npz`. The app and its tools read runs of schemas 2–5; older runs lack the columns and fields added since.
+
+`telemetry.csv` has one row per recorded control step from the reset. `step`, `time_s`, `x_mm`, `y_mm`, `z_mm`, `yaw_rad` and `speed_mm_s` describe the body after the step; `sensor_l`, `sensor_r` (after sensor silencing) and `raw_sensor_l`, `raw_sensor_r` are the sensor values the step used; the `rate_*` columns are the model's readouts after the step, named after its units; `motor_l`, `motor_r` is the command applied during the step. Schema 5 appends:
+
+- `target_bearing_deg`: the direction of the target from the row's position, relative to its heading, in degrees within ±180, positive to the left (counterclockwise). The geometric sensor's own bearing was taken at the start of the step, from the previous pose.
+- `target_distance_mm`: the distance from the row's position to the target. Its minimum over the rows is `metrics.min_target_distance_mm`; comparison summaries count a trial as reaching the target when it came within 2 mm (the toolkit's `REACH_MM`).
+- `stimulus_x_mm`, `stimulus_y_mm`, `stimulus_intensity`: the target in effect for the row. A change at step k applies from row k + 1, as in the event schedule.
+- `intervention_code`: the interventions in effect, as `L` and `R` with 1 for a sensor input on and 0 for off, then `;`-separated entries: `units:GROUP` (the engineered model's silenced group), `DNa02:left|right|both`, `TYPE:silence` (a cell type silenced on both sides) and, for interventions on one side or with a mode, `TYPE[:L|:R]:MODE[VALUE]`, for example `L0R1;DNa02:left;DNp09:L:scale0.5`. Spaces, quotes, `;`, `:`, `,` and `#` in cell-type names become `_`.
+
+These columns are derived from each row's pose and the recorded schedule; replay checks the body, rate and motor columns, not them.
+
+With the connectome model, `RunConfig.record_activity = "types"` adds `activity_types.npz`, NumPy arrays that `np.load` reads without pickling:
+
+- `activity`: float32, samples × cell types: each cell type's mean activity over its neurons after each recorded control step, in the units of the rate columns (rate dynamics: the dimensionless rate; spiking: firing rate ÷ `rate_scale_hz`).
+- `step` and `time_s`: each sample's control step and simulated time, matching the telemetry rows.
+- `type_names` (the column order) and `neurons_per_type`.
+
+Every control step is kept until the activity reaches 128 MB; then every second one (earlier samples are thinned to match), and so on. `metadata.activity.every_steps` gives the final spacing: 128 MB holds about 26,700 steps of the 3,000-neuron DNa02 circuit (1,257 cell types), and fewer of larger circuits. The setting is ignored with the engineered model, recording does not change the simulation, and replay does not check the file.
+
 ## The connectome model
 
 The **connectome** model steers the fly with real wiring from the FlyWire reconstruction of one adult female brain (FAFB v783). Pick it in **Workbench → Neural model**, then pick a **circuit** and **dynamics** under it. The engineered six-unit model stays the default and is unchanged.

@@ -3,10 +3,11 @@
 The thread must outlive any failure: a command that fails answers its caller, and a state that cannot be
 published puts the run into the error state. Neither ends the loop.
 """
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from queue import Queue, Empty, Full
 from threading import Event, Lock, Thread
 import time
+from typing import NamedTuple
 import uuid
 import psutil
 from digitalfly.api.models import (State, RunConfig, Stimulus, Interventions, Speed, NeuralParameters,
@@ -17,6 +18,7 @@ from digitalfly.simulation.engines import CONTROL_DT
 QUEUE_CAPACITY = 64
 PUBLISH_INTERVAL = .1  # telemetry while running, about 10 Hz
 HEARTBEAT_INTERVAL = 1.  # while not running; commands publish at once
+WRITING_POLL = .02  # while paused with an export being written: how soon its command is answered
 BATCH_COMMANDS = {"run", "pause", "batch_cancel", "export", "speed"}  # none changes a controlled condition
 
 
@@ -26,6 +28,13 @@ class Rejected(ValueError):
 
 class WorkerStopped(RuntimeError):
     """The simulation thread has exited; only restarting DigitalFly brings it back."""
+
+
+class Writing(NamedTuple):
+    """An export whose files the export thread is writing; its command is answered when they are complete."""
+    files: Future
+    run_id: str
+    samples: int
 
 
 class SimulationWorker:
@@ -49,6 +58,9 @@ class SimulationWorker:
         self.trials = []
         self.trial_index = 0
         self.eye_bytes = None
+        # Exports are captured on this thread and written on another, one at a time, while the run goes on.
+        self.exports = ThreadPoolExecutor(max_workers=1, thread_name_prefix="digitalfly-export")
+        self.writing: list[tuple[Writing, Future]] = []
         self.snapshot = State(instance_id=self.instance_id, revision=0, run_id="initializing",
             status="initializing", config=self.config, interventions=Interventions()).model_dump()
 
@@ -196,8 +208,30 @@ class SimulationWorker:
         self.experiment.status = "running"
         self.experiment.event("trial_start", f"Comparison {self.trial_index+1}/{len(self.trials)} · {condition} · seed {seed}")
 
+    def _export(self, exp, share_safe=False) -> dict:
+        """Export now, after any export still being written."""
+        return self.exports.submit(exp.export_job(share_safe=share_safe).write).result()
+
+    def _finish_exports(self, final=False):
+        """Answer the export commands whose files are complete, logging each in its run if that run is still the
+        current one. final=True, as the thread ends, waits for every export and only answers."""
+        for item in list(self.writing):
+            writing, future = item
+            if not (final or writing.files.done()):
+                continue
+            self.writing.remove(item)
+            try:
+                result = writing.files.result()
+            except Exception as exc:
+                future.set_exception(exc)
+                continue
+            if not final and self.experiment.run_id == writing.run_id:
+                self.experiment.event("export", f"Saved {writing.samples} samples locally")
+                self._publish_safely()
+            future.set_result(result)
+
     def _finish_trial(self):
-        result = self.experiment.export()
+        result = self._export(self.experiment)
         self.batch["results"].append({**result, **self.experiment.trial, "metrics": self.experiment.metrics})
         self.experiment.trial = None  # saved
         self.trial_index += 1
@@ -217,7 +251,7 @@ class SimulationWorker:
         if exp.trial is not None and exp.step_index:
             try:
                 exp.trial["partial"] = True
-                self.batch["partial"] = {**exp.export(), **exp.trial, "metrics": exp.metrics}
+                self.batch["partial"] = {**self._export(exp), **exp.trial, "metrics": exp.metrics}
             except Exception as exc:
                 self.batch["partial_error"] = f"The unfinished trial could not be saved: {type(exc).__name__}: {exc}"
         workbench, self.workbench = self.workbench, None
@@ -322,9 +356,9 @@ class SimulationWorker:
             exp.event("batch_cancel", "Comparison cancelled")
             self._end_batch("cancelled")
         elif name == "export":
-            result = exp.export(share_safe=bool(payload.get("share_safe")))
-            exp.event("export", f"Saved {len(exp.records)} samples locally")
-            return result
+            # Captured here; the export thread writes the files while the run goes on (see _finish_exports).
+            job = exp.export_job(share_safe=bool(payload.get("share_safe")))
+            return Writing(self.exports.submit(job.write), exp.run_id, len(job.records))
         else:
             raise ValueError("Unknown command")
 
@@ -338,9 +372,12 @@ class SimulationWorker:
             future.set_exception(exc)
         else:
             self._publish_safely(capture=name in {"reset", "step", "pause", "stimulus", "batch_start", "batch_cancel"})
-            future.set_result(result if result is not None else self.get_snapshot())
+            if isinstance(result, Writing):
+                self.writing.append((result, future))
+            else:
+                future.set_result(result if result is not None else self.get_snapshot())
         finally:
-            if not future.done():
+            if not future.done() and not any(f is future for _, f in self.writing):
                 future.set_exception(RuntimeError("The command did not finish."))
 
     def _loop(self):
@@ -351,8 +388,11 @@ class SimulationWorker:
             last_publish = time.perf_counter()
             while not self.stopping.is_set():
                 exp = self.experiment
+                if self.writing:
+                    self._finish_exports()
                 try:
-                    item = self.commands.get(timeout=0 if exp.status == "running" else PUBLISH_INTERVAL)
+                    item = self.commands.get(timeout=0 if exp.status == "running" else
+                                             WRITING_POLL if self.writing else PUBLISH_INTERVAL)
                 except Empty:
                     item = None
                 if item:
@@ -385,6 +425,8 @@ class SimulationWorker:
                                  "error": f"Worker failed: {type(exc).__name__}: {exc}"}
             self.ready.set()
         finally:
+            self._finish_exports(final=True)
+            self.exports.shutdown(wait=True)
             if self.experiment is not None:
                 self.experiment.close()
             while not self.commands.empty():

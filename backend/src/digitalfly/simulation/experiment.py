@@ -5,6 +5,7 @@ from pathlib import Path
 import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -26,7 +27,14 @@ SCHEDULE_KINDS = {"stimulus", "interventions", "parameters", "connectome_paramet
 MERGED_KINDS = SCHEDULE_KINDS | {"speed"}  # repeats within one control step keep only the last value
 BOOKKEEPING_KINDS = {"run", "pause", "step", "speed", "export"}  # never replayed
 BOOKKEEPING_LIMIT = 10000  # logged per run; later ones are left out after one marker event
-SCHEMA_VERSION = 4  # 4 adds lockfiles, optional dependencies, vision.flyvis/bridge and share_safe
+# 4 adds lockfiles, optional dependencies, vision.flyvis/bridge and share_safe; 5 adds the target, stimulus and
+# intervention telemetry columns, metrics.min_target_distance_mm, record_activity and activity_types.npz.
+SCHEMA_VERSION = 5
+ACTIVITY_FILE = "activity_types.npz"
+ACTIVITY_BYTES = 128 * 2**20  # per run; past it the recorded activity keeps every second sample, and so on
+TARGET_COLUMNS = ["target_bearing_deg", "target_distance_mm", "stimulus_x_mm", "stimulus_y_mm", "stimulus_intensity",
+                  "intervention_code"]
+SIDES = {"both": "", "left": ":L", "right": ":R"}
 DEPENDENCIES = ["flygym", "mujoco", "numpy", "fastapi", "pydantic", "numba", "scipy"]
 OPTIONAL_DEPENDENCIES = ["llvmlite", "pillow", "torch", "torchvision", "flyvis"]
 BACKEND = Path(__file__).resolve().parents[3]
@@ -73,6 +81,114 @@ def shareable(value, free_text=False):
     if free_text and len(host) > 2:
         value = re.sub(rf"\b{re.escape(host)}\b", "<local>", value)
     return value
+
+
+def _code_name(name: str) -> str:
+    return re.sub(r"[\s;:,\"'#]", "_", name)
+
+
+def intervention_code(interventions: Interventions) -> str:
+    """A short label of the interventions in effect, for telemetry: L and R with 1 for a sensor input on and 0 for
+    off, then each silenced group or cell type, for example "L0R1;DNa02:left;DNp09:silence;LC10a:L:scale0.5"."""
+    parts = [f"L{int(not interventions.zero_left)}R{int(not interventions.zero_right)}"]
+    if interventions.silence != "none":
+        parts.append(f"units:{interventions.silence}")  # the engineered model's unit groups
+    if interventions.silence_dna02 != "none":
+        parts.append(f"DNa02:{interventions.silence_dna02}")
+    parts += [f"{_code_name(name)}:silence" for name in interventions.silence_types]
+    for item in interventions.cell_types:  # a side (none for both) and a mode with its value
+        mode = item.mode if item.mode == "silence" else f"{item.mode}{item.value:g}"
+        parts.append(f"{_code_name(item.name)}{SIDES[item.side]}:{mode}")
+    return ";".join(parts)
+
+
+def _write_activity(path: Path, rows: list, steps: list, names: list, counts) -> None:
+    """activity_types.npz, streamed row by row, so the recording is never copied into one more array."""
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with archive.open("activity.npy", "w", force_zip64=True) as output:
+            np.lib.format.write_array_header_1_0(output, {"descr": "<f4", "fortran_order": False,
+                                                          "shape": (len(rows), len(names))})
+            for row in rows:
+                output.write(row.tobytes())
+        arrays = {"step": np.asarray(steps, dtype=np.int64),
+                  "time_s": np.asarray([round(step * CONTROL_DT, 8) for step in steps], dtype=np.float64),
+                  "type_names": np.asarray(names, dtype=str), "neurons_per_type": np.asarray(counts, dtype=np.int64)}
+        for name, array in arrays.items():
+            with archive.open(f"{name}.npy", "w") as output:
+                np.lib.format.write_array(output, array, allow_pickle=False)
+
+
+class ExportJob:
+    """One export, captured on the simulation thread and written by write(), on any thread. The capture is cheap:
+    the metadata as JSON text and references to the recorded samples, which never change once recorded, so the run
+    can go on while the files are written."""
+
+    def __init__(self, exp: "Experiment", base: Path, share_safe: bool):
+        if not exp.recording:
+            raise ValueError("This experiment keeps no recording (record=False), so there is nothing to export.")
+        self.base, self.run_id = base, exp.run_id
+        self.name = f"{exp.run_id}-{uuid.uuid4().hex[:6]}"
+        self.metadata = json.dumps(exp.metadata(share_safe), indent=2, allow_nan=False)
+        self.records = list(exp.records)
+        self.unit_names = list(exp.circuit.unit_names)
+        codes = {}
+        self.inputs = [(start, stimulus.x, stimulus.y, stimulus.intensity,
+                        codes.setdefault(id(interventions), intervention_code(interventions)))
+                       for start, stimulus, interventions in exp.inputs]
+        self.activity = None
+        if exp.activity is not None:
+            data = exp.circuit.data
+            self.activity = (list(exp.activity), list(exp.activity_steps), list(data.type_names), data.type_counts.copy())
+
+    def write(self) -> dict:
+        """Save the run as a folder and a ZIP. Files are written into a hidden temporary folder inside the runs folder
+        that is renamed into place only when complete, so an interrupted export never lists as a run."""
+        base, name = self.base, self.name
+        base.mkdir(parents=True, exist_ok=True)
+        destination, archive = base / name, base / f"{name}.zip"
+        staging, staged_archive = base / f".tmp-{name}", base / f".tmp-{name}.zip"
+        try:
+            staging.mkdir()
+            (staging / "metadata.json").write_text(self.metadata)
+            self.write_telemetry(staging / "telemetry.csv")
+            with (staging / "body_signals.jsonl").open("w") as output:
+                for s in self.records:
+                    if s.body_signals:
+                        output.write(json.dumps({"step": s.step, "t": s.t, **s.body_signals}, allow_nan=False)+"\n")
+            if self.activity is not None:
+                _write_activity(staging / ACTIVITY_FILE, *self.activity)
+            with zipfile.ZipFile(staged_archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                for file in sorted(staging.iterdir()):
+                    # The activity file is compressed already.
+                    output.write(file, file.name, compress_type=zipfile.ZIP_STORED if file.suffix == ".npz" else None)
+            os.replace(staged_archive, archive)
+            os.replace(staging, destination)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            staged_archive.unlink(missing_ok=True)
+            if not destination.exists():
+                archive.unlink(missing_ok=True)
+            raise
+        return {"run_id": self.run_id, "samples": len(self.records), "path": str(destination),
+                "download_url": f"/api/exports/{archive.name}"}
+
+    def write_telemetry(self, path: Path):
+        """One row per sample. The target columns describe the target in effect for that sample: its bearing from the
+        sample's heading (degrees, positive to the left, within ±180) and its distance from the sample's position."""
+        with path.open("w", newline="") as output:
+            writer = csv.writer(output)
+            writer.writerow(["step", "time_s", "x_mm", "y_mm", "z_mm", "yaw_rad", "speed_mm_s", "sensor_l", "sensor_r",
+                             "raw_sensor_l", "raw_sensor_r", *["rate_" + n.lower().replace(" ", "_") for n in self.unit_names],
+                             "motor_l", "motor_r", *TARGET_COLUMNS])
+            ends = [start for start, *_ in self.inputs[1:]] + [len(self.records)]
+            for (start, x, y, intensity, code), end in zip(self.inputs, ends):
+                for s in self.records[start:end]:
+                    p = s.pose
+                    bearing = math.atan2(y - p.y, x - p.x) - p.yaw
+                    writer.writerow([s.step, s.t, p.x, p.y, p.z, p.yaw, p.velocity, s.sensors.left, s.sensors.right,
+                                     s.sensors.raw_left, s.sensors.raw_right, *s.rates, *s.motor,
+                                     math.degrees(math.atan2(math.sin(bearing), math.cos(bearing))),
+                                     math.hypot(x - p.x, y - p.y), x, y, intensity, code])
 
 
 def make_circuit(config: RunConfig):
@@ -139,6 +255,11 @@ class Experiment:
         self.type_history = deque(maxlen=201)
         self.trail = deque(maxlen=600)
         self.records: list[Sample] = []
+        # (index of the first record, stimulus, interventions) whenever either changes, for the telemetry columns.
+        self.inputs: list[tuple] = []
+        self.min_target_distance = None
+        types = config.record_activity == "types" and self.circuit.kind == "connectome"
+        self.activity, self.activity_steps, self.activity_every = ([] if types else None), [], 1
         self.events: list[Event] = []
         self.schedule_events = self.bookkeeping_events = 0
         self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
@@ -229,13 +350,28 @@ class Experiment:
         # Retain full pose in the latest sample only, avoiding repeated mesh/joint history.
         # Samples are never mutated after creation, so shallow copies are safe here.
         sample = self.sample.model_copy(update={"pose": self.sample.pose.model_copy(update={"legs": []})})
+        stimulus = self.config.stimulus
+        distance = math.hypot(stimulus.x - sample.pose.x, stimulus.y - sample.pose.y)
+        if self.min_target_distance is None or distance < self.min_target_distance:
+            self.min_target_distance = distance
+        means = None
         if self.recording:
+            last = self.inputs[-1] if self.inputs else None
+            if last is None or last[1] is not stimulus or last[2] is not self.interventions:
+                self.inputs.append((len(self.records), stimulus, self.interventions))
             self.records.append(sample)
+            if self.activity is not None and self.step_index % self.activity_every == 0:
+                means = self.circuit.type_means()
+                self.activity.append(means.astype("<f4"))
+                self.activity_steps.append(self.step_index)
+                if len(self.activity) * means.size * 4 > ACTIVITY_BYTES:  # from now on, every second sample
+                    self.activity, self.activity_steps = self.activity[::2], self.activity_steps[::2]
+                    self.activity_every *= 2
         if self.step_index % 2 == 0:
             self.history.append(sample.model_copy(update={"body_signals": {
                 k: v for k, v in sample.body_signals.items() if k != "joint_position_rad"}}))
             if self.circuit.kind == "connectome":
-                self.type_history.append(self.circuit.type_means().astype(np.float32))
+                self.type_history.append((self.circuit.type_means() if means is None else means).astype(np.float32))
         self.trail.append([sample.pose.x, sample.pose.y])
 
     def check_advance(self):
@@ -386,6 +522,7 @@ class Experiment:
             "mean_speed_mm_s": self.speed_sum / max(self.step_index, 1),
             "net_turn_deg": float(np.degrees(self.turning)),
             "target_distance_mm": float(np.hypot(pose.x-self.config.stimulus.x, pose.y-self.config.stimulus.y)),
+            "min_target_distance_mm": self.min_target_distance,
             "contact_fraction": (self.contact_sum / max(self.contact_samples, 1)).tolist() if self.contact_samples else [],
             "duration_s": self.t, "protocol_complete": self.protocol_complete}
 
@@ -454,6 +591,16 @@ class Experiment:
         return vision
 
     def metadata(self, share_safe=False) -> dict:
+        neural = self.circuit.description()
+        activity = None
+        if self.activity is not None:
+            activity = {"file": ACTIVITY_FILE, "kind": "types", "samples": len(self.activity),
+                        "cell_types": len(self.circuit.data.type_names), "every_steps": self.activity_every,
+                        "values": "mean activity of each cell type's neurons after each recorded control step, "
+                                  "as in the rate columns", "units": neural["readout_units"],
+                        "arrays": {"activity": "float32, samples × cell types", "step": "control step of each sample",
+                                   "time_s": "simulated time of each sample", "type_names": "cell types, in column order",
+                                   "neurons_per_type": "neurons averaged in each column"}}
         metadata = {
             "schema_version": SCHEMA_VERSION, "application_version": APPLICATION_VERSION, "run_id": self.run_id,
             "created_utc": self.started_at, "exported_utc": datetime.now(timezone.utc).isoformat(),
@@ -462,12 +609,13 @@ class Experiment:
             "status": self.status, "error": self.error, "provenance": self.provenance,
             "time_steps_s": {"physics": PHYSICS_DT if self.config.engine == "flygym" else CONTROL_DT,
                              "neural": NEURAL_DT, "control": CONTROL_DT},
-            "units": {"position": "mm", "velocity": "mm/s", "yaw": "rad", "time": "s", "rates_and_commands": "dimensionless"},
+            "units": {"position": "mm", "velocity": "mm/s", "yaw": "rad", "time": "s", "rates_and_commands": "dimensionless",
+                      "target_bearing": "deg"},
             "coordinates": "Right-handed world; +z up; yaw counterclockwise from +x. Camera follows body. Arena is top-down.",
             "warmup_s": .05 if self.config.engine == "flygym" else 0,
             "rendering": {"requested": self.render_enabled, "resolution": [640, 288], "wall_target_hz": 10},
             "performance": {"active_wall_s": self.wall_s, "compute_s": self.compute_s},
-            "neural": self.circuit.description(), "metrics": self.metrics, "trial": self.trial,
+            "neural": neural, "metrics": self.metrics, "trial": self.trial, "activity": activity,
             "body_joint_order": [str(dof) for dof in self.body.fly.get_jointdofs_order()] if self.body is not None and self.config.engine == "flygym" else [],
             "vision": self.vision_provenance(),
             "events": [event.model_dump() for event in self.events],
@@ -483,46 +631,15 @@ class Experiment:
             metadata = shareable(metadata)
         return metadata
 
-    def export(self, directory: Path | None = None, share_safe=False):
-        """Save the run as a folder and a ZIP under runs/. Files are written into a hidden temporary folder inside
-        runs/ that is renamed into place only when complete, so an interrupted export never lists as a run.
-        share_safe=True leaves out the platform string and replaces absolute paths and the host name (see shareable),
-        for runs meant to be published."""
-        if not self.recording:
-            raise ValueError("This experiment keeps no recording (record=False), so there is nothing to export.")
+    def export_job(self, directory: Path | None = None, share_safe=False) -> ExportJob:
+        """Capture this run for export (see ExportJob); its write() saves it under runs/. share_safe=True leaves out
+        the platform string and replaces absolute paths and the host name (see shareable), for runs to publish."""
         # Caller never supplies a filesystem path. Generated IDs are confined under runs/.
-        base = directory or ROOT / "runs"
-        base.mkdir(parents=True, exist_ok=True)
-        name = f"{self.run_id}-{uuid.uuid4().hex[:6]}"
-        destination, archive = base / name, base / f"{name}.zip"
-        staging, staged_archive = base / f".tmp-{name}", base / f".tmp-{name}.zip"
-        metadata = self.metadata(share_safe)
-        try:
-            staging.mkdir()
-            (staging / "metadata.json").write_text(json.dumps(metadata, indent=2, allow_nan=False))
-            with (staging / "telemetry.csv").open("w", newline="") as output:
-                writer = csv.writer(output)
-                writer.writerow(["step", "time_s", "x_mm", "y_mm", "z_mm", "yaw_rad", "speed_mm_s", "sensor_l", "sensor_r", "raw_sensor_l", "raw_sensor_r", *["rate_" + n.lower().replace(" ", "_") for n in self.circuit.unit_names], "motor_l", "motor_r"])
-                for s in self.records:
-                    writer.writerow([s.step, s.t, s.pose.x, s.pose.y, s.pose.z, s.pose.yaw, s.pose.velocity,
-                                     s.sensors.left, s.sensors.right, s.sensors.raw_left, s.sensors.raw_right, *s.rates, *s.motor])
-            with (staging / "body_signals.jsonl").open("w") as output:
-                for s in self.records:
-                    if s.body_signals:
-                        output.write(json.dumps({"step": s.step, "t": s.t, **s.body_signals}, allow_nan=False)+"\n")
-            with zipfile.ZipFile(staged_archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
-                for file in sorted(staging.iterdir()):
-                    output.write(file, file.name)
-            os.replace(staged_archive, archive)
-            os.replace(staging, destination)
-        except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
-            staged_archive.unlink(missing_ok=True)
-            if not destination.exists():
-                archive.unlink(missing_ok=True)
-            raise
-        return {"run_id": self.run_id, "samples": len(self.records), "path": str(destination),
-                "download_url": f"/api/exports/{archive.name}"}
+        return ExportJob(self, directory or ROOT / "runs", share_safe)
+
+    def export(self, directory: Path | None = None, share_safe=False):
+        """Save the run as a folder and a ZIP under runs/, atomically (see ExportJob.write), on this thread."""
+        return self.export_job(directory, share_safe).write()
 
     def close(self):
         if self.body is not None:

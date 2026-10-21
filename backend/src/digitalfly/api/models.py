@@ -288,6 +288,8 @@ class RunConfig(StrictModel):
     connectome_parameters: ConnectomeParameters = Field(default_factory=ConnectomeParameters)
     initial_interventions: Interventions = Field(default_factory=Interventions)
     protocol: Protocol | None = None
+    # "types": connectome runs also export activity_types.npz, every cell type's mean activity per control step.
+    record_activity: Literal["none", "types"] = "none"
 
     @field_validator("neural_model", mode="before")
     @classmethod
