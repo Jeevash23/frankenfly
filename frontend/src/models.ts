@@ -1,4 +1,12 @@
-import type {Condition, Config, Dynamics, Intervention, NeuralModel, Protocol} from './types.ts';
+import type {
+  Condition,
+  Config,
+  ConnectomeParameters,
+  Dynamics,
+  Intervention,
+  NeuralModel,
+  Protocol,
+} from './types.ts';
 import {preset} from './protocol.ts';
 
 export const modelNames: Record<NeuralModel, string> = {
@@ -66,9 +74,57 @@ export const noInterventions: Intervention = {
   silence_types: [],
 };
 
+// The reset that switches models. FlyVis eyes drive only the connectome model's visual neurons, so
+// leaving the connectome model with them selected also switches to rendered compound eyes (FlyVis
+// already needs the FlyGym body they use), and says so.
+export function modelSwitch(
+  config: Pick<Config, 'sensor_model'>,
+  model: NeuralModel,
+): {override: Partial<Config>; note: string | null} {
+  const leaveFlyVis = model !== 'connectome' && config.sensor_model === 'flyvis';
+  return {
+    override: {neural_model: model, ...(leaveFlyVis ? {sensor_model: 'vision' as const} : {})},
+    note: leaveFlyVis
+      ? 'FlyVis eyes drive only the connectome model, so the sensor switched to rendered compound eyes.'
+      : null,
+  };
+}
+
 // Switching models starts a fresh run without interventions the new model does not have.
 export function configForModel(config: Config, model: NeuralModel): Config {
-  return {...config, neural_model: model, initial_interventions: noInterventions};
+  return {
+    ...config,
+    ...modelSwitch(config, model).override,
+    initial_interventions: noInterventions,
+  };
+}
+
+// What a connectome circuit summary depends on: the circuit file and the structural parameters.
+// Gains, tonic drive, time constants and dynamics change the activity, not the summary, so editing
+// them keeps the cached summary. Without a hash (servers before v0.6) a rebuilt circuit keeps its
+// key; the cache is then cleared when a build completes.
+export function summaryKey(parameters: ConnectomeParameters, sha256?: string | null): string {
+  return JSON.stringify([
+    parameters.circuit,
+    sha256 ?? '',
+    parameters.synapse_threshold,
+    parameters.other_transmitters,
+    parameters.readout_types,
+    parameters.input_types,
+    parameters.speed_types,
+  ]);
+}
+
+// The neural stage of the loop, named for the model that runs it.
+export function neuralStage(
+  config: Pick<Config, 'neural_model'> & {
+    connectome_parameters?: Pick<ConnectomeParameters, 'dynamics'>;
+  },
+): string {
+  if (config.neural_model !== 'connectome') return '6 rate units';
+  return config.connectome_parameters?.dynamics === 'spiking'
+    ? 'Connectome circuit · spiking'
+    : 'Connectome circuit · rate';
 }
 
 export const conditionNames: Record<Condition, string> = {
@@ -87,8 +143,12 @@ export const conditionNames: Record<Condition, string> = {
 const DNA02_CONDITIONS: Condition[] = ['dna02_left_off', 'dna02_right_off', 'dna02_both_off'];
 
 // The conditions a comparison can hold for each selected model, in display order. DNa02
-// conditions need a circuit that contains DNa02.
-export function conditionsFor(model: NeuralModel, hasDNa02 = true): Condition[] {
+// conditions need a circuit that contains DNa02; the engineered model cannot use FlyVis eyes.
+export function conditionsFor(
+  model: NeuralModel,
+  hasDNa02 = true,
+  sensor: Config['sensor_model'] = 'geometric',
+): Condition[] {
   return model === 'engineered'
     ? ['control', 'left_sensor_off', 'descending_off', 'baseline', 'connectome_model']
     : (
@@ -100,7 +160,11 @@ export function conditionsFor(model: NeuralModel, hasDNa02 = true): Condition[] 
           'baseline',
           'engineered_model',
         ] as Condition[]
-      ).filter((c) => hasDNa02 || !DNA02_CONDITIONS.includes(c));
+      ).filter(
+        (c) =>
+          (hasDNa02 || !DNA02_CONDITIONS.includes(c)) &&
+          (sensor !== 'flyvis' || c !== 'engineered_model'),
+      );
 }
 
 // Mirrors the server's comparison rules so problems read as plain sentences.
@@ -109,15 +173,18 @@ export function conditionProblem(
   model: NeuralModel,
   cellType: string,
   hasDNa02 = true,
+  sensor: Config['sensor_model'] = 'geometric',
 ): string | null {
   if (!conditions.length) return 'Select at least one condition.';
   if (conditions.length > 4) return 'Choose at most four conditions.';
-  const allowed = conditionsFor(model, hasDNa02);
+  const allowed = conditionsFor(model, hasDNa02, sensor);
   const other = conditions.find((c) => !allowed.includes(c));
   if (other)
     return DNA02_CONDITIONS.includes(other) && model === 'connectome'
       ? `“${conditionNames[other]}” needs a circuit that contains DNa02.`
-      : `“${conditionNames[other]}” is not available with the ${modelPhrases[model]}.`;
+      : other === 'engineered_model' && sensor === 'flyvis'
+        ? `“${conditionNames[other]}” cannot use FlyVis eyes. Choose another sensor on the Workbench first.`
+        : `“${conditionNames[other]}” is not available with the ${modelPhrases[model]}.`;
   if (conditions.includes('cell_type_off') && !cellType.trim())
     return 'Choose the cell type to silence.';
   return null;
