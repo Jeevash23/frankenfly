@@ -284,7 +284,49 @@ def soma_x(neuron_id):
     return float(rows[rows[:, 6] == -1][0, 2] / 1000)
 
 
-def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False):
+BALANCE_RULE = ("The cap is applied per cell type and side. In the hop the cap trims, each cell type's left and right "
+                "candidates are ranked by path strength. First, the strongest candidates on the type's short side that "
+                "even out its neurons already kept at earlier hops are single units; the rest are paired by rank, the "
+                "strongest left with the strongest right. A type's surplus on one side has no partner and is not kept. "
+                "Neurons on neither side (center, unknown) are single units. Units are kept in order of their weakest "
+                "member's path strength (ties: lower FlyWire ID) until the next unit would exceed the cap. Seeds, direct "
+                "partners and hops the cap does not trim are kept as they are, so their own imbalance remains.")
+
+
+def balanced_trim(layer, strength, earlier, group, side, budget):
+    """The cap applied per (cell type, side) to one hop, as BALANCE_RULE says. `group` is each neuron's cell-type
+    label code and `side` 0 (left), 1 (right) or -1 (neither); `earlier` holds the neurons kept at earlier hops.
+    Returns the kept neurons, the dropped ones (strongest first) and how many were dropped as unpaired surplus."""
+    before = {}
+    for g, s in zip(group[earlier].tolist(), side[earlier].tolist()):
+        if s >= 0:
+            before.setdefault(g, [0, 0])[s] += 1
+    members = {}
+    for i in layer[np.lexsort((layer, -strength[layer]))].tolist():  # strongest first
+        members.setdefault(int(group[i]), ([], [], []))[side[i] if side[i] >= 0 else 2].append(i)
+    units, unpaired = [], []
+    for g, (left, right, other) in members.items():
+        units += [[i] for i in other]
+        a, b = before.get(g, (0, 0))
+        short = right if a > b else left  # the side with fewer neurons kept so far evens the type out first
+        units += [[i] for i in short[:abs(a - b)]]
+        del short[:abs(a - b)]
+        m = min(len(left), len(right))
+        units += [[l, r] for l, r in zip(left[:m], right[:m])]
+        unpaired += left[m:] + right[m:]
+    units.sort(key=lambda unit: (-min(strength[i] for i in unit), min(unit)))
+    kept, used = [], 0
+    for unit in units:
+        if len(kept) + len(unit) > budget:
+            break
+        kept += unit
+        used += 1
+    dropped = np.array([i for unit in units[used:] for i in unit] + unpaired, dtype=np.int64)
+    dropped = dropped[np.lexsort((dropped, -strength[dropped]))]
+    return np.array(sorted(kept), dtype=np.int64), dropped, len(unpaired)
+
+
+def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False, balance=None):
     """Choose neurons and connections on integer neuron indices 0..n-1. Vectorised.
 
     Hop h holds the presynaptic partners (connections with at least `threshold` synapses) of
@@ -296,6 +338,9 @@ def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False
 
     With `whole`, hops run until no new neuron is reached, nothing is capped, and every other
     neuron with a strong connection is appended (hop -1: no path to a seed).
+
+    With `balance` = (cell-type code, side code) per neuron, the trimmed hop follows BALANCE_RULE
+    (`balanced_trim`) instead of keeping the strongest neurons whatever their side.
     """
     pre, post, seeds = (np.asarray(a, dtype=np.int64) for a in (pre, post, seeds))
     count = np.asarray(count, dtype=np.float64)
@@ -321,10 +366,16 @@ def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False
         layers.append(np.flatnonzero(frontier))
 
     kept_layers, dropped, budget = [seeds], np.array([], dtype=np.int64), (n if whole else cap) - len(seeds)
+    unpaired = 0
     for depth, layer in enumerate(layers[1:], start=1):
         if len(layer) <= budget or depth == 1:
             kept_layers.append(layer)
             budget -= len(layer)
+            continue
+        if balance is not None and budget > 0:
+            keep, rest, surplus = balanced_trim(layer, strength, np.concatenate(kept_layers), *balance, budget)
+            kept_layers.append(keep)
+            dropped, unpaired, budget = np.concatenate([dropped, rest]), unpaired + surplus, 0
             continue
         ranked = layer[np.lexsort((layer, -strength[layer]))]
         keep = max(budget, 0)
@@ -350,7 +401,7 @@ def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False
     return {"kept": kept, "hop": hop, "strength": strength[kept],
             "by_hop": [int(len(l)) for l in kept_layers],
             "candidates": int(sum(len(l) for l in layers)), "dropped": dropped,
-            "dropped_strength": strength[dropped], "weakest_kept_strength": weakest,
+            "dropped_strength": strength[dropped], "weakest_kept_strength": weakest, "unpaired": unpaired,
             "edges": (e_pre[order], e_post[order], e_count[order])}
 
 
@@ -627,11 +678,28 @@ def resolve_seeds(data, tokens):
     return np.array(seeds, dtype=np.int64), records
 
 
-def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
-    """Select a circuit around any seeds from the prepared archive (NumPy only) and write format 2."""
+def side_balance(types, sides, unpaired, applied):
+    """How evenly a balanced build's cell types are split between the sides, for its header."""
+    counts = {}
+    for t, s in zip(types.tolist(), sides.tolist()):
+        if s in ("left", "right"):
+            counts.setdefault(t, [0, 0])[s == "right"] += 1
+    uneven = sorted(((t, lr) for t, lr in counts.items() if lr[0] != lr[1]), key=lambda x: (-abs(x[1][0] - x[1][1]), x[0]))
+    return {"rule": BALANCE_RULE, "applied": applied, "unpaired_dropped": int(unpaired),
+            "cell_types_with_sides": len(counts), "even_cell_types": len(counts) - len(uneven),
+            "uneven_neurons": int(sum(abs(l - r) for _, (l, r) in uneven)),
+            "uneven_cell_types": {t: {"left": l, "right": r} for t, (l, r) in uneven[:25]},
+            "note": "applied: the cap bound, so the hop it trims was chosen per cell type and side; otherwise nothing changed"}
+
+
+def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed, balance=False):
+    """Select a circuit around any seeds from the prepared archive (NumPy only) and write format 2. With
+    `balance`, the cap is applied per cell type and side (BALANCE_RULE)."""
     import re
     if not re.fullmatch(NAME_PATTERN, name) or name in ("local", "downloads"):
         sys.exit("Use a circuit name of lower-case letters, digits, dots, dashes or underscores.")
+    if balance and whole:
+        sys.exit("--balance-sides applies the cap per cell type and side, and --whole-brain has no cap.")
     if name.endswith(".flyvis"):
         sys.exit("Circuit names cannot end in .flyvis: that suffix marks a circuit's FlyVis bridge.")
     if not committed and any((OUT_DIR / f"{name}{suffix}").exists() for suffix in (".json", ".npz")):
@@ -644,7 +712,11 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
                for source in data["header"]["sources"]]
     seeds, records = resolve_seeds(data, tokens)
     n = len(data["neuron_id"])
-    chosen = select_indices(data["pre"], data["post"], data["synapses"], seeds, n, threshold, hops, cap, whole)
+    groups = None
+    if balance:
+        side_code = np.select([data["lookup_side"] == "left", data["lookup_side"] == "right"], [0, 1], -1)
+        groups = (data["cell_type"], side_code[data["side"]])
+    chosen = select_indices(data["pre"], data["post"], data["synapses"], seeds, n, threshold, hops, cap, whole, groups)
     kept = chosen["kept"]
     e_pre, e_post, e_count = chosen["edges"]
     position = np.full(n, -1, dtype=np.int64)
@@ -686,12 +758,14 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
             "dataset": "FlyWire FAFB", "release": "v783", "specimen": "FAFB, one adult female brain", "sex": "female",
             "coverage": (f"Every neuron with a connection of at least {threshold} synapses; hop distances from {seed_text}"
                          if whole else f"{seed_text} and their presynaptic partners up to {hops} hops back, connections "
-                         f"with at least {threshold} synapses, at most {cap} neurons"),
+                         f"with at least {threshold} synapses, at most {cap} neurons"
+                         + (", the cap applied per cell type and side" if balance else "")),
             "license": FLYWIRE_LICENSE, "non_commercial": True, "attribution": ATTRIBUTION, "citations": CITATIONS,
             "sources": sources,
             "build": {"script": "scripts/build_circuit.py", "command": "build", "seeds": [r["seed"] for r in records],
                       "synapse_threshold": threshold, "hops": None if whole else hops,
                       "neuron_cap": None if whole else cap, "whole_brain": whole,
+                      **({"balance_sides": True} if balance else {}),  # absent in unbalanced builds: they rebuild unchanged
                       "connections": "induced subgraph: every kept pair with at least the threshold",
                       "numpy": np.__version__},
             "seeds": records,
@@ -714,6 +788,9 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
         "defaults": {"readout_types": readout, "input": "visual_projection"},
         "lookups": lookups,
     }
+    if balance:
+        header["provenance"]["side_balance"] = side_balance(np.array(lookups["cell_type"])[columns["cell_type"]], sides,
+                                                            chosen["unpaired"], bool(len(dropped)))
     folder = OUT_DIR if committed else LOCAL_DIR
     folder.mkdir(parents=True, exist_ok=True)
     fmt = fmt if fmt != "auto" else ("json" if len(e_count) <= JSON_EDGE_LIMIT else "npz")
@@ -832,6 +909,8 @@ def arguments(argv=None):
     custom.add_argument("--whole-brain", action="store_true", help="Every connected neuron; seeds set hop distances")
     custom.add_argument("--format", choices=["auto", "json", "npz"], default="auto")
     custom.add_argument("--committed", action="store_true", help="Write to data/circuits/ (maintainers) instead of data/circuits/local/")
+    custom.add_argument("--balance-sides", action="store_true",
+                        help="Apply the cap per cell type and side, keeping left and right neurons of a type in pairs")
     bridge = commands.add_parser("flyvis-bridge", help="Wire FlyVis cell types to a circuit's visual projection neurons")
     bridge.add_argument("--circuit", required=True, help="Circuit name, committed or local")
     return parser.parse_args(argv)
@@ -848,7 +927,8 @@ if __name__ == "__main__":
         seeds = [t for t in args.seeds.split(",") if t.strip()] + args.seed
         if not seeds:
             sys.exit("Give at least one seed with --seeds or --seed.")
-        build_custom(args.name, seeds, args.hops, args.threshold, args.cap, args.whole_brain, args.format, args.committed)
+        build_custom(args.name, seeds, args.hops, args.threshold, args.cap, args.whole_brain, args.format, args.committed,
+                     args.balance_sides)
         sys.exit(0)
     try:
         import pyarrow  # noqa: F401

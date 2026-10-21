@@ -47,7 +47,7 @@ backend/.venv/bin/python -m pytest backend/tests -q -rs
 | Frontend unit tests, formatting, TypeScript and build | `./scripts/check.sh` (or `npm --prefix frontend test`, `run format:check`, `run typecheck`, `run build`) |
 | Linux rendering | `scripts/smoke_flygym.py` and `./scripts/check.sh`, once with each `MUJOCO_GL` value above |
 | Replay | `backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER` on runs exported from the app or by `toolkit.jumping_target_run` (below) |
-| Circuit build | With the prepared archive, `pytest backend/tests/test_build_circuit.py` rebuilds both committed circuits in a temporary folder and compares them. For the default DNa02 rebuild in place: `backend/.venv/bin/python scripts/build_circuit.py --offline`, then `git diff --exit-code data/circuits/fafb783-dna02.json` |
+| Circuit build | With the prepared archive, `pytest backend/tests/test_build_circuit.py backend/tests/test_balance_sides.py` rebuilds both committed circuits and their two side-balanced versions in a temporary folder and compares them. For the default DNa02 rebuild in place: `backend/.venv/bin/python scripts/build_circuit.py --offline`, then `git diff --exit-code data/circuits/fafb783-dna02.json` |
 | Recorded fly | With the recording, `pytest backend/tests/test_compare.py` checks the conversion against the documented spike counts and fit |
 
 The smoke script writes a JSON report and PNG here. To keep console output, redirect it into a local log:
@@ -130,6 +130,7 @@ Results are printed as Markdown and saved under the ignored `runs/toolkit/` (or 
 
 | Published result | Command |
 | --- | --- |
+| What the circuits compute (DNa02 R − L at 0.6 s for each bearing) | `scripts/toolkit.py readouts` (add `--set circuit=fafb783-dna02-balanced` and so on for the other circuits) |
 | Bias table, DNa02 circuit | `scripts/toolkit.py bias --set circuit=fafb783-dna02` |
 | Bias table, steering circuit, rate | `scripts/toolkit.py bias --set circuit=fafb783-steering` |
 | Bias table, steering circuit, spiking | `scripts/toolkit.py bias --set circuit=fafb783-steering --set dynamics=spiking --ms 800 --average-ms 400 --seed 1` |
@@ -140,6 +141,10 @@ Results are printed as Markdown and saved under the ignored `runs/toolkit/` (or 
 | DNa02 orbit radius against output gain | `scripts/toolkit.py trials --set neural_model=connectome --vary connectome_parameters.output_gain=1,2,4,8 --distances 12 --workers 8` (median final distance) |
 | FlyVis closed loop (needs FlyVis and graphics) | `scripts/toolkit.py trials --engine flygym --duration 6 --distances 12 --seeds 1-3 --set neural_model=connectome --set sensor_model=flyvis --vary connectome_parameters.circuit=fafb783-dna02,fafb783-steering --workers 3 --out runs/toolkit/eval-flyvis` |
 | Path tracing | `scripts/toolkit.py paths --source LC10a --target DNa02` |
+| Side-balanced circuits: bias tables | `scripts/toolkit.py bias --set circuit=fafb783-dna02-balanced` and `--set circuit=fafb783-steering-balanced`; spiking rows add `--set dynamics=spiking --ms 800 --average-ms 400 --seed 1` |
+| Side-balanced circuits: closed loop | `scripts/toolkit.py trials --set neural_model=connectome --vary connectome_parameters.circuit=fafb783-dna02,fafb783-dna02-balanced,fafb783-steering,fafb783-steering-balanced --workers 3` (spiking: add `--set connectome_parameters.dynamics=spiking --bearings=45,-45,90,-90 --distances 12 --seeds 1-3`) |
+| Assumption sensitivity, DNa02 and steering circuits | `scripts/toolkit.py robustness --set circuit=fafb783-dna02 --analyses bias,readouts`, the same with `circuit=fafb783-steering` |
+| Assumption sensitivity: seeds, readout, balance | `scripts/toolkit.py robustness --set circuit=fafb783-steering --set dynamics=spiking --vary seed=1,2,3,4,5 --analyses bias,readouts`; `… --set circuit=fafb783-steering --vary readout_pool=sum,mean --vary 'readout_weights=[null,{"DNa02":2},{"DNp09":0.5}]' --analyses bias,readouts`; `… --vary circuit=fafb783-dna02,fafb783-dna02-balanced --vary dynamics=rate,spiking --analyses bias,readouts,reach` and the same for the steering pair |
 
 Prefix each with `backend/.venv/bin/python`. Positive turn commands are rightward.
 

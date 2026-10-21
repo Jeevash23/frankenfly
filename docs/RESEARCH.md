@@ -87,14 +87,16 @@ The model was called `connectome_dna02` in v0.3. Runs and configurations that us
 
 ### Circuits
 
-A circuit is a file of neurons and connections selected from FlyWire v783. Two ship with the repository; you can [build more](#building-your-own-circuits).
+A circuit is a file of neurons and connections selected from FlyWire v783. Four ship with the repository, two of them side-balanced versions of the other two; you can [build more](#building-your-own-circuits).
 
 | Circuit | Seeds | Neurons | Connections | Cell types | Default readout | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
 | `fafb783-dna02` (default) | DNa02 | 3,000 | 78,615 | 1,257 | DNa02 | The v0.3 circuit, unchanged |
 | `fafb783-steering` | DNa01, DNa02, DNp09 | 4,000 | 120,728 | 1,650 | DNa01 + DNa02 + DNp09 | Added in v0.4; see [the steering circuit](#the-steering-circuit) |
+| `fafb783-dna02-balanced` | DNa02 | 3,000 | 78,510 | 1,056 | DNa02 | Added in v0.6: the DNa02 circuit's build with the cap applied per cell type and side; see [side-balanced circuits](#side-balanced-circuits) |
+| `fafb783-steering-balanced` | DNa01, DNa02, DNp09 | 3,999 | 121,297 | 1,438 | DNa01 + DNa02 + DNp09 | Added in v0.6: the same for the steering circuit |
 
-Both hold the seeds and their presynaptic partners up to two hops back, with connections of at least 5 synapses, capped by path strength. Circuits you build yourself go to `data/circuits/local/`, which git ignores, and appear in the circuit list next to the committed ones.
+All hold the seeds and their presynaptic partners up to two hops back, with connections of at least 5 synapses, capped by path strength. Circuits you build yourself go to `data/circuits/local/`, which git ignores, and appear in the circuit list next to the committed ones.
 
 ### Data sources
 
@@ -143,6 +145,7 @@ backend/.venv/bin/python scripts/build_circuit.py build --name whole --seed DNa0
 - **Seeds** are exact cell-type names (case-sensitive) or FlyWire root IDs. Use `--seed` once per seed for names that contain commas, such as `VES051,VES052`.
 - **Selection** follows the same rules as the committed circuit: hops back from the seeds, the synapse threshold, the cap by path strength (every seed and hop-1 neuron is kept), and the induced subgraph.
 - **Whole brain** (`--whole-brain`) keeps every neuron with at least one connection at the threshold: 134,180 neurons and 2,700,509 connections at 5 synapses. The seeds only set hop distances; neurons with no path to them get hop −1.
+- **Side balance** (`--balance-sides`, v0.6; `balance_sides` in `POST /api/connectome/build`) applies the cap per cell type and side. In the hop the cap trims, each cell type's left and right candidates are ranked by path strength. The strongest candidates on the type's short side that even out its neurons already kept at earlier hops come first, one by one; the rest are paired by rank, strongest left with strongest right. A type's surplus on one side has no partner and is not kept, so a type found on one side only is left out of that hop. Neurons on neither side (center, unknown) are ranked alone. The pairs and single neurons are kept in order of their weakest member's path strength (ties: lower FlyWire ID) until the next one would exceed the cap, so a balanced circuit can end one neuron short of it. Seeds, direct partners and any hop the cap does not trim are kept as they are, so the data's own asymmetries there remain; without a binding cap the option changes nothing, and it is refused with `--whole-brain`. The header records `"balance_sides": true` in `provenance.build` (unbalanced builds leave the key out, so they still rebuild byte for byte) and a `side_balance` report: the rule, how many unpaired neurons were dropped, and the cell types still uneven, with their counts. A dropped unpaired neuron can be stronger than kept ones, so the cap report's strongest dropped path can exceed its weakest kept path.
 - **Default readout**: the seed cell types that have seed neurons on both sides. You can change it later.
 - **Output**: format 2, as JSON up to 200,000 connections and as a compressed NumPy archive above that, in `data/circuits/local/`, with the same provenance, cap report, transmitter counts, license and attribution as the committed files. The general builder reproduces the committed DNa02 circuit's neurons, connections and cap report, and rebuilds `fafb783-steering.json` byte for byte (both tested when the prepared archive is present).
 - **Rebuilding** a name writes the new file in full to a hidden temporary file and then renames it into place, so a failed or cancelled build keeps the previous circuit. Only that name's other format (`NAME.json` or `NAME.npz`) is removed; other circuits such as `NAME.v2` and the FlyVis bridge `NAME.flyvis.json` are kept (a bridge built for the old file refuses to load until you rebuild it). Names ending in `.flyvis` are refused. The cap report's weakest kept path strength comes from the deepest hop that kept neurons, so it is reported whenever neurons were dropped.
@@ -258,6 +261,8 @@ With the target held still, steady-state DNa02 activity in the DNa02 circuit aft
 | 45° right | −0.056 | Left, away |
 | 90° right | +0.060 | Right, toward |
 
+`scripts/toolkit.py readouts` prints this table (the fly is held at the origin facing ahead, the geometric sensor's two values are clamped for 600 ms, then each readout type's right − left activity and the turn command are read; `--set circuit=…` for another circuit, `--bearings`, `--distance` and `--ms` to change the geometry).
+
 Compared with a target straight ahead, moving it to either side shifts activity toward the DNa02 on that side, as Rayshubskiy et al. describe for attractive stimuli. But the DNa02 circuit is **strongly biased to the left**: equal input on both sides already commands a left turn, so a target must be about 90° to the right before the circuit turns right. No global parameter removes the bias: τ leaves steady states unchanged, a 10- or 20-synapse threshold weakens every response without removing it, the transmitter switch changes nothing measurable, and a larger input gain makes it stronger.
 
 `scripts/toolkit.py bias` measures the same thing directly: it clamps both sensors for 500 ms over a grid of inputs and reports the turn command, plus a **mirror test** (a left-right symmetric circuit gives turn(a, b) = −turn(b, a); the asymmetry is 0 for such a circuit and grows with the bias):
@@ -286,7 +291,57 @@ Positive turns are rightward. The spiking values are averaged over the last 400 
 
 A positive change means the type was pushing the fly to the left. Two of the strongest contributors are visual projection types that the 3,000-neuron cap sampled unevenly: it kept 51 left and 29 right LC10a neurons and 35 left and 19 right LC10c neurons, because the cap ranks neurons by their path to the seeds, not by side. Every visual projection neuron on a side receives the same sensor value, so a lopsided sample turns into a lopsided drive. The bias is not only a sampling effect: in the whole-brain circuit (built locally with `--whole-brain`, no cap), equal input still commands a left turn of −0.171 through DNa02, with a mirror asymmetry of 0.75.
 
-In the steering circuit the same scan finds larger effects that cancel: silencing LC9 (63 left, 77 right) shifts the turn by −0.144, while LC10a (19 left, 3 right), PVLP020, AOTU025 and LC11 (42 left, 7 right) each push left by +0.045 to +0.126. Its near-symmetric output is partly a balance of opposite sampling asymmetries, not a symmetric circuit. A cap that samples both sides evenly is an obvious next experiment.
+In the steering circuit the same scan finds larger effects that cancel: silencing LC9 (63 left, 77 right) shifts the turn by −0.144, while LC10a (19 left, 3 right), PVLP020, AOTU025 and LC11 (42 left, 7 right) each push left by +0.045 to +0.126. Its near-symmetric output is partly a balance of opposite sampling asymmetries, not a symmetric circuit. [Side-balanced circuits](#side-balanced-circuits) test this.
+
+### Side-balanced circuits
+
+`fafb783-dna02-balanced` and `fafb783-steering-balanced` (v0.6) rebuild the two committed circuits with the same seeds, hops, threshold and cap, but with `--balance-sides`, which applies the cap per cell type and side ([the rule](#building-your-own-circuits)): `build --name fafb783-dna02-balanced --seeds DNa02 --cap 3000 --balance-sides --committed`, and the steering seeds with `--cap 4000`. They answer one question about these models: how much of each circuit's side bias comes from the cap sampling cell types unevenly? The original circuits are unchanged and remain the defaults.
+
+| | DNa02 circuit | Balanced | Steering circuit | Balanced |
+| --- | --- | --- | --- | --- |
+| Neurons | 3,000 | 3,000 | 4,000 | 3,999 |
+| Cell types | 1,257 | 1,056 | 1,650 | 1,438 |
+| Visual projection inputs, left / right | 250 / 227 | 274 / 276 | 345 / 304 | 335 / 338 |
+| Cell types with neurons on a side, and how many of them are uneven | 1,252; 458 | 1,048; 37 | 1,636; 597 | 1,414; 87 |
+| LC10a, LC10c, left / right | 51 / 29, 35 / 19 | 43 / 43, 23 / 23 | 19 / 3, 12 / 7 | 12 / 12, 10 / 10 |
+| Unpaired neurons dropped at hop 2 | — | 2,769 | — | 4,469 |
+
+Every cell type still uneven in a balanced circuit has neurons among the seeds' direct partners, which are always kept. Balancing drops types found on one side only from the trimmed hop, so the balanced circuits have fewer cell types; a balanced sample is a different assumption about which neurons matter, not a more complete one. In the whole brain these visual projection types are close to even (LC10a 115 / 119, LC10c 101 / 102), so the uneven counts of the original circuits come from the cap.
+
+Open loop (`scripts/toolkit.py bias`; rate: 500 ms; spiking: 800 ms, averaged over the last 400 ms, seed 1; positive turns are rightward):
+
+| Circuit and dynamics | Turn with equal input 0.5 / 0.5 | Turn, input 0.3 / 0.7 (target right) | Turn, input 0.7 / 0.3 (target left) | Mirror asymmetry |
+| --- | --- | --- | --- | --- |
+| DNa02 circuit, rate | −0.179 | −0.025 | −0.240 | 1.07 |
+| DNa02 balanced, rate | −0.082 | +0.093 | −0.206 | 0.62 |
+| Steering circuit, rate | +0.026 | +0.440 | −0.368 | 0.15 |
+| Steering balanced, rate | +0.148 | +0.554 | −0.223 | 0.56 |
+| DNa02 circuit, spiking | −0.683 | −0.483 | −0.929 | 1.24 |
+| DNa02 balanced, spiking | −0.188 | +0.192 | −0.399 | 0.45 |
+| Steering circuit, spiking | −2.02 | −0.40 | −1.91 | 1.07 |
+| Steering balanced, spiking | −0.917 | +0.569 | −0.689 | 0.57 |
+
+With the target held at each bearing (`scripts/toolkit.py readouts --set circuit=fafb783-dna02-balanced`), the balanced DNa02 circuit's DNa02 R − L is −0.198 (45° left), −0.247 (90° left), −0.071 (ahead), +0.065 (45° right) and +0.168 (90° right): it now turns toward the target at all four lateral bearings, where the original turned away from a target 45° to the right, but still turns left with the target ahead.
+
+What this shows about these models:
+
+- **The DNa02 circuit's left bias is partly the cap's sampling.** Balancing reduces its equal-input turn from −0.179 to −0.082 (rate dynamics) and its mirror asymmetry from 1.07 to 0.62, and with input 0.3 / 0.7 and 0.7 / 0.3 it then turns toward the stronger side. It does not remove the bias: equal input still turns left at every level, and at a mean input of 0.75 even 0.55 / 0.95 gives no right turn (−0.001). Run on the balanced circuit, `scripts/toolkit.py ablation` ranks the same types first, now with equal numbers on both sides: AOTU025 (1 / 1, +0.048), LC10c (23 / 23, +0.023) and LC10a (43 / 43, +0.022) still push the turn left, because their left and right neurons connect differently. The whole-brain circuit, which has no cap at all, turns left with equal input too (−0.171).
+- **The steering circuit's near-symmetry was a cancellation.** Balanced, it turns right with equal input (+0.148) and its mirror asymmetry rises from 0.15 to 0.56. With spiking dynamics, both balanced circuits turn toward the stronger side for inputs 0.3 / 0.7 and 0.7 / 0.3, which neither original does ([how robust that is](#how-sensitive-is-a-result-to-the-modelling-assumptions)).
+
+Closed loop, toy body, the evaluation's targets (6 bearings × 12 and 30 mm × seeds 1–5, 10 simulated seconds, rate dynamics; `scripts/toolkit.py trials --set neural_model=connectome --vary connectome_parameters.circuit=…`):
+
+| Circuit | Reached ≤2 mm (95% CI) | First turn toward lateral targets | Median final distance | Mean final distance, 12 mm targets | Mean speed |
+| --- | --- | --- | --- | --- | --- |
+| DNa02 circuit | 0/60 (0–6%) | 40/40 | 8.5 mm | 7.5 mm | 5.9 mm/s |
+| DNa02 balanced | 10/60 (9–28%) | 40/40 | 2.9 mm | 2.9 mm | 5.9 mm/s |
+| Steering circuit | 57/60 (86–98%) | 40/40 | 3.8 mm | 3.8 mm | 6.1 mm/s |
+| Steering balanced | 60/60 (94–100%) | 40/40 | 1.9 mm | 1.8 mm | 6.0 mm/s |
+
+Paired over the same seeds and targets, balancing changes reaching by +0.17 (95% bootstrap interval +0.08 to +0.27) and the final distance by −3.7 mm (−6.2 to −0.5) for the DNa02 circuit, and by +0.05 (0.00 to +0.12) and −2.4 mm (−4.0 to −1.3) for the steering circuit. The balanced DNa02 circuit still settles into a clockwise orbit with the target about 90° to its right, 2.9 mm from it instead of the original's 7.5 mm; it counts as reaching only the 12 mm targets 45° and 90° to the left (5 seeds each), which it passes within 2 mm of on the way into that orbit.
+
+With spiking dynamics, a shorter check (targets 45° and 90° to each side at 12 mm, seeds 1–3, 10 simulated seconds, 12 trials per circuit) gives: the balanced DNa02 circuit reaches all 12 targets within 1.9–2.3 s and then circles them 1.0–2.6 mm away (the original reaches none; mean final distance 22.9 mm); the balanced steering circuit reaches 8 of 12 within 1.6–1.8 s and then walks away from them (final distances 35–56 mm), where the original reaches none (16.5 mm). With 12 trials each the intervals are wide (reaching 76–100% and 39–86%).
+
+These are properties of two samplings of one female brain's wiring under this model's assumed signs and engineered input and output. That balancing improves reaching here says that the cap's uneven sampling hurt these circuits; it says nothing about whether flies' steering circuits are symmetric.
 
 ### The steering circuit
 
@@ -383,6 +438,7 @@ toolkit.ablation_scan(toolkit.ConnectomeParameters(), mode="activate", value=.6,
 - **bias** clamps the sensors and reports turn commands and the mirror test. **ablation** silences each cell type in turn; `--types A,B` or a repeated `--type` (for names with commas, such as `--type "AOTU018,AOTU031"`) limits the scan, and unknown names are refused before it starts. `--mode scale --value S` multiplies each type's output by S (0–2) instead, and `--mode activate --value V` drives it: V Hz of Poisson input per neuron in spiking dynamics, a rate clamped at V (0–1) in rate dynamics (see [Interventions](#interventions)). `--side left` or `right` manipulates one side only and skips types with no neurons there (a named type without them is refused). For these modes the change is reported as a shift of the turn command (positive = rightward); the default scan's numbers are unchanged. A type whose run fails becomes a row with an `error` text, the rest of the scan goes on, and the command exits with an error after saving. Both accept `--average-ms` to average spiking output.
 - **paths** lists the strongest cell-type paths between two types. A step's strength is the share of the target type's input synapses that comes from the source type; a path multiplies its steps, and its sign multiplies the assumed signs. The same tracing is in the live circuit view.
 - **jump** records and exports a run whose target jumps to a random side every `--every` seconds (`toolkit.jumping_target_run`), for **compare**, which fits turning to readout activity in a recording or a run; see below.
+- **readouts** prints [what the circuits compute](#what-the-circuits-compute): each readout type's right − left activity and the turn command for a target held still at fixed bearings (`robustness.readout_table` in Python). **robustness** reruns the open-loop analyses, and optionally short reach trials, under several modelling assumptions; see the next section.
 
 **Failures, resuming and provenance.** A trial that raises (a FlyGym body that becomes numerically unstable, a worker process that dies) becomes a row with its settings, its whole configuration and an `error` text; the other trials carry on. `trials` appends every finished trial to `<out>.jsonl` and `<out>.csv` as it completes, then rewrites the CSV in trial order and writes the JSON report at the end, exiting with an error if any trial failed. `--resume` with the same `--out` skips the trials already saved without an error, matched by a hash of the validated configuration, `run_trial`'s settings and the circuit file's SHA-256 (so a rebuilt circuit runs again). `toolkit.TrialLog` does the same from Python (example above), and `scripts/evaluate_models.py` streams its trials to the report's `.jsonl` and `.csv` the same way and takes `--resume`. Every saved report (`trials`, `bias`, `ablation`, `paths`, `jump`, `compare`, and `scripts/evaluate_models.py`) has a `provenance` block: git commit and whether the working tree had changes, the command line, each circuit's name and SHA-256, Python, the platform and package versions. Trial rows also carry `circuit_sha256`.
 
@@ -393,6 +449,38 @@ Parallel workers use separate processes (`spawn`), so call the Python functions 
 **Long trials.** Trials keep no per-sample recording (`Experiment(config, render=False, record=False)` from `digitalfly.simulation.experiment`), so they have no length limit: the app's recording limit (30,000 samples, 300 simulated seconds) does not apply. Recording does not feed back into the simulation, so the numbers are identical to a recorded run's. An experiment you pass to `run_trial` yourself keeps its own setting, and a recording one is checked against the limit before the trial starts. `jumping_target_run` (and `jump`) exports its run, so it needs the recording: it accepts at most 299.99 s and says so before running.
 
 **Motor clipping.** Connectome trial rows carry `motor_clipped_fraction`, the fraction of control intervals whose motor command left [0, 1] and was clipped (an engineered diagnostic; see [Output mapping](#output-mapping)). `trials` prints its mean over the connectome trials. A clipped command no longer follows the readout, so a large fraction means the output gain or the spiking calibration saturates the body's turning.
+
+### How sensitive is a result to the modelling assumptions?
+
+Every number in this guide comes from one choice of assumptions that the data do not settle: the sign rule, the synapse threshold, how readout types are pooled and weighted, rate or spiking dynamics, which neurons the cap kept, the random seed. `scripts/toolkit.py robustness` (v0.6) reruns an analysis under every combination of chosen values and reports which qualitative conclusions survive:
+
+```sh
+backend/.venv/bin/python scripts/toolkit.py robustness --set circuit=fafb783-dna02 --analyses bias,readouts
+backend/.venv/bin/python scripts/toolkit.py robustness --set circuit=fafb783-steering --vary readout_pool=sum,mean \
+    --vary 'readout_weights=[null,{"DNa02":2},{"DNp09":0.5}]' --analyses bias,readouts
+backend/.venv/bin/python scripts/toolkit.py robustness --vary circuit=fafb783-steering,fafb783-steering-balanced \
+    --vary dynamics=rate,spiking --analyses bias,readouts,reach --workers 2
+```
+
+- **Assumptions.** `--vary NAME=V1,V2` takes any `ConnectomeParameters` field (dotted for spiking constants, such as `spiking.rate_scale_hz`; a JSON list for lists and objects), including `circuit`, for example a circuit and its balanced version, plus `seed`. Without `--vary` the grid is the transmitter rule (`other_transmitters`: excluded, excitatory) × synapse threshold (5, 10, 20) × dynamics (rate, spiking): 12 variants. The first value of every axis makes up the baseline, variant 0, so list the default first. `--set` fixes other parameters.
+- **Analyses** (`--analyses`, default `bias`): `bias`, the bias curve and mirror test (clamped 500 ms; spiking 800 ms averaged over the last 400 ms); `readouts`, the turn for a target held 12 mm away at 45° and 90° to each side and ahead (600 ms; spiking as for `bias`); `reach`, toy-body trials toward targets 45° and 90° to each side at 12 mm, seeds 1–3 (`--reach-seeds`), 5 simulated seconds each (`--reach-duration`). `--seed` (default 0) seeds the open-loop spiking analyses; a `seed` axis does that per variant and is then that variant's only reach seed.
+- **Conclusions** are categories: the direction of each turn command (left, right, or none within ±0.01, `--tolerance`), whether moving the target off the midline shifts the turn toward the target's side, and for `reach` the share of trials that end within 2 mm and of first turns toward the target (none, some for at most half, most, all). Each is compared with the baseline's: the survival table gives the number of variants that agree, the ones that differ and, when exactly the variants with one axis value differ, that value.
+- **Output and failures** work as for `trials`: a Markdown table of every variant's numbers and the survival table; JSON with provenance, CSV, and a JSONL file appended as each variant finishes. A variant that fails becomes an error row, is left out of the comparison and makes the command exit with an error; `--resume` with the same `--out` reruns only the missing or failed variants. `--workers` evaluates variants in parallel processes. From Python: `robustness.variants`, `robustness.run`, `robustness.survival`.
+
+What it found (the commands above and in [docs/evidence](evidence/README.md#toolkit-analyses); spiking variants use seed 0 unless seeds are varied):
+
+| Circuit and assumptions varied | Variants | Survive in every variant | Do not survive |
+| --- | --- | --- | --- |
+| DNa02 circuit; sign rule × threshold × dynamics | 12 | Left turn with equal input, and with the target on either side (0.3 / 0.7 and 0.7 / 0.3); left turn for targets 45° and 90° left, ahead and 45° right | Right turn for a target 90° right (9 of 12: two spiking variants turn left, one is within the tolerance); the shift toward the target's side (8 of 12) |
+| Steering circuit; sign rule × threshold × dynamics | 12 | Left turn for a target 90° left | Right turn with equal input (8 of 12: spiking at thresholds 5 and 10 turns left); right turn with the target on the right (9 of 12: three spiking variants turn left); left turn with the target on the left (10 of 12: spiking at threshold 20 turns right); left turn for a target 45° left (8 of 12: not at threshold 20); the shift toward the target's side (7 of 12) |
+| Steering circuit, spiking; seeds 1–5 | 5 | Left turn with equal input and with the target on either side (with the target on the right, seed 5 gives −0.010, at the edge of the tolerance); left turn for targets 45° and 90° left, ahead and 90° right; no shift toward the target's side | Left turn for a target 45° right (4 of 5: seed 5 gives +0.056) |
+| Steering circuit; readout pooling (sum, mean) × weights (equal, DNa02 × 2, DNp09 × 0.5) | 6 | Turns toward targets on either side, in both the bias test and the held-target test; the shift toward the target's side | Right turn with equal input (1 of 6) and with the target ahead (2 of 6): doubling DNa02 or halving DNp09 turns it left, and mean pooling divides the equal-input +0.026 by three, to +0.009, inside the tolerance |
+| DNa02 circuit and its balanced version × rate, spiking; with reach trials | 4 | Left turn with equal input and with the target on the left; left turn for targets 45° and 90° left and ahead; the shift toward the target's side | Left turn with the target on the right (2 of 4: both balanced variants turn right, toward it); left turn for a target 45° right (3 of 4: the balanced circuit with rate dynamics turns right); right turn for a target 90° right (3 of 4: the original with spiking dynamics is within the tolerance); reaching no target (2 of 4: in 5 s the balanced circuit reaches 6 of 12 with rate and 12 of 12 with spiking dynamics); a first turn toward every lateral target (3 of 4: the original with spiking dynamics, 9 of 12) |
+| Steering circuit and its balanced version × rate, spiking; with reach trials | 4 | Left turn with the target on the left; left turn for a target 45° left | With spiking dynamics, in both versions: left turn with equal input, with the target ahead and for a target 90° right; no shift toward the target's side; fewer targets reached (0 and 8 of 12, against 12 of 12 for both with rate dynamics) and fewer first turns toward them (6 and 11 of 12). Only the original with spiking dynamics turns left with the target on the right and for a target 45° right; only the balanced one turns right for a target 90° left |
+
+With rate dynamics the steering circuit and its balanced version agree on every conclusion, reaching included; with spiking dynamics neither keeps them, so for that circuit the dynamics matter more than the sampling. For the DNa02 circuit, balancing is what makes it turn right with input 0.3 / 0.7, under both dynamics. In the open-loop bias test both balanced circuits turn toward a target on either side with spiking dynamics at seeds 0 and 1, but with the target held 90° to either side the balanced steering circuit with spiking dynamics turns away from it (seed 0).
+
+With rate dynamics the transmitter rule changes these turn commands by at most 0.008; with spiking dynamics it changes the spike trains too, and the turns by up to 0.21 (DNa02 circuit) and 0.47 (steering circuit). The threshold and the dynamics matter most. Two cautions follow from the tables. A category near zero depends on the tolerance as much as on the model, as mean pooling shows. And "survives" means only that the conclusion held under the assumptions varied, on the same wiring and the same engineered input and output: it is a statement about this model's stability, not evidence about flies. A result that changes under one of these assumptions should be reported with the assumption it needs.
 
 ### Comparing with real flies
 
@@ -478,7 +566,7 @@ With the target directly behind, the engineered model's left and right inputs ar
 - **Signs** come from per-neuron transmitter predictions. Glutamate is treated as inhibitory although it can excite; neuromodulators are left out by default; electrical synapses are absent.
 - **Dynamics.** The rate model is one leaky-rate rule with a single gain, time constant and rectification. The spiking model uses Shiu et al.'s single set of constants for every neuron, with no adaptation, receptor kinetics or neuromodulation, and forward-Euler integration rather than Brian2's exact linear integration.
 - **Input and output.** Every input neuron on a side gets the same value, whatever its visual feature (with FlyVis eyes, an unsigned drive through the bridge). Turning is an equal-weight sum over the readout types unless weights are set, and forward drive is a tonic term. The nerve cord and the body's other descending neurons are not modeled.
-- **Sampling.** The cap keeps neurons by path strength, which can sample a cell type unevenly between the sides.
+- **Sampling.** The cap keeps neurons by path strength, which can sample a cell type unevenly between the sides. `--balance-sides` keeps a type's two sides in pairs instead; that is another sampling assumption, not a correction (see [side-balanced circuits](#side-balanced-circuits)), and `scripts/toolkit.py robustness` shows which results depend on such choices.
 - **Sides** follow FlyWire's annotations; FAFB is a single female brain, and individual flies differ.
 - **The side biases** are properties of these models on this wiring; they are not known to describe flies.
 
