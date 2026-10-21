@@ -1,6 +1,6 @@
 import type {RefObject} from 'react';
 import {ChevronDown, Expand, LoaderCircle, Pause, Play, RotateCcw, SkipForward} from 'lucide-react';
-import type {Command, Sample, State, Stimulus} from '../types';
+import type {Command, Sample, State, StimulusChange} from '../types';
 import {fmt} from '../format';
 import {modelDrivers, modelNames, modelPhrases, slowdownNote} from '../models';
 import {Arena} from './Arena';
@@ -36,7 +36,7 @@ export function WorldPanel({
   effectiveView: WorldView;
   setView: (view: WorldView) => void;
   viewportRef: RefObject<HTMLDivElement | null>;
-  moveTarget: (target: Partial<Stimulus>) => void;
+  moveTarget: (change: StimulusChange) => void;
   reset: () => void;
   seed: number;
   setSeed: (seed: number) => void;
@@ -108,7 +108,7 @@ export function WorldPanel({
             <small>
               {effectiveView === 'specimen'
                 ? 'NeuroMechFly body · actual physics render'
-                : 'Measured position · click the map to place a target'}
+                : 'Measured position · click the map or use arrow keys to move the target'}
             </small>
           </div>
           <button

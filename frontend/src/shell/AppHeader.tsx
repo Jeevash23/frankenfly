@@ -1,9 +1,7 @@
 import {CircleHelp, Power} from 'lucide-react';
 import {FlyMark} from './FlyMark';
 import {tabKeys} from '../keys';
-
-export type Page = 'workbench' | 'atlas' | 'experiments';
-const PAGES: readonly Page[] = ['workbench', 'atlas', 'experiments'];
+import {PAGES, type Page} from '../route';
 
 export function AppHeader({
   page,
@@ -26,12 +24,7 @@ export function AppHeader({
 }) {
   return (
     <header className="app-header">
-      <a
-        href="#"
-        onClick={() => setPage('workbench')}
-        className="brand"
-        aria-label="DigitalFly home"
-      >
+      <a href="#/workbench" className="brand" aria-label="DigitalFly home">
         <span className="brand-mark">
           <FlyMark />
         </span>

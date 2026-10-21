@@ -72,6 +72,7 @@ export const noInterventions: Intervention = {
   silence: 'none',
   silence_dna02: 'none',
   silence_types: [],
+  cell_types: [],
 };
 
 // The reset that switches models. FlyVis eyes drive only the connectome model's visual neurons, so
@@ -167,16 +168,29 @@ export function conditionsFor(
       );
 }
 
-// Mirrors the server's comparison rules so problems read as plain sentences.
+// Built-in conditions per comparison, and conditions in all, built-in and custom together.
+export const MAX_BUILT_IN = 4;
+export const MAX_CONDITIONS = 6;
+
+// A trial's condition for display: a built-in condition's name, or a custom condition's label.
+export function conditionName(condition: string): string {
+  return conditionNames[condition as Condition] ?? condition;
+}
+
+// Mirrors the server's comparison rules so problems read as plain sentences. `custom` is the
+// number of custom conditions, which count towards the limit and may stand alone.
 export function conditionProblem(
   conditions: Condition[],
   model: NeuralModel,
   cellType: string,
   hasDNa02 = true,
   sensor: Config['sensor_model'] = 'geometric',
+  custom = 0,
 ): string | null {
-  if (!conditions.length) return 'Select at least one condition.';
-  if (conditions.length > 4) return 'Choose at most four conditions.';
+  if (!conditions.length && !custom) return 'Select at least one condition.';
+  if (conditions.length > MAX_BUILT_IN) return 'Choose at most four built-in conditions.';
+  if (conditions.length + custom > MAX_CONDITIONS)
+    return `A comparison has at most ${MAX_CONDITIONS} conditions, built-in and custom together.`;
   const allowed = conditionsFor(model, hasDNa02, sensor);
   const other = conditions.find((c) => !allowed.includes(c));
   if (other)
@@ -229,4 +243,11 @@ export function groupIndex(group: TraceGroup, readouts: number): number {
   if (group.startsWith('readout:')) return 2 * Number(group.slice(8));
   if (group === 'input') return 2 * readouts;
   return {sensory: 0, steering: 2, descending: 4, types: 0}[group as 'sensory'] ?? 0;
+}
+
+// A warning when the connectome model's motor command is clipped most of the time, or null.
+export const CLIPPING_WARNING = 0.5;
+export function clippingNote(fraction: number | null | undefined): string | null {
+  if (fraction === undefined || fraction === null || !(fraction > CLIPPING_WARNING)) return null;
+  return `The motor command was clipped to its range in ${Math.round(fraction * 100)}% of control intervals, so turning is saturated: the legs follow the sign of the turn, not its size.`;
 }

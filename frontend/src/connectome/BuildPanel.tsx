@@ -5,6 +5,8 @@ import type {Pending} from '../useSimulation';
 import {configForCircuit} from '../models';
 import {buildProblem, defaultBuild, suggestTypes, type BuildRequest} from './build';
 import {invalidateCircuits, useCircuitList} from './useCircuit';
+import {clearDraft, DRAFT_KEYS, loadDraft, readBuildDraft} from '../localDrafts';
+import {useLocalDraft} from '../useLocalDraft';
 import './connectome.css';
 
 type Catalog = {
@@ -65,8 +67,11 @@ export function BuildPanel({
 }) {
   const {catalog, missing} = useCatalog();
   const {circuits, refresh} = useCircuitList();
-  const [request, setRequest] = useState<BuildRequest>(defaultBuild);
-  const [seedDraft, setSeedDraft] = useState('');
+  // The form survives page switches and reloads until the build starts.
+  const [draft] = useState(() => loadDraft(DRAFT_KEYS.build, readBuildDraft));
+  const [request, setRequest] = useState<BuildRequest>(draft?.request ?? defaultBuild);
+  const [seedDraft, setSeedDraft] = useState(draft?.seedDraft ?? '');
+  useLocalDraft(DRAFT_KEYS.build, {request, seedDraft});
   const [status, setStatus] = useState<BuildStatus>({status: 'idle', log: []});
   const names = useMemo(() => catalog?.cell_types.map((c) => c.cell_type) ?? [], [catalog]);
   const known = useMemo(() => (catalog ? new Set(names) : null), [catalog, names]);
@@ -117,6 +122,7 @@ export function BuildPanel({
     if (pending['connectome/build']) return;
     const result = await command('connectome/build', request);
     if (result) {
+      clearDraft(DRAFT_KEYS.build);
       if (result.status === 'running') followed = result.name ?? request.name;
       setStatus(result);
     }

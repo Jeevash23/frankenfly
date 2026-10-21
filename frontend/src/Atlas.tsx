@@ -15,6 +15,8 @@ import type {Command, State} from './types';
 import {fmt} from './format';
 import {glowColor} from './connectome/layout';
 import {useCircuit} from './connectome/useCircuit';
+import {clearDraft, DRAFT_KEYS, loadDraft, readConnectivityDraft} from './localDrafts';
+import {useLocalDraft} from './useLocalDraft';
 
 type Neuron = {
   id: string;
@@ -558,12 +560,15 @@ type GraphData = {
   };
 };
 export function ConnectivityPanel({command, disabled}: {command: Command; disabled: boolean}) {
+  // The dataset on screen, the search and the threshold survive page switches and reloads.
+  const [draft] = useState(() => loadDraft(DRAFT_KEYS.connectivity, readConnectivityDraft));
   const [data, setData] = useState<GraphData | null>(null);
   const [datasets, setDatasets] = useState<{key: string; provenance: Record<string, string>}[]>([]);
   const [selected, setSelected] = useState('');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(draft?.search ?? '');
   const [error, setError] = useState('');
-  const [threshold, setThreshold] = useState(1);
+  const [threshold, setThreshold] = useState(draft?.threshold ?? 1);
+  useLocalDraft(DRAFT_KEYS.connectivity, {key: data?.key ?? draft?.key ?? '', threshold, search});
   const refresh = () =>
     fetch('/api/connectivity')
       .then((r) => {
@@ -577,6 +582,7 @@ export function ConnectivityPanel({command, disabled}: {command: Command; disabl
       .catch((e) => setError(e.message));
   useEffect(() => {
     void refresh();
+    if (draft?.key) void load(draft.key, true);
   }, []);
   const importFile = async (file: File) => {
     try {
@@ -587,26 +593,37 @@ export function ConnectivityPanel({command, disabled}: {command: Command; disabl
       if (result) {
         setData(result);
         setSelected('');
+        setSearch('');
+        setThreshold(1);
         void refresh();
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unable to read this JSON file.');
     }
   };
-  const load = async (key: string) => {
+  // `restoring` reopens the dataset of an earlier visit, keeping its search and threshold, and
+  // forgets it quietly when it is gone.
+  async function load(key: string, restoring = false) {
     try {
-      const response = await fetch(`/api/connectivity/${key}`);
-      if (!response.ok)
+      const response = await fetch(`/api/connectivity/${encodeURIComponent(key)}`);
+      if (!response.ok) {
+        if (restoring) return clearDraft(DRAFT_KEYS.connectivity);
         throw Error(
           'The selected dataset could not be loaded. Its file may have been moved or deleted.',
         );
+      }
       setData(await response.json());
       setSelected('');
+      if (!restoring) {
+        setSearch('');
+        setThreshold(1);
+      }
       setError('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'The selected dataset could not be loaded.');
+      if (!restoring)
+        setError(e instanceof Error ? e.message : 'The selected dataset could not be loaded.');
     }
-  };
+  }
   const nodes = data?.graph.nodes ?? [];
   const visible = nodes.filter((n) =>
     [n.id, n.label, n.cell_type].some((v) => v.toLowerCase().includes(search.toLowerCase())),

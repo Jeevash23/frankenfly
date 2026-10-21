@@ -39,6 +39,7 @@ test('switching models starts clean and keeps the rest of the configuration', ()
     silence: 'none',
     silence_dna02: 'none',
     silence_types: [],
+    cell_types: [],
   });
   assert.match(modelDrivers.connectome, /data-derived.*assumed.*engineered/);
   assert.equal(normalizeModel('connectome_dna02'), 'connectome'); // runs recorded with v0.3
