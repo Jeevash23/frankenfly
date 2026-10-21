@@ -130,6 +130,15 @@ curl -X POST -H 'Content-Type: application/json' -d '{"share_safe": true}' http:
 
 The API also lists saved runs page by page (`GET /api/runs?offset=0&limit=100&include_empty=true`; the `X-Total-Count` header gives the total) and deletes one with `DELETE /api/runs/FOLDER_NAME`, which removes its folder and ZIP. The run being recorded cannot be deleted until you Reset.
 
+The list takes filters, all optional and combined: `model=engineered` or `connectome`, `circuit=NAME` (connectome runs on that circuit), `batch=COMPARISON_ID`, `tag=TAG` and `q=TEXT` (found, ignoring case, in the run's folder name, notes or comparison condition); `X-Total-Count` then counts the matching runs. Each run lists its `tags`, `notes`, `batch_id` and `condition`. To tag a run or write notes on it:
+
+```sh
+curl -X PATCH -H 'Content-Type: application/json' -d '{"tags": ["pilot"], "notes": "Target hidden at 2 s"}' \
+  http://127.0.0.1:8000/api/runs/YOUR_RUN_FOLDER
+```
+
+Up to 10 tags of up to 24 letters, digits, spaces, `_` or `-` each, and up to 2,000 characters of notes; a field you leave out keeps its value. They are saved in the run's `annotations.json`; its `metadata.json` never changes. `GET /api/batches/COMPARISON_ID/summary` summarizes a comparison's saved trials: for each condition, the mean, standard deviation and 95% interval of final target distance, path length, net turn and mean speed and, for runs saved since v0.6, the fraction that came within 2 mm of the target; then the differences from the first condition over trials with the same seed. Add `?format=csv` for a table. Trials saved unfinished are left out and counted.
+
 Exporting runs beside the simulation, so the fly, the display and other commands keep going while a long run is written; the export answers once its files are complete. With the connectome model, `"record_activity": "types"` in the configuration you reset with (`POST /api/reset`) also saves `activity_types.npz`, every cell type's mean activity at each control step ([signal definitions](RESEARCH.md#exported-signals)).
 
 ```sh

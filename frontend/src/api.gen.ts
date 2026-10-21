@@ -306,6 +306,16 @@ export interface BatchRequest {
   max_speed?: boolean;
 }
 
+export interface BatchSummary {
+  batch_id: string;
+  n_trials: number;
+  partial_trials: number;
+  reach_mm: number;
+  conditions: ConditionSummary[];
+  paired: PairedDifference[];
+  methods: Record<string, string>;
+}
+
 export interface BuildRequest {
   name: string;
   seeds: string[];
@@ -327,6 +337,12 @@ export interface CellTypeInterventionInput {
   side?: 'both' | 'left' | 'right';
   mode: 'silence' | 'scale' | 'activate';
   value?: number;
+}
+
+export interface ConditionSummary {
+  condition: string;
+  n: number;
+  metrics: Record<string, MetricSummary>;
 }
 
 export interface ConnectivityGraph {
@@ -408,11 +424,26 @@ export interface InterventionsInput {
   cell_types?: CellTypeInterventionInput[];
 }
 
+export interface MetricSummary {
+  mean: number | null;
+  sd: number | null;
+  ci95: [number, number] | null;
+}
+
 export interface NeuralParametersInput {
   sensory_gain?: number;
   steering_gain?: number;
   tonic_drive?: number;
   time_scale?: number;
+}
+
+export interface PairedDifference {
+  condition: string;
+  baseline: string;
+  metric: string;
+  mean_diff: number | null;
+  ci95: [number, number] | null;
+  n_pairs: number;
 }
 
 export interface PresetRequest {
@@ -433,6 +464,25 @@ export interface ProtocolInput {
   events?: ProtocolEventInput[];
 }
 
+/** The latest replay check of a saved run (its replay.json). */
+export interface ReplayVerdict {
+  ok: boolean;
+  max_abs_error: number;
+  tolerance: number;
+  checked: string;
+  same_software: boolean;
+  message: string;
+}
+
+/**
+ * A researcher's tags and notes on a saved run, kept in its annotations.json; metadata.json never changes.
+ * As a PATCH body, only the fields given are changed.
+ */
+export interface RunAnnotations {
+  tags?: string[];
+  notes?: string;
+}
+
 export interface RunConfigInput {
   engine?: 'flygym' | 'toy';
   seed?: number;
@@ -446,6 +496,29 @@ export interface RunConfigInput {
   initial_interventions?: InterventionsInput;
   protocol?: ProtocolInput | null;
   record_activity?: 'none' | 'types';
+}
+
+/** A saved run in the library. Older runs may lack configuration fields and metrics added since. */
+export interface RunItem {
+  key: string;
+  run_id: string;
+  created_utc: string;
+  config: RunConfigInput;
+  samples: number;
+  metrics: RunMetrics;
+  trial: TrialRecord | null;
+  error: string | null;
+  provenance: Record<string, string>;
+  download_url: string;
+  batch_id: string | null;
+  condition: string | null;
+  tags: string[];
+  notes: string;
+  verified: ReplayVerdict | null;
+}
+
+export interface RunPage {
+  runs: RunItem[];
 }
 
 export interface Shutdown {
@@ -474,6 +547,18 @@ export interface StimulusInput {
 
 export type StrictModel = Record<string, never>;
 
+/** A comparison trial, as saved in its run's metadata.trial. */
+export interface TrialRecord {
+  batch_id: string;
+  condition: string;
+  seed: number;
+  index: number;
+  total: number;
+  neural_model?: 'engineered' | 'connectome';
+  cell_type?: string | null;
+  partial?: boolean;
+}
+
 /** The JSON body each command takes. */
 export interface RequestBodies {
   'POST /api/batch/cancel': StrictModel;
@@ -489,6 +574,7 @@ export interface RequestBodies {
   'POST /api/pause': StrictModel;
   'POST /api/reset': RunConfigInput;
   'POST /api/run': StrictModel;
+  'PATCH /api/runs/{key}': RunAnnotations;
   'POST /api/runs/{key}/replay': StrictModel;
   'POST /api/shutdown': Shutdown;
   'POST /api/speed': Speed;
@@ -497,4 +583,8 @@ export interface RequestBodies {
 }
 
 /** Responses with a documented shape. */
-export interface Responses {}
+export interface Responses {
+  'GET /api/batches/{batch_id}/summary': BatchSummary;
+  'GET /api/runs': RunPage;
+  'PATCH /api/runs/{key}': RunItem;
+}
