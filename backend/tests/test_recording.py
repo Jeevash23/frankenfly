@@ -207,7 +207,7 @@ def test_export_records_dependencies_and_lock_hashes(tmp_path):
     for name in ["torch", "torchvision", "flyvis"]:
         assert (name in dependencies) == (find_spec(name) is not None)
     locks = sorted((ROOT / "backend").glob("requirements*.lock"))
-    assert len(locks) == 3
+    assert {"requirements.lock", "requirements-data.lock", "requirements-vision.lock"} <= {p.name for p in locks}
     assert metadata["lockfiles"] == {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in locks}
 
 
