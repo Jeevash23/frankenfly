@@ -84,7 +84,17 @@ Charts use simulated time and freeze during Pause. Sensor readouts can update wh
 
 ## Saved runs and replay
 
-Exports are written only inside `runs/`; the app never accepts a destination path. Every export includes the initial configuration, final state, dependency versions, neural weights, units, time steps, and every event stamped with its control step. Recording stops at 30,000 samples (about 300 simulated seconds) or 10,000 events rather than silently dropping the start of a run.
+Exports are written only inside `runs/`; the app never accepts a destination path. Every export includes the initial configuration, final state, dependency versions and the SHA-256 of each `backend/requirements*.lock`, neural weights, units, time steps, and every event stamped with its control step; FlyVis-eye runs add the FlyVis release, network and checkpoint hash, and the bridge file with its hash. An export is written into a hidden folder in `runs/` and renamed into place only when complete, so an interrupted export never appears in the run library.
+
+Recording keeps every sample from Reset, up to 30,000 (about 300 simulated seconds), rather than silently dropping the start of a run. At that limit the run pauses with a note in the session log; it stays valid and exports normally, and Reset starts a new one. Up to 10,000 manual input changes (target, interventions and parameters) are recorded; after that, further changes are refused until you export and reset. Run, Pause, Step, speed changes and exports never count, and repeated changes of one kind within the same 10 ms step, such as a slider dragged while paused, are saved as one event holding the final value, which is the only one the simulation used.
+
+To publish a run, export it share-safe: `POST /api/export` with the body `{"share_safe": true}` leaves out the operating-system string and replaces absolute paths with paths relative to the project (or `<local>`) and the computer's name with `<local>` in errors and log messages:
+
+```sh
+curl -X POST -H 'Content-Type: application/json' -d '{"share_safe": true}' http://127.0.0.1:8000/api/export
+```
+
+The API also lists saved runs page by page (`GET /api/runs?offset=0&limit=100&include_empty=true`; the `X-Total-Count` header gives the total) and deletes one with `DELETE /api/runs/FOLDER_NAME`, which removes its folder and ZIP. The run being recorded cannot be deleted until you Reset.
 
 ```sh
 backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER
@@ -101,6 +111,8 @@ backend/.venv/bin/python scripts/benchmark.py --vision
 
 ## Troubleshooting
 
+**Not sure what is wrong:** run `python3 scripts/doctor.py`. It checks Python and the project environment, that installed packages match `backend/requirements.lock`, Node and npm against `frontend/package.json`, whether the built interface is current, which OpenGL backends render, the optional FlyVis and circuit-builder installs, the cache folders, free disk space and port 8000. It prints one line per check with the command that fixes it, and changes nothing.
+
 **Port occupied:** the launcher stops with a message and never kills other processes. Stop your previous server with Ctrl+C, or start on another port with `--port 8001`. The development launcher needs both 8000 and 5173.
 
 **Stale or missing frontend:** run `npm --prefix frontend run build`. The launcher refuses to serve a build older than the frontend source. Restart the server after Python changes.
@@ -109,11 +121,13 @@ backend/.venv/bin/python scripts/benchmark.py --vision
 
 **macOS `invalid CoreGraphics connection`:** the process has no access to a graphics context, for example inside a restricted sandbox. Start from a normal terminal, or use geometric sensing with `--no-render`.
 
-**No usable renderer:** compound-eye vision needs a graphics context. Use geometric sensing with `--no-render` if graphics are unavailable.
+**No usable renderer:** compound-eye vision needs a graphics context. Without one, physics still runs with the labeled pose map and geometric sensing; `python3 scripts/doctor.py` shows which OpenGL backends work.
 
 **Body viewport disabled:** `--no-render` keeps the real physics and shows the labeled pose map instead. If the body itself fails to initialize, the app shows the error and keeps FlyGym selected; it never switches to the toy demo silently. The toy demo is always labeled **"Toy demo: a kinematic body, not FlyGym physics."**
 
-**Linux rendering:** in a desktop session MuJoCo's default GLFW context works. Without a display (SSH, containers), DigitalFly selects EGL automatically. To choose explicitly, start with `MUJOCO_GL=egl ./scripts/start.sh`, or `MUJOCO_GL=osmesa` if your system still ships OSMesa (recent Mesa releases do not). Setup never installs drivers or system packages.
+**Linux rendering:** unless you set `MUJOCO_GL`, DigitalFly tries MuJoCo's default GLFW when there is a display, then EGL, then OSMesa, each in a short test process, and uses the first that renders. A `MUJOCO_GL` you set is never overridden. When none works (a server or container without graphics libraries), physics still runs without the 3D view, compound-eye vision is unavailable, and the message says what to do: start with `--toy`; run under a virtual display with `MUJOCO_GL=glfw xvfb-run -a ./scripts/start.sh`; or install EGL or OSMesa (Debian/Ubuntu: `sudo apt install libegl1`, or `libosmesa6`; recent Mesa releases no longer ship OSMesa). Setup never installs drivers or system packages.
+
+**Scripting the running app:** the REST schema is at http://127.0.0.1:8000/api/openapi.json (OpenAPI 3.1). Open it in the browser, or save it with `curl -o openapi.json http://127.0.0.1:8000/api/openapi.json` and load the file in any OpenAPI viewer or client generator. The app serves no interactive documentation page: one would need scripts from a CDN, which its security policy blocks.
 
 **Connectome circuit unavailable:** the committed circuits are `data/circuits/fafb783-dna02.json` and `fafb783-steering.json`. If one is missing or edited, restore it from version control or rebuild it with `scripts/build_circuit.py` (see the [research guide](RESEARCH.md#building-the-subcircuit)). A local circuit that no longer loads appears in the circuit list with its error; delete or rebuild it.
 
