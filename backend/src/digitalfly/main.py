@@ -37,11 +37,27 @@ def validation_details(errors, prefix=()):
     return [{"location": [*prefix, *e["loc"]], "message": e["msg"], "type": e["type"]} for e in errors]
 
 
+def extra_origins(text: str | None) -> list[str]:
+    """DIGITALFLY_ALLOWED_ORIGINS: comma-separated browser origins, such as http://localhost:9000 for a
+    container published on another host port, allowed in addition to this computer's own. Each one's host
+    name is also accepted in the Host header. Off by default; see docs/INSTALL.md."""
+    origins = []
+    for item in filter(None, (part.strip().removesuffix("/") for part in (text or "").split(","))):
+        if not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:\d{1,5})?", item):
+            raise ValueError(f"DIGITALFLY_ALLOWED_ORIGINS: {item!r} is not an origin like http://localhost:9000 "
+                             "(scheme, host name and optional port; no path, no IPv6 literal)")
+        origins.append(item.lower())
+    return origins
+
+
 def create_app(config: RunConfig | None = None, render: bool = True):
+    extra = extra_origins(os.environ.get("DIGITALFLY_ALLOWED_ORIGINS"))
     worker = SimulationWorker(config, render)
     builds = BuildManager()
     port = int(os.environ.get("DIGITALFLY_PORT", "8000"))
-    allowed_origins = {f"http://{host}:{p}" for host in ["127.0.0.1", "localhost"] for p in [port, 5173]}
+    allowed_origins = {f"http://{host}:{p}" for host in ["127.0.0.1", "localhost"] for p in [port, 5173]} | set(extra)
+    allowed_hosts = list(dict.fromkeys(["127.0.0.1", "localhost", *(o.split("://")[1].split(":")[0] for o in extra)]))
+    connect_src = " ".join(["ws://127.0.0.1:*", "ws://localhost:*", *(o.replace("http", "ws", 1) for o in extra)])
 
     @asynccontextmanager
     async def lifespan(app):
@@ -57,7 +73,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                   openapi_url="/api/openapi.json")
     app.state.worker = worker
     app.state.shutdown_callback = None
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request, exc):
@@ -84,7 +100,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; frame-ancestors 'none'"
+        response.headers["Content-Security-Policy"] = f"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; connect-src 'self' {connect_src}; frame-ancestors 'none'"
         return response
 
     def stopped():

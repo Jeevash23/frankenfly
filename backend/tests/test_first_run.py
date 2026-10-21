@@ -118,12 +118,15 @@ def test_virtual_display_selects_glfw(tmp_path):
     assert out["geometric"]["rendering"] and out["vision"]["status"] == "paused", out
 
 
-def test_launcher_stops_cleanly_on_ctrl_c(tmp_path):
+@pytest.mark.parametrize("host", [[], ["--host", "0.0.0.0"]])
+def test_launcher_stops_cleanly_on_ctrl_c(tmp_path, host):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    launcher = subprocess.Popen([sys.executable, str(ROOT / "scripts/launch.py"), "--toy", "--dev", "--port", str(port)],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # Listening beyond loopback (as in the container image) needs the explicit acknowledgement.
+    env = {**os.environ, "DIGITALFLY_ALLOW_NETWORK_BIND": "1"} if host else None
+    launcher = subprocess.Popen([sys.executable, str(ROOT / "scripts/launch.py"), "--toy", "--dev", "--port", str(port), *host],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline and launcher.poll() is None:
@@ -141,6 +144,20 @@ def test_launcher_stops_cleanly_on_ctrl_c(tmp_path):
     assert launcher.returncode in {0, 130}, err
     assert "Traceback" not in err and "KeyboardInterrupt" not in err, err
     assert "Ctrl+C to stop" in out
+    assert (f"Listening on 0.0.0.0:{port}" in out) == bool(host), out
+
+
+def test_launcher_refuses_network_bind_and_bad_origins_without_starting():
+    env = {k: v for k, v in os.environ.items() if k not in {"DIGITALFLY_ALLOW_NETWORK_BIND", "DIGITALFLY_HOST"}}
+    launch = [sys.executable, str(ROOT / "scripts/launch.py"), "--toy", "--dev", "--port", "8999"]
+    for args, extra in [(["--host", "0.0.0.0"], {}), ([], {"DIGITALFLY_HOST": "0.0.0.0"}),
+                        (["--host", "0.0.0.0"], {"DIGITALFLY_ALLOW_NETWORK_BIND": "yes"})]:
+        result = subprocess.run([*launch, *args], env={**env, **extra}, capture_output=True, text=True, timeout=60)
+        assert result.returncode == 1 and "DIGITALFLY_ALLOW_NETWORK_BIND=1" in result.stderr, result
+        assert "Ctrl+C to stop" not in result.stdout
+    result = subprocess.run(launch, env={**env, "DIGITALFLY_ALLOWED_ORIGINS": "localhost:9000"}, capture_output=True,
+                            text=True, timeout=60)
+    assert result.returncode == 1 and "not an origin like http://localhost:9000" in result.stderr, result
 
 
 def load_doctor():

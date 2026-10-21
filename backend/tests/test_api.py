@@ -2,7 +2,7 @@ import time
 from fastapi.testclient import TestClient
 import pytest
 from digitalfly.api.models import RunConfig
-from digitalfly.main import create_app
+from digitalfly.main import create_app, extra_origins
 
 
 @pytest.fixture
@@ -45,6 +45,26 @@ def test_input_validation_and_local_boundary(client):
     assert client.get("/api/not-real").status_code == 404
     assert client.get("/api/health", headers={"Host": "evil.example"}).status_code == 400
     assert client.get("/api/exports/not-a-run.zip").status_code == 404
+
+
+def test_allowed_origins_extend_origin_host_and_csp_together(tmp_path, monkeypatch):
+    monkeypatch.setattr('digitalfly.main.ROOT', tmp_path)
+    monkeypatch.setenv("DIGITALFLY_ALLOWED_ORIGINS", " http://localhost:9000, https://Workstation.lan:8443/ ")
+    app = create_app(RunConfig(engine="toy"), render=False)
+    with TestClient(app, base_url="http://127.0.0.1:8000") as client:
+        assert app.state.worker.ready.wait(10)
+        for origin in ["http://localhost:9000", "https://workstation.lan:8443", "http://127.0.0.1:8000"]:
+            assert client.post("/api/pause", json={}, headers={"Origin": origin}).status_code == 200, origin
+        assert client.post("/api/pause", json={}, headers={"Origin": "http://localhost:9001"}).status_code == 403
+        assert client.get("/api/health", headers={"Host": "workstation.lan:8443"}).status_code == 200
+        assert client.get("/api/health", headers={"Host": "evil.example"}).status_code == 400
+        csp = client.get("/api/health").headers["Content-Security-Policy"]
+        assert "connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://localhost:9000 wss://workstation.lan:8443;" in csp
+    monkeypatch.delenv("DIGITALFLY_ALLOWED_ORIGINS")
+    assert extra_origins(None) == [] and extra_origins("") == []
+    for bad in ["localhost:9000", "http://localhost:9000/app", "http://[::1]:8000", "ftp://localhost", "*"]:
+        with pytest.raises(ValueError, match="DIGITALFLY_ALLOWED_ORIGINS"):
+            extra_origins(bad)
 
 
 def test_multi_subscriber_reconnect_one_worker(client):

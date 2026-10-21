@@ -14,8 +14,8 @@ DigitalFly is a **local, single-user application**. The server, the simulation a
 
 What the app defends against is a web page or another program on your computer trying to drive the local server through your browser. The defenses:
 
-- **Local bind.** The launcher binds to `127.0.0.1` only, with one worker process.
-- **Host check.** Requests must name `127.0.0.1` or `localhost` as their host, which blocks DNS-rebinding attacks.
+- **Local bind.** The launcher binds to `127.0.0.1` only, with one worker process. Any other address needs the explicit acknowledgement `DIGITALFLY_ALLOW_NETWORK_BIND=1`; the container image sets it because a published port reaches the server through the container's own interface, and it is meant to be published to `127.0.0.1` only (see [docs/INSTALL.md](docs/INSTALL.md#listening-beyond-localhost)).
+- **Host check.** Requests must name `127.0.0.1` or `localhost` as their host, which blocks DNS-rebinding attacks. `DIGITALFLY_ALLOWED_ORIGINS` can add exact origins, such as another published port; their host names are then accepted too.
 - **Origin allowlist.** Commands that change state (POST, PUT, PATCH, DELETE) and the telemetry WebSocket are refused when they come from a browser origin other than the app itself (`http://127.0.0.1:PORT` or `http://localhost:PORT`, plus the development server on port 5173).
 - **JSON only, bounded size.** Commands must be `application/json`, which a cross-site form cannot send without a CORS preflight the server never grants, and bodies are limited (16 KB; 2 MB for connectivity imports).
 - **Content Security Policy.** `default-src 'self'`, `script-src 'self'`, `frame-ancestors 'none'` and WebSocket connections only to the local server, plus `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`.
@@ -26,7 +26,7 @@ What the app defends against is a web page or another program on your computer t
 
 ## Out of scope
 
-- **Exposing the server to a network.** Binding it to another interface, port forwarding or putting it behind a proxy makes an unauthenticated control API reachable by others; this is not supported.
+- **Exposing the server to a network.** Binding it to another interface that others can reach, publishing a container port beyond `127.0.0.1`, port forwarding or putting it behind a proxy makes an unauthenticated control API reachable by others; this is not supported.
 - **Someone who already controls your user account** or your machine.
 - **Scientific validity.** Wrong model results are bugs, not vulnerabilities; please use the issue templates.
 - **Vulnerabilities in dependencies** that DigitalFly does not reach in practice. Do tell us if you find one that it does.
