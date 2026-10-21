@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +18,8 @@ from digitalfly.neural.model import RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog
 from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION
-from digitalfly.data.research import ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs, run_detail
+from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
+    run_detail, delete_run)
 from digitalfly.simulation.engines import ROOT
 from digitalfly.simulation.worker import SimulationWorker
 
@@ -44,7 +45,9 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             await asyncio.to_thread(builds.close)
             await asyncio.to_thread(worker.close)
 
-    app = FastAPI(title="DigitalFly", version=APPLICATION_VERSION, lifespan=lifespan, docs_url="/api/docs", openapi_url="/api/openapi.json", redoc_url=None)
+    # No Swagger/ReDoc pages: they need a CDN and inline scripts that the CSP below blocks. The schema stays.
+    app = FastAPI(title="DigitalFly", version=APPLICATION_VERSION, lifespan=lifespan, docs_url=None, redoc_url=None,
+                  openapi_url="/api/openapi.json")
     app.state.worker = worker
     app.state.shutdown_callback = None
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -61,7 +64,10 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             origin = request.headers.get("origin")
             if origin is not None and origin not in allowed_origins:
                 return JSONResponse({"detail": "Origin is not permitted to control this local simulation."}, status_code=403)
-            if not request.headers.get("content-type", "").lower().startswith("application/json"):
+            # A DELETE needs no body; anything with one must be JSON, which cross-site forms cannot send.
+            bodyless = request.method == "DELETE" and request.headers.get("content-length", "0") == "0" \
+                and "transfer-encoding" not in request.headers
+            if not bodyless and not request.headers.get("content-type", "").lower().startswith("application/json"):
                 return JSONResponse({"detail": "Commands require application/json."}, status_code=415)
             try:
                 length = int(request.headers.get("content-length", "0") or 0)
@@ -247,8 +253,27 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         return await command("batch_cancel")
 
     @app.get("/api/runs")
-    def runs():
-        return {"runs": list_runs()}
+    def runs(response: Response, offset: int = Query(0, ge=0), limit: int = Query(100, ge=0, le=500),
+             include_empty: bool = True):
+        records = list_runs(include_empty=include_empty)
+        response.headers["X-Total-Count"] = str(len(records))
+        return {"runs": records[offset:offset + limit]}
+
+    @app.delete("/api/runs/{key}")
+    def delete_saved_run(key: str):
+        if not RUN_KEY.fullmatch(key):
+            raise HTTPException(404, "Saved run not found.")
+        state = worker.get_snapshot()
+        batch = state.get("batch") or {}
+        trials = {Path(r["path"]).name for r in batch.get("results", [])} if batch.get("status") in {"running", "paused"} else set()
+        if key.startswith(state["run_id"] + "-") or key in trials:
+            raise HTTPException(409, "This run is still being recorded. Reset, or let the comparison finish, before deleting it.")
+        try:
+            return delete_run(key)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(404, "Saved run not found.") from exc
+        except OSError as exc:
+            raise HTTPException(500, f"The run could not be deleted: {exc.strerror or type(exc).__name__}.") from exc
 
     @app.get("/api/runs/{key}")
     def saved_run(key: str):
@@ -275,8 +300,10 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         return FileResponse(path, media_type="application/json")
 
     @app.get("/api/connectivity")
-    def connectivity_library():
-        return {"datasets": list_graphs()}
+    def connectivity_library(response: Response, offset: int = Query(0, ge=0), limit: int = Query(100, ge=0, le=500)):
+        datasets = list_graphs()
+        response.headers["X-Total-Count"] = str(len(datasets))
+        return {"datasets": datasets[offset:offset + limit]}
 
     @app.post("/api/connectivity/import")
     def connectivity_import(body: ConnectivityGraph):

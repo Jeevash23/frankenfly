@@ -1,8 +1,11 @@
 """Local run records and bounded, provenance-preserving connectivity exploration."""
 import csv
+from functools import lru_cache
 import hashlib
 import json
 import re
+import shutil
+import uuid
 from pathlib import Path
 from typing import Literal
 from pydantic import Field, model_validator
@@ -13,6 +16,7 @@ RUN_KEY = re.compile(r"\d{8}T\d{6}-[a-f0-9]{8}-[a-f0-9]{6}")
 
 
 def run_detail(key: str, root: Path | None = None, include_trajectory=True):
+    """A saved run's summary and decimated trajectory; metadata schemas 2-4 share every field read here."""
     if not RUN_KEY.fullmatch(key):
         raise ValueError("Unknown run identifier.")
     directory = (root or ROOT / "runs") / key
@@ -34,22 +38,50 @@ def run_detail(key: str, root: Path | None = None, include_trajectory=True):
         "trajectory": trajectory, "download_url": f"/api/exports/{key}.zip"}
 
 
-def list_runs(root: Path | None = None):
+@lru_cache(maxsize=2048)
+def _run_summary(directory: str, mtime_ns: int, size: int):
+    # Keyed by the metadata file's identity: saved runs never change, and listing re-reads none of them.
+    path = Path(directory)
+    item = run_detail(path.name, path.parent, include_trajectory=False)
+    item.pop("trajectory")
+    return item
+
+
+def list_runs(root: Path | None = None, include_empty=True) -> list[dict]:
+    """Every readable saved run, newest first (run identifiers start with the run's UTC start time).
+    Hidden folders, such as exports still being written, are never listed. include_empty=False leaves out
+    runs with at most one sample (exported straight after a reset)."""
     root = root or ROOT / "runs"
     records = []
-    if root.exists():
+    if root.is_dir():
         for path in sorted(root.iterdir(), reverse=True):
-            if not path.is_dir() or not RUN_KEY.fullmatch(path.name):
+            if not RUN_KEY.fullmatch(path.name) or path.is_symlink() or not path.is_dir():
                 continue
             try:
-                item = run_detail(path.name, root, include_trajectory=False)
-                item.pop("trajectory")
-                records.append(item)
-            except (OSError, ValueError, KeyError):
+                stat = (path / "metadata.json").stat()
+                item = _run_summary(str(path), stat.st_mtime_ns, stat.st_size)
+            except (OSError, ValueError, KeyError, TypeError):
                 continue
-            if len(records) == 100:
-                break
+            if include_empty or item["samples"] > 1:
+                records.append(item)
     return records
+
+
+def delete_run(key: str, root: Path | None = None):
+    """Delete a saved run's folder and its ZIP. The folder is renamed to a hidden name first, so a deletion
+    that is interrupted never leaves a partial run in the library. Links are never followed."""
+    if not RUN_KEY.fullmatch(key):
+        raise ValueError("Unknown run identifier.")
+    root = root or ROOT / "runs"
+    directory, archive = root / key, root / f"{key}.zip"
+    if directory.is_symlink() or archive.is_symlink() or not (directory.is_dir() or archive.is_file()):
+        raise FileNotFoundError("Saved run not found.")
+    if directory.is_dir():
+        trash = root / f".deleting-{key}-{uuid.uuid4().hex[:6]}"
+        directory.rename(trash)
+        shutil.rmtree(trash)
+    archive.unlink(missing_ok=True)
+    return {"deleted": key}
 
 
 class GraphSource(StrictModel):
@@ -129,14 +161,26 @@ def load_graph(key: str):
     return {"key": key, "graph": graph.model_dump(), "summary": graph_summary(graph)}
 
 
-def list_graphs():
+@lru_cache(maxsize=1024)
+def _graph_entry(directory: str, key: str, mtime_ns: int):
+    data = load_graph(key)
+    return {"key": data["key"], "provenance": data["graph"]["provenance"], "summary": data["summary"]}
+
+
+def list_graphs() -> list[dict]:
+    """Every readable imported graph, most recently imported first."""
     directory = ROOT / "data/connectivity"
     result = []
-    if directory.exists():
-        for path in sorted(directory.glob("*.json"))[:100]:
+    if directory.is_dir():
+        files = []
+        for path in directory.glob("*.json"):
             try:
-                data = load_graph(path.stem)
-                result.append({"key": data["key"], "provenance": data["graph"]["provenance"], "summary": data["summary"]})
+                files.append((path.stat().st_mtime_ns, path))
+            except OSError:
+                continue
+        for mtime_ns, path in sorted(files, key=lambda item: (-item[0], item[1].name)):
+            try:
+                result.append(_graph_entry(str(directory), path.stem, mtime_ns))
             except (OSError, ValueError):
                 continue
     return result
