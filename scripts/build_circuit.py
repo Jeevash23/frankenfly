@@ -22,7 +22,9 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import sys
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +99,19 @@ def fetch(url, start=None, end=None):
     return data
 
 
+def write_atomic(path, write):
+    """Write through `write(handle)` to a temporary file next to `path`, then rename it into place, so a
+    crash or a terminated build never leaves a truncated file or loses the previous one."""
+    part = path.with_name(f".{path.name}.{os.getpid()}.part")  # hidden from the circuit list
+    try:
+        with part.open("wb") as handle:
+            write(handle)
+        os.replace(part, path)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+
+
 def recorded(name):
     if DOWNLOADS.is_file():
         for item in json.loads(DOWNLOADS.read_text()):
@@ -112,9 +127,18 @@ def meta_file(offline):
     if not path.is_file():
         if offline:
             sys.exit(f"Missing {path}. Run once without --offline to download it ({source['url']}).")
-        print(f"Downloading {source['url']} …", flush=True)
+        # Ask for the recorded GCS generation, so an overwritten upstream object is not fetched by accident.
+        # If that generation is no longer served, the current object is fetched and must match the recorded hash.
+        pinned = f"{source['url']}?generation={source['gcs_generation']}"
+        print(f"Downloading {pinned} …", flush=True)
         CACHE.mkdir(parents=True, exist_ok=True)
-        data = fetch(source["url"])
+        try:
+            data = fetch(pinned)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404:
+                raise
+            print(f"Generation {source['gcs_generation']} is no longer served; trying {source['url']} …", flush=True)
+            data = fetch(source["url"])
         path.with_suffix(".part").write_bytes(data)
         path.with_suffix(".part").rename(path)
     data = path.read_bytes()
@@ -319,7 +343,9 @@ def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False
     mask = strong & (position[pre] >= 0) & (position[post] >= 0)
     e_pre, e_post, e_count = position[pre[mask]], position[post[mask]], count[mask].astype(np.int64)
     order = np.lexsort((e_pre, e_post))
-    weakest = float(strength[kept_layers[-1]].min()) if len(dropped) and len(kept_layers[-1]) else None
+    # Compared with the strongest dropped path: the weakest neuron of the deepest hop that kept any.
+    deepest = next((layer for layer in reversed(kept_layers[1:]) if len(layer)), None)
+    weakest = float(strength[deepest].min()) if len(dropped) and deepest is not None else None
     return {"kept": kept, "hop": hop, "strength": strength[kept],
             "by_hop": [int(len(l)) for l in kept_layers],
             "candidates": int(sum(len(l) for l in layers)), "dropped": dropped,
@@ -481,7 +507,7 @@ def build(threshold, hops, cap, offline):
         "edges": {"pre": e_pre.tolist(), "post": e_post.tolist(), "synapses": e_count.tolist()},
     }
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(json.dumps(circuit, separators=(",", ":")))
+    write_atomic(OUTPUT, lambda handle: handle.write(json.dumps(circuit, separators=(",", ":")).encode()))
     DOWNLOADS.write_text(json.dumps(records, indent=2) + "\n")
     print(json.dumps(circuit["provenance"]["counts"], indent=1))
     print("cap:", json.dumps({k: cap_report[k] for k in ["candidates", "kept", "dropped", "binding"]}))
@@ -603,8 +629,10 @@ def resolve_seeds(data, tokens):
 def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
     """Select a circuit around any seeds from the prepared archive (NumPy only) and write format 2."""
     import re
-    if not re.fullmatch(NAME_PATTERN, name) or name == "local":
+    if not re.fullmatch(NAME_PATTERN, name) or name in ("local", "downloads"):
         sys.exit("Use a circuit name of lower-case letters, digits, dots, dashes or underscores.")
+    if name.endswith(".flyvis"):
+        sys.exit("Circuit names cannot end in .flyvis: that suffix marks a circuit's FlyVis bridge.")
     if not committed and any((OUT_DIR / f"{name}{suffix}").exists() for suffix in (".json", ".npz")):
         sys.exit(f"{name} is a built-in circuit. Choose another name for a local build.")
     data = load_prepared()
@@ -688,9 +716,6 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
     folder = OUT_DIR if committed else LOCAL_DIR
     folder.mkdir(parents=True, exist_ok=True)
     fmt = fmt if fmt != "auto" else ("json" if len(e_count) <= JSON_EDGE_LIMIT else "npz")
-    for old in folder.glob(f"{name}.*"):
-        if old.suffix in {".json", ".npz"}:
-            old.unlink()
     path = folder / f"{name}.{fmt}"
     score = data["transmitter_score"][kept]
     if fmt == "json":
@@ -700,14 +725,17 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
             "hop": chosen["hop"].tolist(), "path_strength": [float(f"{v:.6g}") for v in chosen["strength"]],
             "shiu_sign": shiu.tolist()},
             "edges": {"pre": e_pre.tolist(), "post": e_post.tolist(), "synapses": e_count.tolist()}}
-        path.write_text(json.dumps(payload, separators=(",", ":")))
+        write_atomic(path, lambda handle: handle.write(json.dumps(payload, separators=(",", ":")).encode()))
     else:
-        np.savez_compressed(path, header=np.array(json.dumps(header)), neuron_id=data["neuron_id"][kept],
-                            **{f"neuron_{k}": v for k, v in columns.items()},
-                            neuron_transmitter_score=score, neuron_hop=chosen["hop"].astype(np.int32),
-                            neuron_path_strength=chosen["strength"].astype(np.float64),
-                            neuron_shiu_sign=shiu.astype(np.int8), edge_pre=e_pre.astype(np.int32),
-                            edge_post=e_post.astype(np.int32), edge_synapses=e_count.astype(np.int32))
+        write_atomic(path, lambda handle: np.savez_compressed(
+            handle, header=np.array(json.dumps(header)), neuron_id=data["neuron_id"][kept],
+            **{f"neuron_{k}": v for k, v in columns.items()},
+            neuron_transmitter_score=score, neuron_hop=chosen["hop"].astype(np.int32),
+            neuron_path_strength=chosen["strength"].astype(np.float64),
+            neuron_shiu_sign=shiu.astype(np.int8), edge_pre=e_pre.astype(np.int32),
+            edge_post=e_post.astype(np.int32), edge_synapses=e_count.astype(np.int32)))
+    # Only once the new file is in place: drop this name's other format, never other circuits or bridges.
+    (folder / f"{name}.{'npz' if fmt == 'json' else 'json'}").unlink(missing_ok=True)
     counts = header["provenance"]["counts"]
     print(json.dumps({"name": name, "path": str(shown(path)), **{k: counts[k] for k in ["neurons", "connections", "cell_types", "by_hop"]},
                       "readout_types": readout, "bytes": path.stat().st_size, "sha256": sha256(path.read_bytes())}))
@@ -775,14 +803,16 @@ def flyvis_bridge(circuit_name):
                     "eye": eyes.astype(int).tolist(), "weight": [round(float(w), 6) for w in weight]},
     }
     out = path.with_name(f"{path.stem}.flyvis.json")
-    out.write_text(json.dumps(bridge, separators=(",", ":")))
+    write_atomic(out, lambda handle: handle.write(json.dumps(bridge, separators=(",", ":")).encode()))
     print(json.dumps({"bridge": str(shown(out)), "input_neurons": len(targets),
                       "with_flyvis_input": int((covered > 0).sum()), "entries": len(weight),
                       "median_coverage": float(np.median(covered / np.maximum(total, 1))),
                       "mapped_types": len(mapping), "bytes": out.stat().st_size}))
 
 
-if __name__ == "__main__":
+def arguments(argv=None):
+    """Parse the command line. The shared options work before or after the subcommand: the subcommands'
+    copies default to SUPPRESS, so they never overwrite a value given before the subcommand."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--threshold", type=int, default=5, help="Minimum synapses per connection (default 5)")
     parser.add_argument("--hops", type=int, default=2, help="Presynaptic hops back from DNa02 (default 2)")
@@ -790,20 +820,24 @@ if __name__ == "__main__":
     parser.add_argument("--offline", action="store_true", help="Use cached downloads only")
     commands = parser.add_subparsers(dest="command", help="Without a command: rebuild the committed DNa02 circuit")
     prep = commands.add_parser("prepare", help="Convert the cached downloads for `build` (needs pyarrow once)")
-    prep.add_argument("--offline", action="store_true", help="Use cached downloads only")
+    prep.add_argument("--offline", action="store_true", default=argparse.SUPPRESS, help="Use cached downloads only")
     custom = commands.add_parser("build", help="Build a circuit around any seeds from the prepared archive (NumPy only)")
     custom.add_argument("--name", required=True, help="Circuit name: lower-case letters, digits, '.', '-', '_'")
     custom.add_argument("--seeds", default="", help="Comma-separated cell types or FlyWire root IDs, e.g. DNa01,DNa02")
     custom.add_argument("--seed", action="append", default=[], help="One seed; repeat it, and use it for names with commas")
-    custom.add_argument("--hops", type=int, default=2, help="Presynaptic hops back from the seeds (default 2)")
-    custom.add_argument("--threshold", type=int, default=5, help="Minimum synapses per connection (default 5)")
-    custom.add_argument("--cap", type=int, default=3000, help="Maximum neurons, seeds included (default 3000)")
+    custom.add_argument("--hops", type=int, default=argparse.SUPPRESS, help="Presynaptic hops back from the seeds (default 2)")
+    custom.add_argument("--threshold", type=int, default=argparse.SUPPRESS, help="Minimum synapses per connection (default 5)")
+    custom.add_argument("--cap", type=int, default=argparse.SUPPRESS, help="Maximum neurons, seeds included (default 3000)")
     custom.add_argument("--whole-brain", action="store_true", help="Every connected neuron; seeds set hop distances")
     custom.add_argument("--format", choices=["auto", "json", "npz"], default="auto")
     custom.add_argument("--committed", action="store_true", help="Write to data/circuits/ (maintainers) instead of data/circuits/local/")
     bridge = commands.add_parser("flyvis-bridge", help="Wire FlyVis cell types to a circuit's visual projection neurons")
     bridge.add_argument("--circuit", required=True, help="Circuit name, committed or local")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = arguments()
     if args.command == "flyvis-bridge":
         flyvis_bridge(args.circuit)
         sys.exit(0)
