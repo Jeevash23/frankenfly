@@ -73,6 +73,8 @@ backend/.venv/bin/python scripts/toolkit.py compare --run runs/YOUR_RUN_FOLDER
 
 `trials` writes each trial to a `.jsonl` file and the CSV as soon as it finishes. A trial that fails (for example a FlyGym body that becomes numerically unstable) is saved as a row with an `error` column and the others carry on; the command then exits with an error. Rerun the same command with `--resume` and the same `--out` to run only the trials that are missing or failed. Every saved report records the git commit, the command line, the circuits with their SHA-256 and the package versions.
 
+`readouts` prints the turn command for a target held still at fixed bearings (the research guide's table "What the circuits compute"). `robustness` reruns the bias and readout analyses, and optionally short reach trials, under several modelling assumptions (sign rule, synapse threshold, readout pooling and weights, dynamics, circuit, seed) and reports which conclusions hold in every variant; it saves and resumes like `trials`. See [How sensitive is a result to the modelling assumptions?](RESEARCH.md#how-sensitive-is-a-result-to-the-modelling-assumptions)
+
 To compare with a real fly, fetch the recorded DNa02 data once (71 MB) and compare it with an exported run:
 
 ```sh
@@ -133,7 +135,7 @@ backend/.venv/bin/python scripts/benchmark.py --vision
 
 **Scripting the running app:** the REST schema is at http://127.0.0.1:8000/api/openapi.json (OpenAPI 3.1). Open it in the browser, or save it with `curl -o openapi.json http://127.0.0.1:8000/api/openapi.json` and load the file in any OpenAPI viewer or client generator. The app serves no interactive documentation page: one would need scripts from a CDN, which its security policy blocks.
 
-**Connectome circuit unavailable:** the committed circuits are `data/circuits/fafb783-dna02.json` and `fafb783-steering.json`. If one is missing or edited, restore it from version control or rebuild it with `scripts/build_circuit.py` (see the [research guide](RESEARCH.md#building-the-subcircuit)). A local circuit that no longer loads appears in the circuit list with its error; delete or rebuild it. The app refuses to rebuild the circuit the running experiment uses; if `build_circuit.py` rewrites it anyway, the run keeps its loaded wiring and asks you to Reset before parameter edits.
+**Connectome circuit unavailable:** the committed circuits are `data/circuits/fafb783-dna02.json` and `fafb783-steering.json`, and their side-balanced versions `fafb783-dna02-balanced.json` and `fafb783-steering-balanced.json`. If one is missing or edited, restore it from version control or rebuild it with `scripts/build_circuit.py` (see the [research guide](RESEARCH.md#building-the-subcircuit)). A local circuit that no longer loads appears in the circuit list with its error; delete or rebuild it. The app refuses to rebuild the circuit the running experiment uses; if `build_circuit.py` rewrites it anyway, the run keeps its loaded wiring and asks you to Reset before parameter edits.
 
 **"The simulation has stopped … Restart DigitalFly":** the simulation thread ended, which a failing command or display update should no longer cause. Stop the server with Ctrl+C and start it again; please report what you did before it happened.
 
