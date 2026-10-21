@@ -1,0 +1,109 @@
+name: Bug report
+description: Something in DigitalFly does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go through private reporting instead (see SECURITY.md).
+        Before pasting logs or exports, remove anything personal: exports record your platform string, and error messages can contain local paths.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including any error message shown in the app or the terminal.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands you ran and what you did in the app. A saved configuration (`--config`) or seed helps.
+      placeholder: |
+        1. ./scripts/start.sh --open
+        2. Workbench → Neural model → Connectome, circuit fafb783-steering
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DigitalFly version
+      description: From `backend/pyproject.toml`, or `application_version` in an export's metadata. Add the commit if you run from a checkout (`git rev-parse --short HEAD`).
+      placeholder: 0.5.0 (66c6d59)
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Body engine
+      options:
+        - FlyGym physics
+        - Toy demo
+        - Not relevant (toolkit, builder or docs)
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Neural model
+      options:
+        - Engineered six-unit model
+        - Connectome model, rate dynamics
+        - Connectome model, spiking dynamics
+        - Not relevant
+    validations:
+      required: true
+  - type: dropdown
+    id: sensor
+    attributes:
+      label: Sensor model
+      description: "`--vision` selects rendered compound eyes; FlyVis eyes are the optional optic-lobe model chosen in the app."
+      options:
+        - Geometric bearing
+        - Rendered compound eyes
+        - FlyVis eyes
+        - Not relevant
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system and architecture, Python and Node versions, graphics (desktop session, or `MUJOCO_GL` = egl, osmesa or glfw under Xvfb), and which optional installs you have (vision lock and FlyVis networks, data lock and prepared archive, recorded fly).
+      placeholder: |
+        Ubuntu 24.04 x86-64, Python 3.12.x, Node 22.x, MUJOCO_GL=egl
+        Optional: vision lock + fetch_flyvis.py
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or test output
+      description: Relevant terminal output, `pytest -rs` results or the error from the app. Remove personal paths first.
+      render: shell
+  - type: dropdown
+    id: replay
+    attributes:
+      label: Does it affect saved runs or replay?
+      options:
+        - No, or I don't know
+        - Yes, scripts/replay.py reports a mismatch
+        - Yes, a saved run or export cannot be loaded
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched the existing issues and the troubleshooting section of docs/USAGE.md.
+          required: true
+        - label: I removed personal paths and data from anything I attached.
+          required: true

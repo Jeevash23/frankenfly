@@ -1,0 +1,207 @@
+cff-version: 1.2.0
+message: >-
+  If you use DigitalFly, please cite it as below. Please also cite the
+  models and data it builds on (the references below), and follow the
+  licenses of the data you use: all FlyWire-derived data is CC BY-NC 4.0,
+  for non-commercial use only (see docs/ATTRIBUTION.md).
+type: software
+title: DigitalFly
+abstract: >-
+  A local, inspectable sensorimotor workbench: a physics-simulated fruit fly
+  (FlyGym / NeuroMechFly on MuJoCo) walks toward what it sees, steered by an
+  engineered six-unit controller or by FlyWire v783 connectome circuits with
+  rate or spiking dynamics, with optional FlyVis eyes, interventions,
+  matched-seed experiments, exact replay, a research toolkit and a
+  comparison with a recorded fly. Results describe these models, not
+  validated fly biology.
+authors:
+  - alias: Jeevash23
+version: 0.5.0
+date-released: '2026-10-13'
+license: Apache-2.0
+repository-code: 'https://github.com/Jeevash23/frankenfly'
+keywords:
+  - Drosophila
+  - connectome
+  - FlyWire
+  - NeuroMechFly
+  - FlyGym
+  - MuJoCo
+  - computational neuroscience
+  - sensorimotor control
+  - neuromechanical simulation
+references:
+  - type: software
+    title: FlyGym
+    version: 2.1.0
+    license: Apache-2.0
+    repository-code: 'https://github.com/NeLy-EPFL/flygym'
+    authors:
+      - name: The NeuroMechFly v2 Authors
+  - type: article
+    title: >-
+      NeuroMechFly v2: simulating embodied sensorimotor control in adult
+      Drosophila
+    authors:
+      - family-names: Wang-Chen
+        given-names: Sibo
+      - family-names: Stimpfling
+        given-names: Victor Alfred
+      - family-names: Lam
+        given-names: Thomas Ka Chung
+      - family-names: Özdil
+        given-names: Pembe Gizem
+      - family-names: Genoud
+        given-names: Louise
+      - family-names: Hurtak
+        given-names: Femke
+      - family-names: Ramdya
+        given-names: Pavan
+    journal: Nature Methods
+    volume: 21
+    issue: 12
+    start: 2353
+    end: 2362
+    year: 2024
+    doi: 10.1038/s41592-024-02497-y
+  - type: article
+    title: Neuronal wiring diagram of an adult brain
+    authors:
+      - family-names: Dorkenwald
+        given-names: Sven
+      - name: FlyWire Consortium
+    journal: Nature
+    volume: 634
+    start: 124
+    end: 138
+    year: 2024
+    doi: 10.1038/s41586-024-07558-y
+  - type: article
+    title: >-
+      Whole-brain annotation and multi-connectome cell typing of Drosophila
+    authors:
+      - family-names: Schlegel
+        given-names: Philipp
+      - name: FlyWire Consortium
+    journal: Nature
+    volume: 634
+    start: 139
+    end: 152
+    year: 2024
+    doi: 10.1038/s41586-024-07686-5
+  - type: article
+    title: >-
+      A Drosophila computational brain model reveals sensorimotor processing
+    authors:
+      - family-names: Shiu
+        given-names: Philip K.
+      - family-names: Sterne
+        given-names: Gabriella R.
+      - family-names: Spiller
+        given-names: Nico
+      - family-names: Franconville
+        given-names: Romain
+      - family-names: Sandoval
+        given-names: Andrea
+      - family-names: Zhou
+        given-names: Joie
+      - family-names: Simha
+        given-names: Neha
+      - family-names: Kang
+        given-names: Chan Hyuk
+      - family-names: Yu
+        given-names: Seongbong
+      - family-names: Kim
+        given-names: Jinseop S.
+      - family-names: Dorkenwald
+        given-names: Sven
+      - family-names: Matsliah
+        given-names: Arie
+      - family-names: Schlegel
+        given-names: Philipp
+      - family-names: Yu
+        given-names: Szi-Chieh
+      - family-names: McKellar
+        given-names: Claire E.
+      - family-names: Sterling
+        given-names: Amy
+      - family-names: Costa
+        given-names: Marta
+      - family-names: Eichler
+        given-names: Katharina
+      - family-names: Bates
+        given-names: Alexander Shakeel
+      - family-names: Eckstein
+        given-names: Nils
+      - family-names: Funke
+        given-names: Jan
+      - family-names: Jefferis
+        given-names: Gregory S. X. E.
+      - family-names: Murthy
+        given-names: Mala
+      - family-names: Bidaye
+        given-names: Salil S.
+      - family-names: Hampel
+        given-names: Stefanie
+      - family-names: Seeds
+        given-names: Andrew M.
+      - family-names: Scott
+        given-names: Kristin
+    journal: Nature
+    volume: 634
+    start: 210
+    end: 219
+    year: 2024
+    doi: 10.1038/s41586-024-07763-9
+  - type: article
+    title: >-
+      Connectome-constrained networks predict neural activity across the fly
+      visual system
+    authors:
+      - family-names: Lappalainen
+        given-names: Janne K.
+      - family-names: Tschopp
+        given-names: Fabian D.
+      - family-names: Prakhya
+        given-names: Sridhama
+      - family-names: McGill
+        given-names: Mason
+      - family-names: Nern
+        given-names: Aljoscha
+      - family-names: Shinomiya
+        given-names: Kazunori
+      - family-names: Takemura
+        given-names: Shin-ya
+      - family-names: Gruntman
+        given-names: Eyal
+      - family-names: Macke
+        given-names: Jakob H.
+      - family-names: Turaga
+        given-names: Srinivas C.
+    journal: Nature
+    volume: 634
+    start: 1132
+    end: 1140
+    year: 2024
+    doi: 10.1038/s41586-024-07939-3
+  - type: article
+    title: Neural circuit mechanisms for steering control in walking Drosophila
+    authors:
+      - family-names: Rayshubskiy
+        given-names: Aleksandr
+      - family-names: Holtz
+        given-names: Stephen L.
+      - family-names: Bates
+        given-names: Alexander S.
+      - family-names: Vanderbeck
+        given-names: Quinn X.
+      - family-names: Serratosa Capdevila
+        given-names: Laia
+      - family-names: Rockwell
+        given-names: Victoria
+      - family-names: Wilson
+        given-names: Rachel
+    journal: eLife
+    volume: 13
+    year: 2025
+    doi: 10.7554/eLife.102230

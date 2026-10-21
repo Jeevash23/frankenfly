@@ -22,11 +22,11 @@ DigitalFly is a local research workspace for embodied sensorimotor experiments. 
 
 ## Validation summary
 
-The v0.5 validation covered x86-64 Linux with EGL rendering, Python 3.12, Node 26 and the pinned dependencies, with the optional vision lock installed. v0.2 was validated on macOS/ARM64; v0.3–v0.5 have not been re-run there, and the vision lock's macOS entries have not been installed. These describe tested platforms, not a required hardware model.
+The v0.5 validation covered x86-64 Linux with EGL rendering, Python 3.12, Node 26 and the pinned dependencies, with the optional vision lock (FlyVis and CPU-only PyTorch) installed. v0.2 was validated on macOS/ARM64; v0.3–v0.5 have not been re-run there, and the vision lock's macOS entries have not been installed. These describe tested platforms, not a required hardware model.
 
 | Check | v0.5 result |
 | --- | --- |
-| Full backend suite | 88 passed with the optional vision lock installed, including 7 real FlyGym tests (graphics, compound eyes, the fast stepping path's bitwise match with FlyGym's own controller, the connectome model on the real body, and a closed-loop FlyVis-eye run that replays with error 0) and the FlyVis column mapping's T4 direction check; without FlyVis the FlyVis tests skip |
+| Full backend suite | 88 passed, including 7 real FlyGym tests (graphics, compound eyes, the fast stepping path's bitwise match with FlyGym's own controller, the connectome model on the real body, and a closed-loop FlyVis-eye run that replays with error 0) and the FlyVis column mapping's T4 direction check. All 88 need: an OpenGL backend for the FlyGym tests (EGL, OSMesa, or Xvfb with `MUJOCO_GL=glfw`; without one they fail); the vision lock and the pretrained networks from `scripts/fetch_flyvis.py` (else 2 tests skip); the prepared FlyWire archive from `scripts/build_circuit.py prepare` (else 2 builder tests skip); and the recording from `scripts/fetch_recording.py` (else 1 test skips). With graphics and none of the optional assets: 83 passed, 5 skipped. See [validation commands](docs/evidence/README.md) |
 | Frontend unit tests | 27 passed |
 | Prettier formatting, TypeScript and production build | Passed |
 | Linux rendering | EGL and GLFW passed; OSMesa is not installed on the reference system, so the OSMesa fallback could not be exercised |
@@ -54,4 +54,4 @@ The next scientific milestone is a circuit whose dynamics and motor mapping are 
 
 Runtime files stay local. The repository contains instructions, code, dependency locks, examples and attributed scientific assets. Local environments, downloaded datasets, imported data, run records and execution evidence are excluded by [.gitignore](.gitignore). See [sharing the project](docs/SHARING.md).
 
-The code and documentation are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The scientific data keeps its own licenses, listed in [data/atlas/LICENSE.md](data/atlas/LICENSE.md) and [data/circuits/LICENSE.md](data/circuits/LICENSE.md); all FlyWire-derived data, including circuits you build, is CC BY-NC 4.0, for non-commercial use only.
+The code and documentation are Apache-2.0 ([LICENSE](LICENSE), [NOTICE](NOTICE)). The scientific data keeps its own licenses, listed in [data/atlas/LICENSE.md](data/atlas/LICENSE.md), [data/circuits/LICENSE.md](data/circuits/LICENSE.md) and [data/recordings/LICENSE.md](data/recordings/LICENSE.md); all FlyWire-derived data, including the FlyVis bridges and circuits you build, is CC BY-NC 4.0, for non-commercial use only. Changes by version are in the [changelog](CHANGELOG.md).

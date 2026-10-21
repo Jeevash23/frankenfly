@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest a new capability or an improvement.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        DigitalFly keeps two promises that shape every feature: saved runs replay exactly, and every part of a model is labeled as data-derived, assumed, engineered or a published model. The questions below help check a proposal against them.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What you are trying to do, and what gets in the way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you would like DigitalFly to do. Commands, settings or a sketch of the interface are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Other ways to get there, including what you can do today with the toolkit or the API.
+  - type: textarea
+    id: labels
+    attributes:
+      label: Scientific status
+      description: Which parts would be data-derived, assumed, engineered or taken from a published model? Which publications support them?
+  - type: textarea
+    id: data
+    attributes:
+      label: Data and licenses
+      description: Does it need new data or a new dependency? Give the source, release and license. FlyWire-derived data is CC BY-NC 4.0 (non-commercial).
+  - type: dropdown
+    id: replay
+    attributes:
+      label: Replay impact
+      description: Would the default behavior change any numbers that existing runs, committed circuits or the published evaluation produce?
+      options:
+        - No, it would be opt-in or leave existing numbers unchanged
+        - Yes, it would change existing numbers (please explain why above)
+        - I don't know
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to work on this myself (see CONTRIBUTING.md).
