@@ -247,6 +247,25 @@ def transmitter_signs(data: CircuitData, other_transmitters: str) -> np.ndarray:
     return np.array([CLASSIC_SIGNS.get(nt, other) for nt in data.transmitter], dtype=np.float64)
 
 
+def input_population(data: CircuitData, input_types: list[str] | None) -> tuple[np.ndarray, np.ndarray]:
+    """Left and right sensor-input neurons: the named cell types, or every visual projection neuron."""
+    if input_types is None:
+        visual = data.super_class == INPUT_SUPER_CLASS
+        return np.flatnonzero(visual & (data.side == "left")), np.flatnonzero(visual & (data.side == "right"))
+    return tuple(np.unique(np.concatenate([data.members(t, side) for t in input_types])) for side in ("left", "right"))
+
+
+def check_flyvis_inputs(data: CircuitData, input_types: list[str] | None = None):
+    """Raise ValueError unless the circuit's FlyVis bridge reaches input neurons on both sides. Bridges feed visual
+    projection neurons only, so FlyVis eyes on other input types would leave the circuit without input."""
+    fed = load_bridge(data)[0].getnnz(axis=1) > 0
+    blind = [side for side, members in zip(("left", "right"), input_population(data, input_types)) if not fed[members].any()]
+    if blind:
+        raise ValueError(f"FlyVis eyes reach no sensor-input neuron on the {' or '.join(blind)} side of the {data.key} "
+                         "circuit: its FlyVis bridge feeds visual projection neurons only. Choose visual projection "
+                         "cell types as the sensor input, or another sensor model.")
+
+
 class SpikingState:
     """Leaky integrate-and-fire network after Shiu et al. 2024, stepped at 0.1 ms (forward Euler).
 
@@ -366,6 +385,9 @@ class ConnectomeCircuit:
         """Apply parameters. A live edit keeps the network state: the rates, or in spiking dynamics v, g, the delay
         queue, rates, step count and random generator, as long as circuit and input population are unchanged."""
         data = load_circuit(self.path or parameters.circuit)
+        if self.visual is not None:  # FlyVis drives the circuit: its input neurons must be reachable
+            check_flyvis_inputs(data, parameters.input_types)
+        self._visual_checked = self.visual is not None
         if data is not self.data:
             self.data = data
             self.rates = np.zeros(len(data.ids))
@@ -381,15 +403,8 @@ class ConnectomeCircuit:
             if not len(left) or not len(right):
                 raise ValueError(f"{name} needs neurons on both sides to read out turning.")
             self.readouts.append((name, left, right))
-        if p.input_types is None:
-            visual = data.super_class == INPUT_SUPER_CLASS
-            self.input_left = np.flatnonzero(visual & (data.side == "left"))
-            self.input_right = np.flatnonzero(visual & (data.side == "right"))
-            input_label = "Visual input"
-        else:
-            self.input_left = np.unique(np.concatenate([data.members(t, "left") for t in p.input_types]))
-            self.input_right = np.unique(np.concatenate([data.members(t, "right") for t in p.input_types]))
-            input_label = "Input"
+        self.input_left, self.input_right = input_population(data, p.input_types)
+        input_label = "Visual input" if p.input_types is None else "Input"
         if not len(self.input_left) or not len(self.input_right):
             raise ValueError("The chosen input population has no neurons on one side.")
         self.speed = np.unique(np.concatenate([data.members(t) for t in p.speed_types])) if p.speed_types else None
@@ -464,6 +479,9 @@ class ConnectomeCircuit:
         if responses is None:
             self.visual = self._visual_drive = None
             return None
+        if not self._visual_checked:
+            check_flyvis_inputs(self.data, self.parameters.input_types)
+            self._visual_checked = True
         matrix, types = load_bridge(self.data)
         responses = np.asarray(responses, dtype=np.float64)
         if responses.shape != (2, len(types)):
@@ -528,6 +546,17 @@ class ConnectomeCircuit:
         data, p = self.data, self.parameters
         prov = data.provenance
         spiking = p.dynamics == "spiking"
+        flyvis = self.visual is not None
+        if flyvis:
+            bridge = bridge_path(data)
+            input_mapping = ("Engineered, unsigned FlyVis bridge: each sensor-input neuron's drive = input gain × Σ over eyes and "
+                             "FlyVis cell types of bridge weight (its FlyWire v783 synapse fraction from that type and eye) × "
+                             "pooled FlyVis response; every optic-lobe input counts as excitatory, unlike the circuit's sign rule"
+                             + ("; Poisson spikes at input rate × input gain × that drive" if spiking else ""))
+        else:
+            input_mapping = ((f"Engineered: the left/right sensor value × input gain drives every neuron of {', '.join(p.input_types)} on that side"
+                              if p.input_types else "Engineered: the left/right sensor value × input gain drives every visual projection neuron on that side")
+                             + (" as Poisson spikes (input rate × sensor)" if spiking else ""))
         return {
             "kind": self.kind, "unit_names": self.unit_names, "parameters": p.model_dump(),
             "circuit": data.key, "circuit_file": str(data.path.relative_to(ROOT)) if data.path.is_relative_to(ROOT) else data.path.name,
@@ -548,16 +577,17 @@ class ConnectomeCircuit:
             "signs": {"acetylcholine": "+1 (assumed)", "gaba": "-1 (assumed)", "glutamate": "-1 (assumed)",
                       "dopamine, serotonin, octopamine, unknown": "excluded (assumed)" if p.other_transmitters == "excluded"
                       else "+1 (assumed, Shiu et al. 2024 convention)"},
-            "input_mapping": (f"Engineered: the left/right sensor value × input gain drives every neuron of {', '.join(p.input_types)} on that side"
-                              if p.input_types else "Engineered: the left/right sensor value × input gain drives every visual projection neuron on that side")
-                             + (" as Poisson spikes (input rate × sensor)" if spiking else ""),
+            "input_mapping": input_mapping,
+            "flyvis_bridge": {"file": str(bridge.relative_to(ROOT)) if bridge.is_relative_to(ROOT) else bridge.name,
+                              "signs": "unsigned: every FlyVis cell type's input counts as excitatory"} if flyvis else None,
             "output_mapping": ("Engineered readout: turn = output gain × Σ (right − left) over "
                                f"{', '.join(name for name, _, _ in self.readouts)}; forward = tonic"
                                + (f" + speed gain × mean({', '.join(p.speed_types)})" if p.speed_types else "")
                                + "; motor = 1.4 × clip([forward + turn, forward − turn], 0, 1). "
                                "Direction: higher right DNa02 → rightward turn (Rayshubskiy et al. 2025); larger left amplitude turns right (FlyGym HybridTurningController)."),
             "labels": {"structure": "data-derived", "signs": "assumed", "dynamics": "engineered" if not spiking else "published model (Shiu et al. 2024 parameters)",
-                       "input_mapping": "engineered", "output_mapping": "engineered, direction from literature"},
+                       "input_mapping": "engineered, unsigned FlyVis bridge" if flyvis else "engineered",
+                       "output_mapping": "engineered, direction from literature"},
         }
 
 
