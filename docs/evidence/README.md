@@ -26,7 +26,7 @@ backend/.venv/bin/python scripts/build_circuit.py prepare                       
 backend/.venv/bin/python scripts/fetch_recording.py rayshubskiy2025-a2_d_13.mat               # one recorded fly, 71 MB
 ```
 
-The locks install into `backend/.venv`; downloads land in the ignored `.cache/`. The FlyWire data, and every circuit and bridge built from it, is CC BY-NC 4.0, non-commercial; the recording is CC0.
+The locks install into `backend/.venv`; downloads land in the ignored `.cache/`. The download commands retry network errors, resume an interrupted download when run again, and check every file against its recorded hashes. The FlyWire data, and every circuit and bridge built from it, is CC BY-NC 4.0, non-commercial; the recording is CC0.
 
 ## Tests and checks (STATUS validation table)
 
@@ -66,54 +66,18 @@ backend/.venv/bin/python scripts/benchmark.py --vision                 # rendere
 backend/.venv/bin/python scripts/benchmark.py --model connectome_dna02 # the connectome model on the DNa02 circuit, rate dynamics
 ```
 
-It does not time the neural step alone or the FlyVis sensor. The wall time per 1 ms neural step (0.05 and 0.3 ms for the 3,000-neuron circuit with rate and spiking dynamics; 3.2 and 6.7 ms for the whole brain) comes from timing the circuit directly. For the whole brain, build it first (needs the prepared archive) and add `"whole"` to the list:
+The same script times the neural step alone and the FlyVis sensor. The wall time per 1 ms neural step (0.05 and 0.3 ms for the 3,000-neuron circuit with rate and spiking dynamics; 3.2 and 6.7 ms for the whole brain) needs no graphics; it times every committed circuit with both dynamics, plus any local whole-brain build, after 100 warm-up steps, and writes `neural-step.json`. Build the whole brain first to include it (needs the prepared archive):
 
 ```sh
 backend/.venv/bin/python scripts/build_circuit.py build --name whole --seed DNa02 --whole-brain
-PYTHONPATH=backend/src backend/.venv/bin/python - <<'EOF'
-import time
-from digitalfly.api.models import ConnectomeParameters, Interventions, SensorState
-from digitalfly.neural.connectome import ConnectomeCircuit
-sensors, none = SensorState(left=.5, right=.5), Interventions()
-for circuit in ["fafb783-dna02"]:  # add "whole" after building it
-    for dynamics in ["rate", "spiking"]:
-        model = ConnectomeCircuit(ConnectomeParameters(circuit=circuit, dynamics=dynamics))
-        model.reset(0)
-        for _ in range(100):
-            model.advance(sensors, none)  # warm-up
-        start = time.perf_counter()
-        for _ in range(1000):
-            model.advance(sensors, none)
-        print(f"{circuit} {dynamics}: {time.perf_counter() - start:.3f} ms of wall time per 1 ms neural step")
-EOF
+backend/.venv/bin/python scripts/benchmark.py --neural                    # committed circuits and local whole-brain builds
+backend/.venv/bin/python scripts/benchmark.py --neural --circuit whole    # or only the circuits named
 ```
 
-FlyVis (10 ms of computing per 10 ms step for both eyes, and 0.11–0.15× real time for FlyVis-eye runs) needs the vision lock, the pretrained networks and graphics:
+FlyVis (10 ms of computing per 10 ms step for both eyes, and 0.11–0.15× real time for FlyVis-eye runs, without the body camera) needs the vision lock, the pretrained networks and graphics. Without them the report says why it was skipped:
 
 ```sh
-PYTHONPATH=backend/src backend/.venv/bin/python - <<'EOF'
-import time
-import numpy as np
-from digitalfly import toolkit
-from digitalfly.simulation.experiment import Experiment
-from digitalfly.vision.flyvis_eyes import FlyVisEyes
-eyes, grey = FlyVisEyes(), np.full(721, .5)
-eyes.step(grey, grey)
-start = time.perf_counter()
-for _ in range(100):
-    eyes.step(grey, grey)
-print(f"FlyVis: {(time.perf_counter() - start) * 10:.1f} ms per 10 ms step, both eyes")
-for circuit in ["fafb783-dna02", "fafb783-steering"]:
-    exp = Experiment(toolkit.configure({"engine": "flygym", "neural_model": "connectome", "sensor_model": "flyvis",
-                                        "connectome_parameters": {"circuit": circuit}}), render=False)
-    for _ in range(10):
-        exp.advance()  # first observation and adaptation
-    start = time.perf_counter()
-    for _ in range(200):
-        exp.advance()  # 2 simulated seconds
-    print(f"{circuit} with FlyVis eyes: {2 / (time.perf_counter() - start):.2f}x real time, without the body camera")
-    exp.close()
-EOF
+backend/.venv/bin/python scripts/benchmark.py --flyvis   # writes flyvis-timing.json
 ```
 
 The app's own real-time readout, under the controls, shows the same factor with the body camera on.
@@ -127,7 +91,7 @@ backend/.venv/bin/python scripts/evaluate_models.py --engine toy --workers 8    
 backend/.venv/bin/python scripts/evaluate_models.py --engine flygym --quick --workers 4 # needs graphics; writes evaluation-flygym-quick.json
 ```
 
-The script prints one row per target and model. `--models` runs a subset; in v0.5 its report holds only that subset and is written under the same file name as the full one, so keep a copy of the full report. The summary and silencing tables in the research guide are aggregated from the report:
+The script prints one row per target and model. `--models` runs a subset and `--duration` changes the trial length; such a partial report is named after them (for example `evaluation-toy-engineered.json`), so it never replaces the full one. Each finished trial is appended to the report's `.jsonl` and `.csv` while the evaluation runs; after an interruption or a failed trial, rerun the same command with `--resume` to run only what is missing. The summary and silencing tables in the research guide are aggregated from the report:
 
 ```sh
 backend/.venv/bin/python - docs/evidence/evaluation-toy.json <<'EOF'
@@ -187,30 +151,24 @@ The fly row of the fit table, after fetching the recording:
 backend/.venv/bin/python scripts/toolkit.py compare --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat --out runs/toolkit/compare-fly
 ```
 
-The four model rows use runs whose target jumps to a random side every 2 s (target seed 11, model seed 3): 30 simulated seconds on FlyGym (needs graphics) and 60 on the toy body. This records them and prints the firing-rate summary (mean and 99th percentile of each DNa02's rate, as fitted):
+The four model rows use runs whose target jumps to a random side every 2 s (target seed 11, model seed 3): 30 simulated seconds on FlyGym (needs graphics) and 60 on the toy body. Record them with `jump`, which prints each exported run's folder:
 
 ```sh
-PYTHONPATH=backend/src backend/.venv/bin/python - <<'EOF'
-import numpy as np
-from digitalfly import compare, toolkit
-recordings = [compare.rayshubskiy_recording(".cache/recordings/rayshubskiy2025-a2_d_13.mat")[0]]
-for engine, duration in [("flygym", 30), ("toy", 60)]:
-    for circuit in ["fafb783-dna02", "fafb783-steering"]:
-        config = toolkit.configure({"engine": engine, "seed": 3, "neural_model": "connectome",
-                                    "connectome_parameters": {"circuit": circuit, "dynamics": "spiking"}})
-        run = toolkit.jumping_target_run(config, duration_s=duration, seed=11)
-        print(engine, circuit, run["path"])
-        recordings.append(compare.model_recording(run["path"], "DNa02"))
-for r in recordings:
-    print(r.source, " ".join(f"{side} mean {rate.mean():.1f}, 99th percentile {np.percentile(rate, 99):.1f} {r.units};"
-                             for side, rate in (("left", r.left), ("right", r.right))))
-EOF
+for circuit in fafb783-dna02 fafb783-steering; do
+  for engine_duration in flygym:30 toy:60; do
+    backend/.venv/bin/python scripts/toolkit.py jump --engine ${engine_duration%:*} --duration ${engine_duration#*:} \
+        --jump-seed 11 --set seed=3 --set neural_model=connectome \
+        --set connectome_parameters.circuit=$circuit --set connectome_parameters.dynamics=spiking
+  done
+done
 ```
 
-Then fit each run, alone or next to the fly:
+Then fit them all next to the fly in one command (the fly row of the table includes the stimulation epochs, hence `--include-stimulus`). It prints one fit row per run (`model 1` to `model 4`, in the order given), the spread across the runs, and each source's left and right DNa02 rate (mean, median and 99th percentile, over the samples the fits use):
 
 ```sh
-backend/.venv/bin/python scripts/toolkit.py compare --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat --run runs/YOUR_RUN_FOLDER
+backend/.venv/bin/python scripts/toolkit.py compare --include-stimulus \
+    --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat \
+    --run runs/RUN_1 --run runs/RUN_2 --run runs/RUN_3 --run runs/RUN_4 --out runs/toolkit/compare-models
 ```
 
 The original firing-rate summary file was not kept, so how it pooled the two sides is not recorded; this prints each side separately.

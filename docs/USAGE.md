@@ -71,7 +71,7 @@ backend/.venv/bin/python scripts/toolkit.py jump --set neural_model=connectome -
 backend/.venv/bin/python scripts/toolkit.py compare --run runs/YOUR_RUN_FOLDER
 ```
 
-`trials` writes each trial to a `.jsonl` file and the CSV as soon as it finishes. A trial that fails (for example a FlyGym body that becomes numerically unstable) is saved as a row with an `error` column and the others carry on; the command then exits with an error. Rerun the same command with `--resume` and the same `--out` to run only the trials that are missing or failed. Every saved report records the git commit, the command line, the circuits with their SHA-256 and the package versions.
+`trials` writes each trial to a `.jsonl` file and the CSV as soon as it finishes. A trial that fails (for example a FlyGym body that becomes numerically unstable) is saved as a row with an `error` column and the others carry on; the command then exits with an error. Rerun the same command with `--resume` and the same `--out` to run only the trials that are missing or failed. Trials keep no per-sample recording, so `--duration` has no 300-second limit. Every saved report records the git commit, the command line, the circuits with their SHA-256 and the package versions.
 
 To compare with a real fly, fetch the recorded DNa02 data once (71 MB) and compare it with an exported run:
 
@@ -79,6 +79,8 @@ To compare with a real fly, fetch the recorded DNa02 data once (71 MB) and compa
 backend/.venv/bin/python scripts/fetch_recording.py rayshubskiy2025-a2_d_13.mat
 backend/.venv/bin/python scripts/toolkit.py compare --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat --run runs/YOUR_RUN_FOLDER
 ```
+
+A download that is interrupted resumes where it stopped when you run the same command again; network errors are retried a few times first, and a failure ends with a one-line message. `compare` takes `--recording` and `--run` more than once, and then also reports the mean and spread of each fit across the recordings.
 
 Run `scripts/toolkit.py COMMAND --help` for every option, and see the [research guide](RESEARCH.md#the-research-toolkit) for what each analysis measures and for the Python API.
 
@@ -109,9 +111,35 @@ Replace `YOUR_RUN_FOLDER` with a folder created by Export or by a completed comp
 To measure throughput on your machine:
 
 ```sh
-backend/.venv/bin/python scripts/benchmark.py
-backend/.venv/bin/python scripts/benchmark.py --vision
+backend/.venv/bin/python scripts/benchmark.py            # the app's worker: real-time factor and memory
+backend/.venv/bin/python scripts/benchmark.py --vision   # with rendered compound-eye input
+backend/.venv/bin/python scripts/benchmark.py --neural   # wall time per 1 ms neural step, per circuit and dynamics
+backend/.venv/bin/python scripts/benchmark.py --flyvis   # FlyVis eyes, when the vision install is present
 ```
+
+## Scripting the app from Python
+
+`digitalfly.client` drives the running app with the same commands as the browser. It uses only the Python standard library (plus `websockets`, installed with the app, for live telemetry), so it also works from another environment such as a notebook's, when you copy `backend/src/digitalfly/client.py` there:
+
+```python
+from digitalfly.client import Client      # PYTHONPATH=backend/src, or a copy of client.py
+fly = Client("http://127.0.0.1:8000")
+fly.reset({"engine": "toy", "neural_model": "connectome", "seed": 3})
+fly.stimulus(0, 12)                        # target 12 mm to the left
+fly.run()
+fly.wait_until(lambda state: state["sample"]["t"] >= 2)
+fly.interventions(silence_dna02="left")    # merged into the current interventions
+fly.connectome_parameters(output_gain=2)   # likewise merged into the current parameters
+for state in fly.stream(10):               # live telemetry, about 10 states a second while running
+    print(state["sample"]["t"], state["metrics"]["net_turn_deg"])
+fly.pause()
+saved = fly.export(share_safe=True)        # {run_id, samples, path, download_url}
+print(fly.runs(limit=5)["total"])
+```
+
+Every call returns the server's JSON; commands return the new state, the same object as `fly.status()`. `reset()` without a configuration restarts from the current one, and `reset(seed=4, **{"connectome_parameters.dynamics": "spiking"})` changes single values. `step(n)` advances n control intervals while paused. A refused command raises `ClientError` with the HTTP status and the server's reason, for example 409 for Step while running or 422 for an unknown cell type. Requests carry the `Origin` header of the app's own address, which the server accepts (a foreign origin gets 403), and never go through a proxy.
+
+The app runs a single experiment, so the browser shows what the script does, and a command from either changes it for both. For many trials, use the [research toolkit](RESEARCH.md#the-research-toolkit) instead: it runs without the app, in parallel. [`examples/`](../examples/README.md) has a script for each: a short protocol driven through the client, and a batch over seeds with the toolkit.
 
 ## Troubleshooting
 
@@ -131,7 +159,7 @@ backend/.venv/bin/python scripts/benchmark.py --vision
 
 **Linux rendering:** unless you set `MUJOCO_GL`, DigitalFly tries MuJoCo's default GLFW when there is a display, then EGL, then OSMesa, each in a short test process, and uses the first that renders. A `MUJOCO_GL` you set is never overridden. When none works (a server or container without graphics libraries), physics still runs without the 3D view, compound-eye vision is unavailable, and the message says what to do: start with `--toy`; run under a virtual display with `MUJOCO_GL=glfw xvfb-run -a ./scripts/start.sh`; or install EGL or OSMesa (Debian/Ubuntu: `sudo apt install libegl1`, or `libosmesa6`; recent Mesa releases no longer ship OSMesa). Setup never installs drivers or system packages.
 
-**Scripting the running app:** the REST schema is at http://127.0.0.1:8000/api/openapi.json (OpenAPI 3.1). Open it in the browser, or save it with `curl -o openapi.json http://127.0.0.1:8000/api/openapi.json` and load the file in any OpenAPI viewer or client generator. The app serves no interactive documentation page: one would need scripts from a CDN, which its security policy blocks.
+**Scripting the running app:** use the Python client ([Scripting the app from Python](#scripting-the-app-from-python)). The REST schema is at http://127.0.0.1:8000/api/openapi.json (OpenAPI 3.1). Open it in the browser, or save it with `curl -o openapi.json http://127.0.0.1:8000/api/openapi.json` and load the file in any OpenAPI viewer or client generator. The app serves no interactive documentation page: one would need scripts from a CDN, which its security policy blocks.
 
 **Connectome circuit unavailable:** the committed circuits are `data/circuits/fafb783-dna02.json` and `fafb783-steering.json`. If one is missing or edited, restore it from version control or rebuild it with `scripts/build_circuit.py` (see the [research guide](RESEARCH.md#building-the-subcircuit)). A local circuit that no longer loads appears in the circuit list with its error; delete or rebuild it. The app refuses to rebuild the circuit the running experiment uses; if `build_circuit.py` rewrites it anyway, the run keeps its loaded wiring and asks you to Reset before parameter edits.
 
