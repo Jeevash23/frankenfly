@@ -15,12 +15,14 @@ __pycache__/
 .env
 .env.*
 !.env.example
-/.codex/
-/.claude/
-/.agents/
-/.idea/
-/.vscode/
-/.npmrc
+# No leading slash, so these also match inside frontend/ and backend/.
+.codex/
+.claude/
+.agents/
+.idea/
+.vscode/
+.npmrc
+.pypirc
 *.key
 *.pem
 *.p12
@@ -35,6 +37,10 @@ __pycache__/
 !/data/examples/
 !/data/circuits/
 !/data/recordings/
+# Raw recordings belong in .cache/recordings/; only their manifest and license are tracked.
+/data/recordings/*
+!/data/recordings/downloads.json
+!/data/recordings/LICENSE.md
 # Circuits built locally from the app or the builder's `build` command stay on this machine.
 /data/circuits/local/
 
