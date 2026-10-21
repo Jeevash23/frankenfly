@@ -23,10 +23,13 @@ export function invalidateCircuits() {
 // parameters (summaryKey). Null while the engineered model is selected, and while another circuit
 // loads: type indices differ between circuits. While a new summary of the same circuit file loads
 // (another threshold or population), the previous one stays on screen.
+// `changed` is true when the server refused the summary because the circuit file was rebuilt since
+// the run loaded it (HTTP 409): a Reset loads the new build.
 export function useCircuit(state: State | null): {
   circuit: CircuitSummary | null;
   error: string;
   loading: boolean;
+  changed: boolean;
 } {
   const active = state?.config.neural_model === 'connectome';
   const parameters = state?.config.connectome_parameters;
@@ -37,7 +40,9 @@ export function useCircuit(state: State | null): {
   const version = useSyncExternalStore(subscribe, () => generation);
   const [shown, setShown] = useState<CircuitSummary | null>(cache.get(key) ?? null);
   const [error, setError] = useState('');
+  const [changed, setChanged] = useState(false);
   useEffect(() => {
+    setChanged(false);
     if (!active || !parameters || starting) return;
     const known = cache.get(key);
     if (known) {
@@ -47,7 +52,16 @@ export function useCircuit(state: State | null): {
     }
     let cancelled = false;
     fetch('/api/connectome/circuit')
-      .then((r) => {
+      .then(async (r) => {
+        if (r.status === 409) {
+          const data = await r.json().catch(() => ({}));
+          if (!cancelled) setChanged(true);
+          throw Error(
+            typeof data.detail === 'string'
+              ? data.detail
+              : 'The circuit file changed since this run loaded it. Reset to load the new build.',
+          );
+        }
         if (!r.ok)
           throw Error(
             'The connectome circuit could not be loaded. Rebuild it with scripts/build_circuit.py.',
@@ -72,14 +86,16 @@ export function useCircuit(state: State | null): {
     return () => {
       cancelled = true;
     };
-  }, [active, key, starting, version]);
+    // A new run (a Reset) asks again after a refusal: it may have loaded the rebuilt file.
+  }, [active, key, starting, version, state?.run_id]);
   const cached = cache.get(key);
   const sameFile =
     !!shown && shown.name === parameters?.circuit && (!sha256 || shown.sha256 === sha256);
   return {
-    circuit: active ? (cached ?? (sameFile ? shown : null)) : null,
+    circuit: active && !changed ? (cached ?? (sameFile ? shown : null)) : null,
     error,
-    loading: active && !cached,
+    loading: active && !cached && !changed,
+    changed: active && changed,
   };
 }
 

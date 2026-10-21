@@ -1,6 +1,6 @@
 import {memo, useEffect, useState} from 'react';
 import {Activity, Eye, Network, ArrowRight} from 'lucide-react';
-import type {Command, NeuralParameters, Sample, State} from './types';
+import type {Command, InterventionChange, NeuralParameters, Sample, State} from './types';
 import {fmt} from './format';
 import {eyeImageUrl} from './snapshot';
 const names = [
@@ -209,10 +209,13 @@ type Circuit = {
 export function CircuitPanel({
   state,
   command,
+  intervene,
   disabled,
 }: {
   state: State | null;
   command: Command;
+  // Builds on the newest interventions, including one still in flight.
+  intervene: (change: InterventionChange) => void;
   disabled: boolean;
 }) {
   const [circuit, setCircuit] = useState<Circuit | null>(null);
@@ -433,11 +436,10 @@ export function CircuitPanel({
           className="secondary-button"
           disabled={disabled || !!activeBatch}
           onClick={() =>
-            void command('interventions', {
-              ...state?.interventions,
-              silence: ['sensory', 'sensory', 'steering', 'steering', 'descending', 'descending'][
-                selected
-              ],
+            intervene({
+              silence: (
+                ['sensory', 'sensory', 'steering', 'steering', 'descending', 'descending'] as const
+              )[selected],
             })
           }
         >
@@ -446,9 +448,7 @@ export function CircuitPanel({
         <button
           className="text-button"
           disabled={disabled || !!activeBatch}
-          onClick={() =>
-            void command('interventions', {zero_left: false, zero_right: false, silence: 'none'})
-          }
+          onClick={() => intervene({zero_left: false, zero_right: false, silence: 'none'})}
         >
           Restore all inputs & units
         </button>

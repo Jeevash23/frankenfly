@@ -8,11 +8,12 @@ import {
   LoaderCircle,
   X,
 } from 'lucide-react';
-import type {Command, Config, InterventionChange, State, Stimulus} from '../types';
+import type {Command, Config, InterventionChange, State, StimulusChange} from '../types';
 import {fmt} from '../format';
 import {neuralStage} from '../models';
 import {BodyMeasurements, EyePanel} from '../ResearchPanels';
 import {InterventionPanel} from './InterventionPanel';
+import {PresetPanel} from './PresetPanel';
 import {SessionLog} from './SessionLog';
 import {Signals} from './Signals';
 import {type Draft, StimulusPanel} from './StimulusPanel';
@@ -58,14 +59,15 @@ export function Workbench({
   setSeed: (seed: number) => void;
   draft: Draft;
   setDraft: (draft: Draft | ((previous: Draft) => Draft)) => void;
-  moveTarget: (target: Partial<Stimulus>) => Promise<unknown>;
+  moveTarget: (change: StimulusChange) => Promise<unknown>;
   intervene: (change: InterventionChange) => void;
   reset: (override?: Partial<Config>) => Promise<unknown>;
-  exportRun: () => Promise<void>;
+  exportRun: (shareSafe: boolean) => Promise<void>;
   openModelNotes: () => void;
   openExperiments: () => void;
 }) {
   const runButton = useRef<HTMLButtonElement>(null);
+  const [shareSafe, setShareSafe] = useState(false);
   // The banner and its button disappear with the protocol, so focus moves on to Run.
   const [focusRun, setFocusRun] = useState(false);
   const protocol = state?.config.protocol;
@@ -162,25 +164,48 @@ export function Workbench({
             draft={draft}
             setDraft={setDraft}
           />
-          <InterventionPanel state={state} editDisabled={editDisabled} intervene={intervene} />
-          <button
-            className="export-button"
-            disabled={disabled || !state?.sample}
-            aria-busy={exportPending}
-            onClick={() => {
-              if (!exportPending) void exportRun();
-            }}
-          >
-            {exportPending ? (
-              <LoaderCircle size={16} className="spin" />
-            ) : (
-              <ArrowDownToLine size={16} />
-            )}
-            <span>
-              Export this run<small>Telemetry, configuration & events</small>
-            </span>
-            <ArrowUpRight size={15} />
-          </button>
+          <InterventionPanel
+            state={state}
+            editDisabled={editDisabled}
+            intervene={intervene}
+            reset={() => void reset()}
+          />
+          <PresetPanel state={state} command={command} disabled={editDisabled} />
+          <div className="export-group">
+            <button
+              className="export-button"
+              disabled={disabled || !state?.sample}
+              aria-busy={exportPending}
+              onClick={() => {
+                if (!exportPending) void exportRun(shareSafe);
+              }}
+            >
+              {exportPending ? (
+                <LoaderCircle size={16} className="spin" />
+              ) : (
+                <ArrowDownToLine size={16} />
+              )}
+              <span>
+                Export this run
+                <small>Telemetry, configuration & events{shareSafe ? ' · share-safe' : ''}</small>
+              </span>
+              <ArrowUpRight size={15} />
+            </button>
+            <label className="check-label share-safe">
+              <input
+                type="checkbox"
+                checked={shareSafe}
+                onChange={(e) => setShareSafe(e.target.checked)}
+              />
+              <span>
+                Share-safe export
+                <small>
+                  Leaves out the operating system and replaces absolute paths and this computer's
+                  name, for runs you publish.
+                </small>
+              </span>
+            </label>
+          </div>
         </aside>
       </div>
       <SessionLog state={state} editDisabled={editDisabled} running={running} reset={reset} />

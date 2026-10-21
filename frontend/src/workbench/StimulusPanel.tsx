@@ -1,5 +1,5 @@
 import {ChevronDown, Crosshair} from 'lucide-react';
-import type {Config, Dynamics, NeuralModel, Sample, State, Stimulus} from '../types';
+import type {Config, Dynamics, NeuralModel, Sample, State, StimulusChange} from '../types';
 import {configForCircuit, dynamicsNames, modelNames, modelSwitch} from '../models';
 import {fmt} from '../format';
 import {throttled} from '../draft';
@@ -172,7 +172,7 @@ export function StimulusPanel({
   editDisabled: boolean;
   running: boolean;
   reset: (override?: Partial<Config>) => Promise<unknown>;
-  moveTarget: (target: Partial<Stimulus>) => Promise<unknown>;
+  moveTarget: (change: StimulusChange) => Promise<unknown>;
   draft: Draft;
   setDraft: (draft: Draft | ((previous: Draft) => Draft)) => void;
 }) {
@@ -268,7 +268,7 @@ export function StimulusPanel({
         )}
         <div className="target-map">
           <Arena state={state} compact disabled={editDisabled} onTarget={moveTarget} />
-          <span className="map-hint">Click to reposition</span>
+          <span className="map-hint">Click or use arrow keys</span>
           <span className="map-legend">
             <i />
             Target

@@ -1,5 +1,5 @@
-import type {State, Stimulus} from '../types';
-import {targetFromPoint} from '../plot';
+import type {State, StimulusChange} from '../types';
+import {nudgeTarget, targetFromPoint} from '../plot';
 
 export function Arena({
   state,
@@ -9,7 +9,7 @@ export function Arena({
 }: {
   state: State | null;
   compact?: boolean;
-  onTarget: (target: Partial<Stimulus>) => void;
+  onTarget: (change: StimulusChange) => void;
   disabled: boolean;
 }) {
   const pose = state?.sample?.pose;
@@ -22,8 +22,15 @@ export function Arena({
     <svg
       className={`arena ${compact ? 'compact' : ''}`}
       viewBox="0 0 300 300"
-      role="img"
-      aria-label="Arena map: click to move stimulus, coordinates in millimeters"
+      role="application"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={`Arena map, coordinates in millimeters${target ? `: target at (${target.x}, ${target.y})` : ''}. Click to place the target, or use the arrow keys to move it by 1 mm (5 mm with Shift).`}
+      onKeyDown={(event) => {
+        if (disabled || !target || !nudgeTarget(target, event.key, event.shiftKey)) return;
+        event.preventDefault();
+        // Built on the newest target sent, so quick presses all count.
+        onTarget((current) => nudgeTarget(current, event.key, event.shiftKey) ?? {});
+      }}
       onPointerDown={(event) => {
         if (disabled) return;
         // SVG's square is letterboxed in the element; use its actual square drawing area.

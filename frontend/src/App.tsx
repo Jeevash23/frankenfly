@@ -1,16 +1,17 @@
 import {useEffect, useRef, useState} from 'react';
 import {MoveUpRight} from 'lucide-react';
-import type {Config, Intervention, InterventionChange, Stimulus} from './types';
+import type {Config, Intervention, InterventionChange, Stimulus, StimulusChange} from './types';
 import {useServerVersion, useSimulation} from './useSimulation';
 import {fmt} from './format';
 import {tabKeys} from './keys';
 import {AnatomyPanel, ConnectivityPanel} from './Atlas';
 import {CircuitPanel} from './ResearchPanels';
-import Experiments from './Experiments';
+import Experiments from './experiments/Experiments';
 import {ConnectomeCircuitView} from './connectome/CircuitView';
 import {BuildPanel} from './connectome/BuildPanel';
 import {modelPhrases, noInterventions} from './models';
-import {AppHeader, type Page} from './shell/AppHeader';
+import {AppHeader} from './shell/AppHeader';
+import {ATLAS_VIEWS, parseHash, routeHash, type AtlasView, type Page} from './route';
 import {Alerts, type Exported} from './shell/Alerts';
 import {ModelDialog, QuitDialog} from './shell/Dialogs';
 import {ErrorBoundary} from './shell/ErrorBoundary';
@@ -19,8 +20,6 @@ import {Workbench} from './workbench/Workbench';
 import type {WorldView} from './workbench/WorldPanel';
 import './research.css';
 
-type AtlasView = 'anatomy' | 'circuit' | 'build' | 'connectivity';
-const ATLAS_VIEWS: readonly AtlasView[] = ['anatomy', 'circuit', 'build', 'connectivity'];
 const atlasNames: Record<AtlasView, string> = {
   anatomy: 'Male & female anatomy',
   circuit: 'Live circuit',
@@ -38,8 +37,26 @@ export default function App() {
   const {state, connected, pending, error, command, inFlight, clearError} =
     useSimulation(!serverClosed);
   const version = useServerVersion(state?.instance_id);
-  const [page, setPage] = useState<Page>('workbench');
-  const [atlasView, setAtlasView] = useState<AtlasView>('anatomy');
+  // The page and atlas tab follow the URL hash, so Back, Forward and reload keep your place.
+  const [route, setRoute] = useState(() => parseHash(location.hash));
+  const [lastAtlas, setLastAtlas] = useState<AtlasView>(route.atlas ?? 'anatomy');
+  const page = route.page;
+  const atlasView = route.atlas ?? lastAtlas;
+  useEffect(() => {
+    const changed = () => setRoute(parseHash(location.hash));
+    window.addEventListener('hashchange', changed);
+    return () => window.removeEventListener('hashchange', changed);
+  }, []);
+  useEffect(() => {
+    if (route.atlas) setLastAtlas(route.atlas);
+  }, [route.atlas]);
+  const go = (next: Page, atlas: AtlasView = atlasView) => {
+    const hash = routeHash(next, atlas);
+    if (location.hash !== hash) location.hash = hash;
+    setRoute({page: next, atlas: next === 'atlas' ? atlas : null});
+  };
+  const setPage = (next: Page) => go(next);
+  const setAtlasView = (atlas: AtlasView) => go('atlas', atlas);
   const [quitOpen, setQuitOpen] = useState(false);
   const [quitting, setQuitting] = useState(false);
   const [quitFailed, setQuitFailed] = useState(false);
@@ -91,9 +108,13 @@ export default function App() {
     return () => window.removeEventListener('keydown', keydown);
   }, [disabled, running, valid, transportPending, command, modelNotes, quitOpen, page]);
 
-  const moveTarget = (values: Partial<Stimulus>) => {
+  const moveTarget = (change: StimulusChange) => {
     const base = (inFlight('stimulus') as Stimulus | undefined) ?? stimulus;
-    return base ? command('stimulus', {...base, ...values}) : Promise.resolve(null);
+    if (!base) return Promise.resolve(null);
+    return command('stimulus', {
+      ...base,
+      ...(typeof change === 'function' ? change(base) : change),
+    });
   };
   const intervene = (change: InterventionChange) => {
     const base = (inFlight('interventions') as Intervention | undefined) ?? interventions;
@@ -114,9 +135,9 @@ export default function App() {
       ...override,
     });
   };
-  const exportRun = async () => {
-    const data = await command('export');
-    if (data) setExported(data);
+  const exportRun = async (shareSafe: boolean) => {
+    const data = await command('export', shareSafe ? {share_safe: true} : {});
+    if (data) setExported({...data, share_safe: shareSafe});
   };
 
   const quit = async (save: boolean) => {
@@ -240,7 +261,12 @@ export default function App() {
                         disabled={disabled}
                       />
                     ) : (
-                      <CircuitPanel state={state} command={command} disabled={disabled} />
+                      <CircuitPanel
+                        state={state}
+                        command={command}
+                        intervene={intervene}
+                        disabled={disabled}
+                      />
                     )
                   ) : atlasView === 'build' ? (
                     <BuildPanel

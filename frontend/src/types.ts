@@ -1,6 +1,17 @@
 export type Engine = 'flygym' | 'toy';
 export type NeuralModel = 'engineered' | 'connectome';
 export type Stimulus = {x: number; y: number; intensity: number};
+export type Side = 'both' | 'left' | 'right';
+export type ManipulationMode = 'silence' | 'scale' | 'activate';
+// An engineered manipulation of one cell type on one side or both (connectome model only).
+// scale: output × value (0–2); activate: rate clamped to value (rate, 0–1) or Poisson input at
+// value Hz (spiking, 0–500); silence ignores value.
+export type CellTypeIntervention = {
+  name: string;
+  side: Side;
+  mode: ManipulationMode;
+  value: number;
+};
 export type Intervention = {
   zero_left: boolean;
   zero_right: boolean;
@@ -9,9 +20,13 @@ export type Intervention = {
   // Connectome model only.
   silence_dna02?: 'none' | 'left' | 'right' | 'both';
   silence_types?: string[];
+  // At most one entry per side of a cell type ("both" covers left and right; silence_types and
+  // silence_dna02 count too); the server refuses overlaps.
+  cell_types?: CellTypeIntervention[];
 };
 // A change to the live interventions: fields to set, or a function of the newest interventions
 // (including a change still in flight), for toggles and list edits.
+export type StimulusChange = Partial<Stimulus> | ((current: Stimulus) => Partial<Stimulus>);
 export type InterventionChange =
   Partial<Intervention> | ((current: Intervention) => Partial<Intervention>);
 export type NeuralParameters = {
@@ -45,6 +60,11 @@ export type ConnectomeParameters = {
   speed_types: string[];
   speed_gain: number;
   spiking: SpikingParameters;
+  // Engineered motor path; the defaults (null, 'sum', 0, 0) reproduce v0.5.
+  readout_weights?: Record<string, number> | null;
+  readout_pool?: 'sum' | 'mean';
+  motor_delay_ms?: number;
+  motor_tau_ms?: number;
 };
 // One entry of /api/connectome/circuits.
 export type CircuitInfo = {
@@ -151,7 +171,23 @@ export type Batch = {
   results: {run_id: string; metrics: Metrics}[];
   error?: string;
   cell_type?: string | null;
+  // Trials ran unpaced (v0.6).
+  max_speed?: boolean;
+  // The unfinished trial of a cancelled or failed comparison, saved and marked partial.
+  partial?: {run_id: string; metrics: Metrics; condition?: string; seed?: number};
+  partial_error?: string;
+  // Set when the Workbench configuration from before the comparison could not be restored.
+  restore_error?: string;
 };
+// A labelled comparison condition of your own (BatchRequest.custom_conditions).
+export type CustomCondition = {
+  label: string;
+  interventions: Intervention | null;
+  // Live-editable connectome parameters only (not circuit, dynamics or populations).
+  connectome_parameters: Partial<Record<CustomParameter, number>> | null;
+};
+export type CustomParameter =
+  'output_gain' | 'input_gain' | 'tonic_drive' | 'motor_delay_ms' | 'motor_tau_ms';
 // Live, display-only activity of the connectome model (not recorded).
 export type ConnectomeLive = {
   circuit: string;
@@ -163,6 +199,10 @@ export type ConnectomeLive = {
   type_rates: number[];
   turn: number;
   silenced_neurons: number;
+  // Neurons under each kind of manipulation, and the share of control intervals whose motor
+  // command was clipped to [0, 1] (v0.6).
+  manipulated_neurons?: {silence: number; scale: number; activate: number};
+  motor_clipped_fraction?: number;
   trace_t: number[];
   top_types: {index: number; name: string; trace: number[]}[];
 };
@@ -216,9 +256,48 @@ export type SavedRun = {
     seed: number;
     neural_model?: NeuralModel;
     cell_type?: string | null;
+    // An unfinished trial saved when its comparison was cancelled or failed.
+    partial?: boolean;
   } | null;
   error?: string;
   provenance: Record<string, string>;
   download_url: string;
   trajectory?: number[][];
+  // The latest replay check (POST /api/runs/{key}/replay); null when never checked.
+  verified?: Verification | null;
+};
+export type Verification = {
+  ok: boolean;
+  max_abs_error: number;
+  tolerance: number;
+  checked: string;
+  same_software: boolean;
+  message: string;
+  samples_compared?: number;
+  column_errors?: Record<string, number | null>;
+  software_differences?: string[];
+};
+// A background job: a circuit build or a replay check, in its own process (GET /api/jobs).
+export type Job = {
+  id: string;
+  kind: 'build' | 'replay';
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  label: string;
+  target: string | null;
+  created: string;
+  started: string | null;
+  finished: string | null;
+  progress: number | null;
+  log_tail: string[];
+  result: unknown;
+  error: string | null;
+};
+// One entry of GET /api/configs.
+export type PresetInfo = {
+  name: string;
+  source: 'shipped' | 'local';
+  description: string;
+  available: boolean;
+  reason?: string;
+  error?: string;
 };

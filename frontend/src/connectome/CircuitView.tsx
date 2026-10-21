@@ -1,10 +1,20 @@
 import {memo, useEffect, useMemo, useRef, useState, type KeyboardEvent} from 'react';
-import {ArrowRight, Network, Route, Search} from 'lucide-react';
+import {ArrowRight, Network, Route, Search, TriangleAlert} from 'lucide-react';
 import type {Command, Config, ConnectomeParameters, InterventionChange, State} from '../types';
 import {fmt} from '../format';
-import {dynamicsLabels, readoutPairs} from '../models';
+import {clippingNote, dynamicsLabels, readoutPairs} from '../models';
+import {
+  manipulationLabel,
+  manipulationOn,
+  manipulations,
+  withCellType,
+  withoutCellType,
+  withoutManipulation,
+} from '../interventions';
 import {useCircuit} from './useCircuit';
 import {parseTypes} from './build';
+import {CircuitChanged} from './CircuitChanged';
+import {MANIPULATION_NOTE, ManipulationEditor, ManipulationList} from './Manipulations';
 import {
   activityColor,
   edgesToDraw,
@@ -78,6 +88,8 @@ function ParameterForm({
   const current = state?.config.connectome_parameters;
   const [params, setParams] = useState<ConnectomeParameters | null>(current ?? null);
   const [populations, setPopulations] = useState({readout: '', input: '', speed: ''});
+  // Readout weights as typed; an empty field is the default weight 1.
+  const [weights, setWeights] = useState<Record<string, string>>({});
   const key = JSON.stringify(current);
   useEffect(() => {
     if (!current) return;
@@ -87,9 +99,33 @@ function ParameterForm({
       input: (current.input_types ?? []).join('; '),
       speed: current.speed_types.join('; '),
     });
+    setWeights(
+      Object.fromEntries(
+        Object.entries(current.readout_weights ?? {}).map(([type, w]) => [type, String(w)]),
+      ),
+    );
   }, [key]);
   if (!params || !current) return null;
   const spiking = params.dynamics === 'spiking';
+  const readoutTypes = state?.connectome?.readout_types ?? [];
+  const typedWeights = Object.entries(weights).filter(
+    ([type, w]) => w.trim() !== '' && readoutTypes.includes(type),
+  );
+  const weightProblem = typedWeights.some(
+    ([, w]) => !Number.isFinite(Number(w)) || Number(w) < -5 || Number(w) > 5,
+  )
+    ? 'Readout weights take −5 to 5.'
+    : null;
+  const submitted = (): ConnectomeParameters => ({
+    ...params,
+    readout_weights: typedWeights.length
+      ? Object.fromEntries(typedWeights.map(([type, w]) => [type, Number(w)]))
+      : null,
+  });
+  const motorFields = [
+    ['motor_delay_ms', 'Motor delay (ms)', 0, 500, 1],
+    ['motor_tau_ms', 'Motor low-pass τ (ms)', 0, 1000, 1],
+  ] as const;
   const fields = [
     ['synapse_threshold', 'Synapse threshold', 1, 1000, 1],
     ...(spiking ? [] : ([['global_gain', 'Global gain', 0, 1, 0.0001]] as const)),
@@ -117,9 +153,10 @@ function ParameterForm({
   return (
     <>
       <form
+        className="global-form"
         onSubmit={(e) => {
           e.preventDefault();
-          void command('connectome/parameters', params);
+          if (!weightProblem) void command('connectome/parameters', submitted());
         }}
       >
         <div className="parameter-fields">
@@ -179,7 +216,63 @@ function ParameterForm({
             </select>
           </label>
         </div>
-        <button className="primary-button" disabled={disabled}>
+        <fieldset className="motor-path">
+          <legend>Motor path (engineered)</legend>
+          <div className="parameter-fields">
+            {motorFields.map(([field, label, min, max, step]) => (
+              <label key={field}>
+                {label}
+                <input
+                  aria-label={label}
+                  type="number"
+                  min={min}
+                  max={max}
+                  step={step}
+                  required
+                  value={params[field] ?? 0}
+                  disabled={disabled}
+                  onChange={(e) => setParams({...params, [field]: Number(e.target.value)})}
+                />
+              </label>
+            ))}
+            <label>
+              Readout pooling
+              <select
+                aria-label="Readout pooling"
+                value={params.readout_pool ?? 'sum'}
+                disabled={disabled}
+                onChange={(e) =>
+                  setParams({...params, readout_pool: e.target.value as 'sum' | 'mean'})
+                }
+              >
+                <option value="sum">Sum over readout types (default)</option>
+                <option value="mean">Mean over readout types</option>
+              </select>
+            </label>
+            {readoutTypes.map((type) => (
+              <label key={type}>
+                Weight of {type}
+                <input
+                  aria-label={`Readout weight of ${type}`}
+                  type="number"
+                  min={-5}
+                  max={5}
+                  step={0.1}
+                  placeholder="1"
+                  value={weights[type] ?? ''}
+                  disabled={disabled}
+                  onChange={(e) => setWeights({...weights, [type]: e.target.value})}
+                />
+              </label>
+            ))}
+          </div>
+          {weightProblem && (
+            <p className="microcopy" role="status">
+              {weightProblem}
+            </p>
+          )}
+        </fieldset>
+        <button className="primary-button" disabled={disabled || !!weightProblem}>
           Apply parameters
         </button>
       </form>
@@ -310,7 +403,7 @@ export function ConnectomeCircuitView({
   reset: (override?: Partial<Config>) => void;
   disabled: boolean;
 }) {
-  const {circuit, error, loading} = useCircuit(state);
+  const {circuit, error, loading, changed} = useCircuit(state);
   const [selected, setSelected] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   // The selection (and, by remounting the diagram, traced paths) resets only when another circuit
@@ -345,6 +438,8 @@ export function ConnectomeCircuitView({
         : [],
     [circuit, selected, readoutIndex],
   );
+  if (changed)
+    return <CircuitChanged message={error} reset={() => reset()} disabled={controlsDisabled} />;
   if (!circuit)
     return (
       <section className="panel empty-research" role="status">
@@ -391,6 +486,7 @@ const TypeNode = memo(function TypeNode({
   input,
   active,
   silenced,
+  manipulation,
   tabbable,
 }: {
   nodeKey: string;
@@ -405,6 +501,8 @@ const TypeNode = memo(function TypeNode({
   input: boolean;
   active: boolean;
   silenced: boolean;
+  // What acts on the type, e.g. "DNa03 left output ×0.5", or null.
+  manipulation: string | null;
   tabbable: boolean;
 }) {
   return (
@@ -414,19 +512,20 @@ const TypeNode = memo(function TypeNode({
       role="button"
       tabIndex={tabbable ? 0 : -1}
       aria-pressed={active}
-      aria-label={`Inspect ${name}: ${count} neurons`}
+      aria-label={`Inspect ${name}: ${count} neurons${manipulation ? `, ${manipulation}` : ''}`}
     >
       <circle
         cx={x}
         cy={y}
         r={r}
         fill={fill}
-        stroke={active ? '#ba9455' : input ? '#c29a55' : '#9fb390'}
-        strokeWidth={active ? 2.5 : input ? 1.4 : 0.7}
-        strokeDasharray={silenced ? '2 2' : undefined}
+        stroke={active ? '#ba9455' : manipulation ? '#9c6f2c' : input ? '#c29a55' : '#9fb390'}
+        strokeWidth={active ? 2.5 : manipulation ? 1.6 : input ? 1.4 : 0.7}
+        strokeDasharray={silenced ? '2 2' : manipulation ? '5 2' : undefined}
       >
         <title>
           {name} · {count} neurons · hop {layer < 0 ? 'none' : layer} · {transmitter}
+          {manipulation ? ` · ${manipulation}` : ''}
         </title>
       </circle>
       {(active || count >= 12) && (
@@ -472,9 +571,17 @@ function CircuitDiagram({
   byIndex: Map<number, CircuitType>;
 }) {
   const rates = state?.connectome?.type_rates ?? [];
-  const dynamics = state?.config.connectome_parameters.dynamics ?? 'rate';
-  const silenced = new Set(state?.interventions.silence_types ?? []);
-  const dna02Silenced = state?.interventions.silence_dna02 ?? 'none';
+  const parameters = state?.config.connectome_parameters;
+  const dynamics = parameters?.dynamics ?? 'rate';
+  const clipping = clippingNote(state?.connectome?.motor_clipped_fraction);
+  const interventions = state?.interventions;
+  // Cell types by what acts on them: silenced on both sides, or otherwise manipulated.
+  const manipulated = new Map<string, string[]>();
+  for (const m of manipulations(interventions))
+    manipulated.set(m.name, [...(manipulated.get(m.name) ?? []), manipulationLabel(m, dynamics)]);
+  const silencedBoth = (name: string) =>
+    manipulationOn(interventions, name, 'left')?.mode === 'silence' &&
+    manipulationOn(interventions, name, 'right')?.mode === 'silence';
   const pairs = readoutPairs(circuit.readouts.map((r) => r.cell_type));
   const rows = useMemo(() => readoutRows(circuit.readouts.length), [circuit]);
   const radius = Math.max(
@@ -534,18 +641,11 @@ function CircuitDiagram({
   };
   const sampleRate = (index: number) => state?.sample?.rates[index] ?? 0;
   const isOff = (name: string, side: 'left' | 'right') =>
-    silenced.has(name) ||
-    (name === 'DNa02' && (dna02Silenced === side || dna02Silenced === 'both'));
+    manipulationOn(interventions, name, side)?.mode === 'silence';
   const selectedType = selected !== null ? (byIndex.get(selected) ?? null) : null;
   const name = (index: number) => byIndex.get(index)?.name ?? '?';
   // Built on the newest interventions, so quick successive edits all apply.
-  const silence = (type: string, off: boolean) =>
-    intervene((current) => ({
-      silence_types: [
-        ...(current.silence_types ?? []).filter((t) => t !== type),
-        ...(off ? [type] : []),
-      ],
-    }));
+  const restoreType = (type: string) => intervene((current) => withoutCellType(current, type));
   const matches = query
     ? circuit.types.filter((t) => t.name.toLowerCase().includes(query.toLowerCase())).slice(0, 8)
     : [];
@@ -705,7 +805,7 @@ function CircuitDiagram({
             const node = layout.get(type.index);
             if (!node) return null;
             const key = `t${type.index}`;
-            const off = silenced.has(type.name);
+            const off = silencedBoth(type.name);
             return (
               <TypeNode
                 key={type.index}
@@ -721,6 +821,7 @@ function CircuitDiagram({
                 input={type.input}
                 active={selected === type.index}
                 silenced={off}
+                manipulation={manipulated.get(type.name)?.join('; ') ?? null}
                 tabbable={tabStop === key}
               />
             );
@@ -757,7 +858,9 @@ function CircuitDiagram({
             }),
           )}
           <text x={READOUT_X} y="520" textAnchor="middle" className="circuit-stage">
-            turn = {fmt(state?.config.connectome_parameters.output_gain, 1)} × Σ (R − L)
+            turn = {fmt(parameters?.output_gain, 1)} ×{' '}
+            {parameters?.readout_pool === 'mean' ? 'mean' : 'Σ'}{' '}
+            {parameters?.readout_weights ? 'w × ' : ''}(R − L)
           </text>
           <text x={READOUT_X} y="536" textAnchor="middle" className="dna02-label">
             {fmt(state?.connectome?.turn)}{' '}
@@ -806,7 +909,7 @@ function CircuitDiagram({
             <span className="eyebrow">SELECTED CELL TYPE</span>
             <h2>{selectedType.name}</h2>
             <div className="selected-rate">
-              {silenced.has(selectedType.name) ? 'silenced' : fmt(rates[selected], 3)}
+              {silencedBoth(selectedType.name) ? 'silenced' : fmt(rates[selected], 3)}
               <small>
                 mean computed {dynamics === 'spiking' ? 'activity (rate ÷ scale)' : 'rate'} across
                 its neurons
@@ -856,14 +959,25 @@ function CircuitDiagram({
               </div>
             ))}
             <PathTrace source={selectedType.name} targets={readoutNames} />
-            {/* One toggle that stays enabled, so focus stays on it after the change. */}
-            <button
-              className="secondary-button"
+            <h3>Manipulate {selectedType.name}</h3>
+            <ManipulationEditor
+              key={selectedType.name}
+              name={selectedType.name}
+              circuit={circuit}
+              dynamics={dynamics}
+              interventions={interventions}
               disabled={controlsDisabled}
-              onClick={() => silence(selectedType.name, !silenced.has(selectedType.name))}
-            >
-              {silenced.has(selectedType.name) ? 'Restore' : 'Silence'} {selectedType.name}
-            </button>
+              onSet={(entry) => intervene((current) => withCellType(current, entry))}
+            />
+            {manipulated.has(selectedType.name) && (
+              <button
+                className="text-button"
+                disabled={controlsDisabled}
+                onClick={() => restoreType(selectedType.name)}
+              >
+                Restore {selectedType.name} on both sides
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -891,20 +1005,14 @@ function CircuitDiagram({
             <p className="microcopy">Click a cell type, or find one by name, to inspect it.</p>
           </>
         )}
-        {silenced.size > 0 && (
-          <div className="silenced-types" aria-label="Silenced cell types">
-            {[...silenced].map((type) => (
-              <button
-                key={type}
-                disabled={controlsDisabled}
-                onClick={() => silence(type, false)}
-                aria-label={`Restore ${type}`}
-              >
-                {type} ×
-              </button>
-            ))}
-          </div>
-        )}
+        <ManipulationList
+          interventions={interventions}
+          dynamics={dynamics}
+          counts={state?.connectome?.manipulated_neurons}
+          disabled={controlsDisabled}
+          onRemove={(item) => intervene((current) => withoutManipulation(current, item))}
+        />
+        <p className="microcopy manipulation-note">{MANIPULATION_NOTE}</p>
         <button
           className="text-button"
           disabled={controlsDisabled}
@@ -915,6 +1023,7 @@ function CircuitDiagram({
               silence: 'none',
               silence_dna02: 'none',
               silence_types: [],
+              cell_types: [],
             })
           }
         >
@@ -930,6 +1039,16 @@ function CircuitDiagram({
             No per-neuron or per-synapse tuning · recorded for replay
           </span>
         </div>
+        {clipping && (
+          <div className="clipping-warning" role="note">
+            <TriangleAlert size={16} />
+            <p>
+              <strong>{clipping}</strong> Lowering the output gain
+              {dynamics === 'spiking' ? ' or raising the rate scale' : ''} reduces the clipping.
+              Details: docs/RESEARCH.md, “The clip, and how to read motor_clipped_fraction”.
+            </p>
+          </div>
+        )}
         <ParameterForm state={state} command={command} reset={reset} disabled={controlsDisabled} />
         <p className="panel-copy">
           {dynamics === 'spiking'
@@ -937,8 +1056,14 @@ function CircuitDiagram({
             : 'Every connection weight is its predicted sign × synapse count × the global gain. Sensor values drive the input neurons on their side.'}{' '}
           Forward drive is the tonic term
           {state?.config.connectome_parameters.speed_types.length ? ' plus the speed drive' : ''};
-          turning is the right − left difference summed over {readoutNames.join(', ')} (equal
-          weights, assumed).
+          turning is the right − left difference{' '}
+          {parameters?.readout_pool === 'mean' ? 'averaged' : 'summed'} over{' '}
+          {readoutNames.join(', ')} (
+          {parameters?.readout_weights ? 'with the weights above' : 'equal weights'}, assumed)
+          {parameters?.motor_delay_ms || parameters?.motor_tau_ms
+            ? `, delayed ${parameters.motor_delay_ms ?? 0} ms and low-passed with τ ${parameters.motor_tau_ms ?? 0} ms before the clip`
+            : ''}
+          .
         </p>
         <code className="equation">
           {dynamics === 'spiking'
