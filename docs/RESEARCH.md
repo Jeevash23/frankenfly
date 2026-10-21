@@ -105,7 +105,7 @@ Both sources are FlyWire v783, the release whose neurons the atlas already shows
 | `fafb_783_meta.feather` ([URL](https://storage.googleapis.com/lee-lab_brain-and-nerve-cord-fly-connectome/compiled_data/fafb_783/fafb_783_meta.feather)) | Cell type, super class, side and predicted transmitter for 144,837 neurons | FAFB v783 harmonized metadata, Bates/Lee lab [compilation](https://github.com/sjcabs/fly_connectome_data_tutorial) (GCS generation 1787944265562460) | Whole file, 13,539,866 bytes | `5e248762…` | CC BY-NC 4.0 (FlyWire); compilation code MIT |
 | `Connectivity_783.parquet` ([URL](https://raw.githubusercontent.com/philshiu/Drosophila_brain_model/61555bc764aebab90e37a56fa1f312269fa4dde1/Connectivity_783.parquet)) | Synapse counts for all 15,091,983 connected pairs | v783 table shipped with [Shiu et al. 2024](https://github.com/philshiu/Drosophila_brain_model), commit `61555bc`, git blob `d386555d…`, 100,804,642 bytes | Footer and 4 columns by HTTP range requests, 47,365,136 bytes | `95bbc483…` (of the downloaded ranges) | CC BY-NC 4.0 (FlyWire); repository code MIT |
 
-Only the needed columns (presynaptic ID, postsynaptic ID, synapse count, and Shiu et al.'s own sign, kept for comparison) were fetched, so the second hash covers the downloaded byte ranges rather than the whole file; the pinned commit and git blob hash identify the whole upstream file. Full hashes are in `downloads.json`. FlyWire Codex bulk downloads were not used: they require signing in.
+Only the needed columns (presynaptic ID, postsynaptic ID, synapse count, and Shiu et al.'s own sign, kept for comparison) were fetched, so the second hash covers the downloaded byte ranges rather than the whole file; the pinned commit and git blob hash identify the whole upstream file. The metadata is requested at its recorded GCS generation (`?generation=1787944265562460`), so a re-harmonised upstream file is not fetched by accident; if that generation is no longer served, the current object is fetched instead and, like every download, must match the recorded SHA-256. Full hashes are in `downloads.json`. FlyWire Codex bulk downloads were not used: they require signing in.
 
 FlyWire data is licensed **CC BY-NC 4.0, for non-commercial use only**. That covers every circuit, including the ones you build. Credit the FlyWire Consortium and cite Dorkenwald et al. 2024 and Schlegel et al. 2024 (reconstruction and annotation), Eckstein et al. 2024 (transmitter predictions) and Shiu et al. 2024 (connectivity table). See [data/circuits/LICENSE.md](../data/circuits/LICENSE.md).
 
@@ -145,6 +145,8 @@ backend/.venv/bin/python scripts/build_circuit.py build --name whole --seed DNa0
 - **Whole brain** (`--whole-brain`) keeps every neuron with at least one connection at the threshold: 134,180 neurons and 2,700,509 connections at 5 synapses. The seeds only set hop distances; neurons with no path to them get hop −1.
 - **Default readout**: the seed cell types that have seed neurons on both sides. You can change it later.
 - **Output**: format 2, as JSON up to 200,000 connections and as a compressed NumPy archive above that, in `data/circuits/local/`, with the same provenance, cap report, transmitter counts, license and attribution as the committed files. The general builder reproduces the committed DNa02 circuit's neurons, connections and cap report, and rebuilds `fafb783-steering.json` byte for byte (both tested when the prepared archive is present).
+- **Rebuilding** a name writes the new file in full to a hidden temporary file and then renames it into place, so a failed or cancelled build keeps the previous circuit. Only that name's other format (`NAME.json` or `NAME.npz`) is removed; other circuits such as `NAME.v2` and the FlyVis bridge `NAME.flyvis.json` are kept (a bridge built for the old file refuses to load until you rebuild it). Names ending in `.flyvis` are refused. The cap report's weakest kept path strength comes from the deepest hop that kept neurons, so it is reported whenever neurons were dropped.
+- **Options** such as `--hops`, `--threshold`, `--cap` and `--offline` work before or after the subcommand; given in both places, the subcommand's value wins.
 
 The same builder runs from **Neural atlas → Build a circuit**: type seeds with autocomplete from the catalog, set hops, threshold and cap, and follow the build log. One build runs at a time, as a separate process with validated arguments; nothing is downloaded. **Use this circuit** starts a fresh run on it.
 
@@ -278,7 +280,7 @@ So in this model the reaching comes from DNp09. Read out alone, DNa01 and DNa02 
 
 ### Evaluation
 
-`scripts/evaluate_models.py` runs the engineered model and three connectome configurations (DNa02 circuit; steering circuit; steering circuit with spiking dynamics) from the default configuration with matched seeds, changing only the target, seed, model, circuit, dynamics and silencing. Targets sit ahead, 45° and 90° to each side and directly behind the starting heading, at 12 and 30 mm. A target counts as reached within 2 mm; the first turn is the direction of the first 10° heading change. All numbers below come from the reports the script saved (`docs/evidence/evaluation-*.json`, kept locally). The engineered and DNa02-circuit results are identical to v0.3's.
+`scripts/evaluate_models.py` runs the engineered model and three connectome configurations (DNa02 circuit; steering circuit; steering circuit with spiking dynamics) from the default configuration with matched seeds, changing only the target, seed, model, circuit, dynamics and silencing. Targets sit ahead, 45° and 90° to each side and directly behind the starting heading, at 12 and 30 mm. A target counts as reached within 2 mm; the first turn is the direction of the first 10° heading change. All numbers below come from the reports the script saved (`docs/evidence/evaluation-*.json`, kept locally; a run of only some models or at another duration saves under a name that says so, such as `evaluation-toy-engineered.json`, and never replaces a full report). The engineered and DNa02-circuit results are identical to v0.3's.
 
 **Toy body**, 5 seeds (1–5), 10 simulated seconds per trial, 60 trials per model:
 
@@ -331,6 +333,7 @@ backend/.venv/bin/python scripts/toolkit.py trials --set neural_model=connectome
 backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
 backend/.venv/bin/python scripts/toolkit.py ablation --set circuit=fafb783-dna02 --workers 8 --top 20
 backend/.venv/bin/python scripts/toolkit.py paths --source LC10a --target DNa02
+backend/.venv/bin/python scripts/toolkit.py jump --set neural_model=connectome --set seed=3 --duration 60 --jump-seed 11
 backend/.venv/bin/python scripts/toolkit.py circuits
 ```
 
@@ -340,15 +343,20 @@ base = toolkit.configure({"engine": "toy", "neural_model": "connectome"})
 configs = toolkit.grid(base, seed=[1, 2, 3], stimulus=[toolkit.target(45, 12), toolkit.target(-90, 12)],
                        **{"connectome_parameters.output_gain": [1, 2, 4]})
 rows = toolkit.run_trials(configs, workers=4, duration_s=10)     # same results for any number of workers
+summary = toolkit.summarize(rows, ["output_gain"])               # intervals and paired differences
 toolkit.ablation_scan(toolkit.ConnectomeParameters(circuit="fafb783-steering"), left=.5, right=.5)
 ```
 
-- **trials** runs closed-loop trials over target bearings, distances and seeds, with `--set` for fixed settings and `--vary` for grid axes (dotted names reach nested settings). It reports reaching, the first turn, final distance, the target's final bearing (about −90° while circling clockwise), net turn and speed.
-- **bias** clamps the sensors and reports turn commands and the mirror test. **ablation** silences each cell type in turn. Both accept `--average-ms` to average spiking output.
+- **trials** runs closed-loop trials over target bearings, distances and seeds, with `--set` for fixed settings and `--vary` for grid axes (dotted names reach nested settings). It reports reaching, the first turn, final distance, the target's final bearing (about −90° while circling clockwise), net turn and speed. `seed` and the target position (`stimulus`, `stimulus.x`, `stimulus.y`) can come from `--set`/`--vary` instead of `--seeds`, `--bearings` and `--distances`, but not from both (the command stops and says which to drop); `stimulus.intensity` is kept for every target.
+- **bias** clamps the sensors and reports turn commands and the mirror test. **ablation** silences each cell type in turn; `--types A,B` or a repeated `--type` (for names with commas, such as `--type "AOTU018,AOTU031"`) limits the scan, and unknown names are refused before it starts. Both accept `--average-ms` to average spiking output.
 - **paths** lists the strongest cell-type paths between two types. A step's strength is the share of the target type's input synapses that comes from the source type; a path multiplies its steps, and its sign multiplies the assumed signs. The same tracing is in the live circuit view.
-- **compare** fits turning to readout activity in a recording or a run; see below.
+- **jump** records and exports a run whose target jumps to a random side every `--every` seconds (`toolkit.jumping_target_run`), for **compare**, which fits turning to readout activity in a recording or a run; see below.
 
-Parallel workers use separate processes (`spawn`), so call the Python functions with `workers > 1` from a script file, not an interactive prompt.
+**Failures, resuming and provenance.** A trial that raises (a FlyGym body that becomes numerically unstable, a run past the 300 s recording limit, a worker process that dies) becomes a row with its settings, its whole configuration and an `error` text; the other trials carry on. `trials` appends every finished trial to `<out>.jsonl` and `<out>.csv` as it completes, then rewrites the CSV in trial order and writes the JSON report at the end, exiting with an error if any trial failed. `--resume` with the same `--out` skips the trials already saved without an error, matched by a hash of the validated configuration, `run_trial`'s settings and the circuit file's SHA-256 (so a rebuilt circuit runs again). Every saved report (`trials`, `bias`, `ablation`, `paths`, `jump`, `compare`, and `scripts/evaluate_models.py`) has a `provenance` block: git commit and whether the working tree had changes, the command line, each circuit's name and SHA-256, Python, the platform and package versions. Trial rows also carry `circuit_sha256`.
+
+**Statistics.** `trials` reports, per condition (the `--vary` values; seeds are replicates and are pooled), how many trials reached the target and turned toward lateral targets with 95% Wilson score intervals, and the median and mean final distance with a 95% percentile-bootstrap interval of the mean (2,000 resamples from a generator seeded with 0, so the same rows always give the same interval). With more than one condition it adds paired differences from the first condition over trials with the same seed, bearing and distance (reaching counted as 1 or 0), with bootstrap intervals. Failed trials are counted but left out of every statistic. `toolkit.summarize`, `toolkit.wilson_interval` and `toolkit.bootstrap_interval` do the same from Python. These intervals describe variation over seeds and targets in this simulation, not uncertainty about flies.
+
+Parallel workers use separate processes (`spawn`), so call the Python functions with `workers > 1` from a script file, not an interactive prompt. Each worker is limited to (CPU cores ÷ workers) OpenMP, MKL and OpenBLAS threads, set before the workers start so that NumPy and PyTorch pick the limit up; `ablation_scan` uses the same limit.
 
 ### Comparing with real flies
 
@@ -358,32 +366,36 @@ Parallel workers use separate processes (`spawn`), so call the Python functions 
 backend/.venv/bin/python scripts/toolkit.py compare --recording fly.csv --run runs/YOUR_RUN_FOLDER
 ```
 
-It reports each fit's sign, lag, gain, offset and r², side by side. Gains only compare directly when both are in spikes/s; the model's turning follows its readout by construction, so a matching fit is not validation. A steering curve (mean turning rate by the target's bearing) is also available for trajectories toward targets. The fitting is tested on labeled synthetic recordings with a known gain, lag and offset.
+It reports each fit's sign, lag, gain, offset and r², side by side, and each source's left and right rate (mean, median and 99th percentile). A recording can mark samples as not valid (an optional `valid` column of 1 or 0); the fits then use only pairs of valid samples. Gains only compare directly when both are in spikes/s; the model's turning follows its readout by construction, so a matching fit is not validation. A steering curve (mean turning rate by the target's bearing) is also available for trajectories toward targets. The fitting is tested on labeled synthetic recordings with a known gain, lag and offset.
 
 #### One recorded fly
 
 `scripts/fetch_recording.py rayshubskiy2025-a2_d_13.mat` downloads one recording from Rayshubskiy et al. 2025 (Harvard Dataverse [doi:10.7910/DVN/0NCLP1](https://doi.org/10.7910/DVN/0NCLP1), version 1.2, CC0 1.0; 71,381,032 bytes, MD5 and SHA-256 checked; the raw file stays in the ignored cache). It holds a simultaneous whole-cell recording of the left and the right DNa02 in one walking fly, 575 s at 10 kHz, with ball-tracked forward, rotational and sideways velocity at 100 Hz; an optogenetic stimulus channel was on for 4.3% of the time. `compare.rayshubskiy_recording` converts it as the authors' MIT-licensed analysis code does (their channel assignment, spike detection and parameters for this fly, 12.5 ms bins smoothed with a 25 ms Gaussian, and their yaw calibration). It finds 571 spikes on the left DNa02 and 1,888 on the right: 1.0 and 3.3 spikes/s on average, a median of 0 and a 99th percentile of 36 spikes/s.
 
+**Stimulation epochs are left out by default (v0.6).** While the optogenetic stimulus is on, turning and firing may be driven by the experiment rather than by spontaneous steering, and light artifacts could reach the spike detector. `compare` therefore marks the ball samples with the stimulus on, or on within the preceding 0.5 s (the fits' longest lag; an engineered choice), as not valid, and fits only the rest; `--include-stimulus` (`exclude_stimulus=False` in Python) keeps them, as v0.5 did. The conversion summary reports the fraction excluded.
+
 **The sign of yaw is an inference.** The files do not document it. One of the authors' MATLAB scripts, working from their raw data, labels positive yaw as left turns; in this file, positive yaw follows right − left DNa02 firing, which the paper's central result (the left DNa02 bursts, then the fly turns left) makes rightward. The converter defaults to that reading and takes `--positive-yaw left` for the other. The direction of the fit below therefore cannot test the paper's result; its lag, size and shape can.
 
-Fits of rightward turning to the right − left DNa02 rate (`scripts/toolkit.py compare`, saved under `runs/toolkit/`):
+Fits of rightward turning to the right − left DNa02 rate (`scripts/toolkit.py compare`, saved under `runs/toolkit/`). The fly's row was computed in v0.5, before the stimulation mask existed, so it **includes** the 4.3% of stimulated samples; `--include-stimulus` reproduces it:
 
 | Source | Best single lag | Turning per spike/s of R − L | r² at that lag | Linear filter: held-out r² (5-fold) |
 | --- | --- | --- | --- | --- |
-| Fly (575 s) | 180 ms | 3.36 °/s | 0.044 | 0.097 |
+| Fly (575 s, stimulation epochs included) | 180 ms | 3.36 °/s | 0.044 | 0.097 |
 | Model, DNa02 circuit, spiking, FlyGym (30 s) | 20 ms | 2.70 °/s | 0.375 | 0.419 |
 | Model, steering circuit, spiking, FlyGym (30 s) | 10 ms | 1.18 °/s | 0.086 | 0.074 |
 | Model, DNa02 circuit, spiking, toy body (60 s) | 0 ms | 4.18 °/s | 0.858 | 0.711 |
 | Model, steering circuit, spiking, toy body (60 s) | 0 ms | 1.79 °/s | 0.325 | 0.273 |
 
-The model runs come from `toolkit.jumping_target_run` (the target jumps to a random side every 2 s, seed 11, model seed 3). The fly's filter is biphasic, as the paper reports for DNa02: turning one way about 150–180 ms after the right − left difference, after a smaller opposite lobe at short lags.
+**Not yet re-run:** the fly's fit with the stimulation epochs left out, the default since v0.6. `scripts/toolkit.py compare --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat` computes it; until it is added here, read the fly row as including stimulated walking. The model rows are unaffected (runs have no stimulation channel).
+
+The model runs come from `toolkit.jumping_target_run`, which `scripts/toolkit.py jump` runs and exports (the target jumps to a random side every 2 s, `--jump-seed 11`, model `--set seed=3`). The fly's filter is biphasic, as the paper reports for DNa02: turning one way about 150–180 ms after the right − left difference, after a smaller opposite lobe at short lags.
 
 What this says about the model:
 
 - **Turning per spike.** On the FlyGym body the DNa02 circuit turns 2.7 °/s per spike/s of DNa02 difference, near the fly's 3.4 °/s (single-lag fits; noise in the fly's rate estimate lowers its value).
 - **Timing.** The fly turns about 180 ms after its DNa02 difference; the model within 10–20 ms. The model has no delay between descending neurons and the legs beyond the body's own.
 - **How much DNa02 explains.** In the fly, DNa02 predicts about 10% of held-out turning. In the DNa02 circuit it predicts 42% on FlyGym and 71% on the toy body, because the model's turning is wired to DNa02 by construction. In the steering circuit, where DNp09 does most of the steering, DNa02 predicts 7%, close to the fly, for that reason rather than a biological one.
-- **Firing rates.** The spiking model's DNa02 fire far more than the recorded ones: means of 52–143 spikes/s against 1–3, and 99th percentiles of 212–230 spikes/s against 36 (`runs/toolkit/dna02-rates-fly-vs-model.json`). The Poisson input (150 Hz at full sensor value, Shiu et al.'s default) drives the network much harder than walking drives this fly.
+- **Firing rates.** The spiking model's DNa02 fire far more than the recorded ones: means of 52–143 spikes/s against 1–3, and 99th percentiles of 212–230 spikes/s against 36 (v0.5 figures over every sample; `scripts/toolkit.py compare` now prints these rates for each source, over the samples its fits use). The Poisson input (150 Hz at full sensor value, Shiu et al.'s default) drives the network much harder than walking drives this fly.
 
 One fly is one sample: none of these numbers has been checked on other recordings. The dataset holds four paired DNa02 recordings and more single ones (5.5 GB of electrophysiology in all).
 

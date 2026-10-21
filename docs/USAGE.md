@@ -52,7 +52,7 @@ In **Male & female anatomy**, the two female DNa02 skeletons are tinted by the m
 
 **Neural atlas → Build a circuit** selects a new circuit from FlyWire v783 on your computer. Name it, add seeds (cell types, with suggestions from the full catalog, or FlyWire root IDs), and set the hops back from the seeds, the minimum synapses per connection and the neuron cap, or tick **Whole brain**. **Build circuit** runs the builder in the background and shows its log; a 3,000-neuron circuit takes a few seconds. **Use this circuit** (or **Use** in the list of available circuits) starts a fresh run on it. Built circuits are saved in `data/circuits/local/`, which git ignores, and keep the FlyWire license: non-commercial use only.
 
-The builder needs the FlyWire data prepared once (see [the research guide](RESEARCH.md#building-your-own-circuits)); until then the tab shows the command to run. Building never downloads anything. The same builder runs from the command line as `scripts/build_circuit.py build`.
+The builder needs the FlyWire data prepared once (see [the research guide](RESEARCH.md#building-your-own-circuits)); until then the tab shows the command to run. Building never downloads anything. The same builder runs from the command line as `scripts/build_circuit.py build`. Rebuilding a name replaces only that circuit (its file is written in full before it replaces the old one), never other circuits whose names start the same way.
 
 ## FlyVis eyes
 
@@ -66,8 +66,11 @@ With the optional vision install (see [dependencies](DEPENDENCIES.md#v05-optiona
 backend/.venv/bin/python scripts/toolkit.py trials --set neural_model=connectome --workers 8
 backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
 backend/.venv/bin/python scripts/toolkit.py ablation --workers 8
+backend/.venv/bin/python scripts/toolkit.py jump --set neural_model=connectome --duration 60
 backend/.venv/bin/python scripts/toolkit.py compare --run runs/YOUR_RUN_FOLDER
 ```
+
+`trials` writes each trial to a `.jsonl` file and the CSV as soon as it finishes. A trial that fails (for example a FlyGym body that becomes numerically unstable) is saved as a row with an `error` column and the others carry on; the command then exits with an error. Rerun the same command with `--resume` and the same `--out` to run only the trials that are missing or failed. Every saved report records the git commit, the command line, the circuits with their SHA-256 and the package versions.
 
 To compare with a real fly, fetch the recorded DNa02 data once (71 MB) and compare it with an exported run:
 
@@ -90,7 +93,7 @@ Exports are written only inside `runs/`; the app never accepts a destination pat
 backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER
 ```
 
-Replace `YOUR_RUN_FOLDER` with a folder created by Export or by a completed comparison. Replay re-runs the recorded schedule and checks body position, yaw, neural rates and motor outputs against the saved telemetry, at a tolerance of `1e-8`. Results match on the same software and graphics stack; other devices or dependency versions may differ slightly.
+Replace `YOUR_RUN_FOLDER` with a folder created by Export or by a completed comparison. Replay re-runs the recorded schedule and checks body position, yaw, neural rates and motor outputs against the saved telemetry, at a tolerance of `1e-8`. Results match on the same software and graphics stack; other devices or dependency versions may differ slightly. A connectome run records the SHA-256 of its circuit file; if that circuit has since been rebuilt or edited, replay stops and says so (`--allow-circuit-mismatch` tries anyway).
 
 To measure throughput on your machine:
 

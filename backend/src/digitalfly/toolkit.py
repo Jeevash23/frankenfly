@@ -12,18 +12,37 @@ Use it from Python or through scripts/toolkit.py:
 Every run is built from a validated RunConfig, so a result is reproduced by its configuration and
 seed. The model's labels still apply: wiring data-derived, signs assumed, dynamics and the sensor
 and motor mappings engineered. Results describe this simulation, not flies.
+
+A trial that raises becomes a row with an `error` text instead of ending the sweep. `summarize`
+adds 95% intervals: Wilson score intervals for fractions, percentile bootstrap intervals for means
+(2,000 resamples from a fixed seed, so a report repeats) and paired differences between conditions
+over trials with the same seed and target.
 """
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import contextmanager
+import hashlib
+import inspect
 import itertools
+import json
 import math
 import multiprocessing
+import os
+from pathlib import Path
+import platform
+from statistics import NormalDist
+import subprocess
+import sys
 import numpy as np
 from digitalfly.api.models import ConnectomeParameters, Interventions, RunConfig, SensorState, Stimulus
 from digitalfly.neural.connectome import ConnectomeCircuit, load_circuit
 from digitalfly.simulation.engines import CONTROL_DT
 
+ROOT = Path(__file__).resolve().parents[3]
 REACH_MM = 2.0
 TURN_DEG = 10.0  # a turn counts once the heading has changed this much from the start
+THREAD_VARIABLES = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")
+BOOTSTRAP = {"resamples": 2000, "seed": 0, "level": .95}
+PACKAGES = ["flygym", "mujoco", "numpy", "scipy", "numba", "pydantic", "torch", "flyvis"]
 
 
 def wrap(angle: float) -> float:
@@ -62,15 +81,68 @@ def describe_config(config: RunConfig) -> dict:
     row = {"engine": config.engine, "seed": config.seed, "neural_model": config.neural_model,
            "sensor_model": config.sensor_model, "target_x_mm": config.stimulus.x, "target_y_mm": config.stimulus.y,
            "target_bearing_deg": round(math.degrees(math.atan2(config.stimulus.y, config.stimulus.x)), 6),
-           "target_distance_mm": round(math.hypot(config.stimulus.x, config.stimulus.y), 6)}
+           "target_distance_mm": round(math.hypot(config.stimulus.x, config.stimulus.y), 6),
+           "target_intensity": config.stimulus.intensity}
     if config.neural_model == "connectome":
-        row.update({"circuit": p.circuit, "dynamics": p.dynamics,
+        row.update({"circuit": p.circuit, "circuit_sha256": circuit_sha256(p.circuit), "dynamics": p.dynamics,
                     "readout_types": "+".join(p.readout_types or load_circuit(p.circuit).defaults["readout_types"]),
                     "speed_types": "+".join(p.speed_types), "output_gain": p.output_gain, "global_gain": p.global_gain})
     i = config.initial_interventions
     row["silenced"] = "+".join([f"DNa02 {i.silence_dna02}"] * (i.silence_dna02 != "none") + i.silence_types
                                + [f"{i.silence} units"] * (i.silence != "none")) or "none"
     return row
+
+
+def circuit_sha256(circuit: str) -> str:
+    """SHA-256 of the circuit file the name loads now (read from its header and bytes, without building it)."""
+    from digitalfly.neural.connectome import _info, circuit_path
+    path = circuit_path(circuit)
+    return _info(str(path), path.stat().st_mtime_ns)["sha256"]
+
+
+def config_hash(config: RunConfig | dict, **kwargs) -> str:
+    """A short identity for one trial: its validated configuration, run_trial's settings (defaults filled in)
+    and, for the connectome model, the circuit file's hash. `--resume` skips trials whose hash is saved."""
+    config = config if isinstance(config, RunConfig) else RunConfig.model_validate(config)
+    unknown = set(kwargs) - set(TRIAL_SETTINGS)
+    if unknown:
+        raise TypeError(f"run_trial has no setting {', '.join(sorted(unknown))}.")
+    # duration_s=10 and duration_s=10.0 are the same trial.
+    settings = {k: float(v) if isinstance(TRIAL_SETTINGS[k], float) else v for k, v in {**TRIAL_SETTINGS, **kwargs}.items()}
+    circuit = circuit_sha256(config.connectome_parameters.circuit) if config.neural_model == "connectome" else None
+    text = json.dumps({"config": config.model_dump(mode="json"), "settings": settings, "circuit_sha256": circuit},
+                      sort_keys=True, default=str)
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def provenance(circuits=(), command: list[str] | None = None) -> dict:
+    """What produced a report: the code's git commit (and whether the tree had changes), the command line,
+    each circuit's name and SHA-256, and the versions of the packages that shape the numbers."""
+    from importlib.metadata import PackageNotFoundError, version
+    from digitalfly import __version__
+
+    def git(*args):
+        try:
+            done = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+    packages = {"digitalfly": __version__}
+    for name in PACKAGES:
+        try:
+            packages[name] = version(name)
+        except PackageNotFoundError:
+            pass
+    commit, status = git("rev-parse", "HEAD"), git("status", "--porcelain", "--untracked-files=no")
+    named = []
+    for name in dict.fromkeys(circuits):
+        try:
+            named.append({"name": name, "sha256": circuit_sha256(name)})
+        except (OSError, ValueError) as exc:
+            named.append({"name": name, "sha256": None, "error": str(exc)})
+    return {"git_commit": commit, "git_dirty": None if status is None else bool(status),
+            "command": list(sys.argv if command is None else command), "circuits": named,
+            "python": platform.python_version(), "platform": platform.platform(), "packages": packages}
 
 
 def run_trial(config: RunConfig | dict, duration_s: float = 10.0, reach_mm: float = REACH_MM, turn_deg: float = TURN_DEG,
@@ -123,6 +195,11 @@ def run_trial(config: RunConfig | dict, duration_s: float = 10.0, reach_mm: floa
             exp.close()
 
 
+# run_trial's settings and their defaults, which a trial's config_hash includes.
+TRIAL_SETTINGS = {name: p.default for name, p in inspect.signature(run_trial).parameters.items()
+                  if name not in ("config", "experiment")}
+
+
 def jumping_target_run(config: RunConfig | dict, duration_s: float = 60.0, every_s: float = 2.0, distance_mm: float = 10.0,
                        max_bearing_deg: float = 120.0, seed: int = 0, export_dir=None) -> dict:
     """A run whose target jumps to a new random bearing (±max_bearing_deg from the current heading) every
@@ -151,39 +228,102 @@ def jumping_target_run(config: RunConfig | dict, duration_s: float = 60.0, every
 _experiments = {}
 
 
+def _error_row(data: dict, kwargs: dict, error: str) -> dict:
+    """The trial's settings, its whole configuration and the error. Describing it can fail for the same reason
+    the trial did (a circuit that no longer loads), so that falls back to the raw configuration."""
+    try:
+        row = describe_config(RunConfig.model_validate(data))
+    except Exception:
+        stimulus = data.get("stimulus") or {}
+        row = {"engine": data.get("engine"), "seed": data.get("seed"), "neural_model": data.get("neural_model"),
+               "target_x_mm": stimulus.get("x"), "target_y_mm": stimulus.get("y")}
+    try:
+        row["config_hash"] = config_hash(data, **kwargs)
+    except Exception:
+        row["config_hash"] = None
+    return {**row, "duration_s": kwargs.get("duration_s", 10.0), "error": error, "config": data}
+
+
 def _run_in_worker(task):
-    config, kwargs = task
-    config = RunConfig.model_validate(config)
-    exp = _experiments.get(config.engine)
-    if exp is None:
-        from digitalfly.simulation.experiment import Experiment
-        exp = _experiments[config.engine] = Experiment(config, render=False)
-    return run_trial(config, experiment=exp, **kwargs)
+    index, data, kwargs = task
+    engine = data.get("engine")
+    try:
+        config = RunConfig.model_validate(data)
+        exp = _experiments.get(engine)
+        if exp is None:
+            from digitalfly.simulation.experiment import Experiment
+            exp = _experiments[engine] = Experiment(config, render=False)
+        return index, {**run_trial(config, experiment=exp, **kwargs), "error": None,
+                       "config_hash": config_hash(config, **kwargs)}
+    except Exception as exc:
+        broken = _experiments.pop(engine, None)  # the next trial starts from a fresh experiment
+        if broken is not None:
+            try:
+                broken.close()
+            except Exception:
+                pass
+        return index, _error_row(data, kwargs, f"{type(exc).__name__}: {exc}")
 
 
-def _limit_threads(threads: int):
-    # Before PyTorch (FlyVis) or BLAS start their thread pools in a worker process.
-    import os
-    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
-        os.environ[name] = str(threads)
+@contextmanager
+def thread_limit(workers: int):
+    """Cap OpenMP, MKL and OpenBLAS threads for worker processes started inside this block: the variables are
+    set in this process before the workers spawn, so they inherit them before NumPy (or PyTorch) loads."""
+    threads = str(max(1, (os.cpu_count() or 1) // max(workers, 1)))
+    saved = {name: os.environ.get(name) for name in THREAD_VARIABLES}
+    os.environ.update({name: threads for name in THREAD_VARIABLES})
+    try:
+        yield int(threads)
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
-def run_trials(configs: list[RunConfig | dict], workers: int = 1, **kwargs) -> list[dict]:
-    """Many trials, in order. With workers > 1 they run in separate processes; every trial starts from its
-    own reset, so the results do not depend on the number of workers."""
-    tasks = [((c if isinstance(c, RunConfig) else RunConfig.model_validate(c)).model_dump(), kwargs) for c in configs]
+def _pool(workers: int) -> ProcessPoolExecutor:
+    return ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
+
+
+def run_trials(configs: list[RunConfig | dict], workers: int = 1, on_result=None, **kwargs) -> list[dict]:
+    """Many trials; the list follows the order of `configs`. With workers > 1 they run in separate processes;
+    every trial starts from its own reset, so the results do not depend on the number of workers.
+
+    A trial that raises gives a row with its settings, `config` and an `error` text (None on success) and
+    the rest still run. `on_result(index, row)` is called as each trial finishes, in completion order, so
+    callers can save results while a sweep runs. Every row carries `config_hash` (see `config_hash`)."""
+    tasks = [(k, (c if isinstance(c, RunConfig) else RunConfig.model_validate(c)).model_dump(mode="json"), kwargs)
+             for k, c in enumerate(configs)]
+    rows = [None] * len(tasks)
+
+    def finished(index, row):
+        rows[index] = row
+        if on_result is not None:
+            on_result(index, row)
     if workers <= 1:
         try:
-            return [_run_in_worker(task) for task in tasks]
+            for task in tasks:
+                finished(*_run_in_worker(task))
         finally:
             for exp in _experiments.values():
                 exp.close()
             _experiments.clear()
-    import os
-    threads = max(1, (os.cpu_count() or 1) // workers)
-    with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
-                             initializer=_limit_threads, initargs=(threads,)) as pool:
-        return list(pool.map(_run_in_worker, tasks, chunksize=max(1, len(tasks) // (workers * 4))))
+        return rows
+    with thread_limit(workers):
+        pool = _pool(workers)
+        try:
+            futures = {pool.submit(_run_in_worker, task): task for task in tasks}
+            for future in as_completed(futures):
+                try:
+                    index, row = future.result()
+                except Exception as exc:  # the worker process itself died (killed, out of memory)
+                    index, data, _ = futures[future]
+                    row = _error_row(data, kwargs, f"{type(exc).__name__}: {exc}")
+                finished(index, row)
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+    return rows
 
 
 def hold(parameters: ConnectomeParameters, left: float, right: float, ms: int = 500,
@@ -235,11 +375,14 @@ def ablation_scan(parameters: ConnectomeParameters, left: float = .5, right: flo
     the types by how much the turn command changes. With equal input on both sides this finds the types
     that create a side bias: a positive change means the type was pushing the fly to the left."""
     data = load_circuit(parameters.circuit)
+    unknown = [n for n in cell_types or [] if n not in data.type_members]
+    if unknown:
+        raise ValueError(f"Not a cell type in the {data.key} circuit: {', '.join(unknown)}.")
     readout = set(parameters.readout_types or data.defaults["readout_types"])
     names = [n for n in (cell_types or data.type_names) if n not in readout]
     tasks = [(parameters.model_dump(), name, left, right, ms, average_ms, seed) for name in [None] + names]
     if workers > 1:
-        with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+        with thread_limit(workers), _pool(workers) as pool:
             results = list(pool.map(_ablate, tasks, chunksize=16))
     else:
         results = [_ablate(task) for task in tasks]
@@ -253,3 +396,82 @@ def ablation_scan(parameters: ConnectomeParameters, left: float = .5, right: flo
     return {"circuit": data.key, "dynamics": parameters.dynamics, "left": left, "right": right, "intact_turn": intact,
             "types_scanned": len(rows), "rows": rows,
             "note": "change = turn with the type silenced − intact turn; positive = the type pushed the fly to the left."}
+
+
+def wilson_interval(successes: int, n: int, level: float = .95) -> tuple[float, float] | None:
+    """Wilson score interval for a fraction successes/n; better than the normal approximation for small n
+    and fractions near 0 or 1."""
+    if n <= 0:
+        return None
+    z = NormalDist().inv_cdf(.5 + level / 2)
+    p = successes / n
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    return 0. if successes == 0 else max(0., centre - half), 1. if successes == n else min(1., centre + half)
+
+
+def bootstrap_interval(values, resamples: int = BOOTSTRAP["resamples"], level: float = BOOTSTRAP["level"],
+                       seed: int = BOOTSTRAP["seed"]) -> tuple[float, float] | None:
+    """Percentile bootstrap interval for the mean: `resamples` resamples with replacement from a generator
+    seeded with `seed`, so the same values always give the same interval. None for fewer than 2 values."""
+    values = np.asarray([v for v in values if v is not None], dtype=np.float64)
+    if len(values) < 2:
+        return None
+    rng = np.random.default_rng(seed)
+    means = values[rng.integers(0, len(values), size=(resamples, len(values)))].mean(axis=1)
+    low, high = np.quantile(means, [(1 - level) / 2, (1 + level) / 2])
+    return float(low), float(high)
+
+
+def summarize(rows: list[dict], by: list[str], match=("seed", "target_bearing_deg", "target_distance_mm"),
+              metrics=("final_distance_mm", "mean_speed_mm_s", "net_turn_deg")) -> dict:
+    """Per condition (the values of the `by` columns): trial and error counts, reaching and first turns
+    toward lateral targets with Wilson intervals, and metric means with bootstrap intervals. Then, for every
+    condition after the first, paired differences from the first over trials that share the `match` columns
+    (matched seeds and targets): reaching (as 0/1) and each metric, with bootstrap intervals. Rows with an
+    error are counted but left out of every statistic."""
+    def key(row):
+        return tuple(row.get(k) for k in by)
+
+    match = [k for k in match if k not in by]
+    groups = {}
+    for row in rows:
+        groups.setdefault(key(row), []).append(row)
+    conditions = []
+    for condition, group in groups.items():
+        ok = [r for r in group if not r.get("error")]
+        lateral = [r for r in ok if abs(r["target_bearing_deg"]) > 1e-6 and abs(abs(r["target_bearing_deg"]) - 180) > 1e-6]
+        reached = sum(bool(r["reached"]) for r in ok)
+        toward = sum(r["first_turn_toward"] is True for r in lateral)
+        item = {"condition": dict(zip(by, condition)), "trials": len(group), "errors": len(group) - len(ok),
+                "reached": reached, "reached_fraction": reached / len(ok) if ok else None,
+                "reached_ci95": wilson_interval(reached, len(ok)),
+                "first_turn_toward": toward, "lateral_trials": len(lateral),
+                "first_turn_toward_ci95": wilson_interval(toward, len(lateral))}
+        for metric in metrics:
+            values = [r[metric] for r in ok if r.get(metric) is not None]
+            item[metric] = {"mean": float(np.mean(values)) if values else None,
+                            "median": float(np.median(values)) if values else None,
+                            "ci95": bootstrap_interval(values)}
+        conditions.append(item)
+    paired = []
+    if len(groups) > 1:
+        names = list(groups)
+        base = {tuple(r.get(k) for k in match): r for r in groups[names[0]] if not r.get("error")}
+        for condition in names[1:]:
+            pairs = [(base[m], r) for r in groups[condition] if not r.get("error")
+                     if (m := tuple(r.get(k) for k in match)) in base]
+            item = {"condition": dict(zip(by, condition)), "baseline": dict(zip(by, names[0])), "pairs": len(pairs)}
+            for metric in ("reached",) + tuple(metrics):
+                diffs = [float(b[metric]) - float(a[metric]) for a, b in pairs
+                         if a.get(metric) is not None and b.get(metric) is not None]
+                item[metric] = {"mean_difference": float(np.mean(diffs)) if diffs else None,
+                                "ci95": bootstrap_interval(diffs)}
+            paired.append(item)
+    return {"by": list(by), "matched_on": list(match), "conditions": conditions, "paired_differences": paired,
+            "methods": {"fractions": "Wilson score interval, 95%",
+                        "means": f"percentile bootstrap, {BOOTSTRAP['resamples']} resamples, numpy default_rng seed "
+                                 f"{BOOTSTRAP['seed']}, 95%",
+                        "paired": "condition − first condition over trials with the same "
+                                  f"{', '.join(match)}; reached counts as 1 or 0",
+                        "errors": "rows with an error are excluded from every statistic"}}
