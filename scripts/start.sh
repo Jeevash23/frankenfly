@@ -2,7 +2,7 @@
 set -eu
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 if [ ! -x "$PROJECT_ROOT/backend/.venv/bin/python" ]; then
-  echo "Project environment missing. Run ./scripts/setup.sh first."
+  echo "Project environment missing. Run ./scripts/setup.sh first; python3 scripts/doctor.py checks everything else."
   exit 1
 fi
 export PYTHONPATH="$PROJECT_ROOT/backend/src"
