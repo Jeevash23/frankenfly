@@ -3,7 +3,8 @@
 Rayshubskiy et al. 2025 (eLife 13:RP102230) found that a walking fly's rotational velocity is a
 linear function of the right − left difference in DNa02 firing rate, with turning lagging the
 neurons. The same fit, applied to a recording and to a simulated run, compares the two on equal
-terms: sign, lag, gain and the fraction of turning explained.
+terms: sign, lag, gain and the fraction of turning explained. With several flies or runs,
+`summarize_fits` reports the mean and spread of each fit across them.
 
 Recordings use one documented CSV format (or a NumPy archive with the same column names):
 
@@ -168,6 +169,11 @@ def fit_filter(recording: Recording, max_lag_s: float = 0.5, ridge: float = 1.0,
             "source": recording.source, "readout": recording.readout}
 
 
+NOTE = ("Gains compare directly only when both rates are in spikes/s (spiking dynamics). Rate-model "
+        "activity is dimensionless, so compare sign, lag and r² instead. A matching fit is not "
+        "validation: the model's turning is wired to its readout by construction.")
+
+
 def compare(fly: Recording, model: Recording, max_lag_s: float = 0.5) -> dict:
     """The same fit on a recorded fly and a simulated run, side by side."""
     a, b = fit_turning(fly, max_lag_s), fit_turning(model, max_lag_s)
@@ -177,10 +183,40 @@ def compare(fly: Recording, model: Recording, max_lag_s: float = 0.5) -> dict:
         "same_sign": a["correlation_sign"] == b["correlation_sign"],
         "lag_difference_s": round(b["lag_s"] - a["lag_s"], 6),
         "gain_ratio_model_to_fly": b["gain"] / a["gain"] if same_units and a["gain"] else None,
-        "note": ("Gains compare directly only when both rates are in spikes/s (spiking dynamics). Rate-model "
-                 "activity is dimensionless, so compare sign, lag and r² instead. A matching fit is not "
-                 "validation: the model's turning is wired to its readout by construction."),
+        "note": NOTE,
     }
+
+
+def spread(values) -> dict | None:
+    """Count, mean, standard deviation (n − 1; 0 for a single value), minimum and maximum, ignoring None."""
+    values = [float(v) for v in values if v is not None]
+    if not values:
+        return None
+    return {"n": len(values), "mean": float(np.mean(values)),
+            "sd": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0, "min": min(values), "max": max(values)}
+
+
+def summarize_fits(fits: list[dict], filters: list[dict | None] = ()) -> dict:
+    """Mean and spread across recordings (one fly each, or one run each) of the single-lag fits from fit_turning
+    (lag, gain, r², sign) and of the held-out r² of fit_filter where a recording was long enough for one. Gains
+    are pooled only when every fit has the same units."""
+    units = {f["gain_units"] for f in fits}
+    pooled = len(units) == 1
+    return {"recordings": len(fits), "sources": [f["source"] for f in fits], "lag_s": spread(f["lag_s"] for f in fits),
+            "gain": spread(f["gain"] for f in fits) if pooled else None,
+            "gain_units": next(iter(units)) if pooled else "mixed units, not pooled",
+            "r2": spread(f["r2"] for f in fits), "heldout_r2": spread(f["heldout_r2"] for f in filters if f),
+            "signs": {"positive": sum(f["correlation_sign"] > 0 for f in fits),
+                      "negative": sum(f["correlation_sign"] < 0 for f in fits)}}
+
+
+def compare_groups(flies: list[dict], models: list[dict]) -> dict:
+    """compare() for several recorded flies and/or runs, from their fit_turning fits: whether every fit has the
+    same sign, and the mean model lag − the mean fly lag."""
+    return {"flies": len(flies), "models": len(models),
+            "same_sign": len({f["correlation_sign"] for f in flies + models}) == 1,
+            "lag_difference_s": round(float(np.mean([m["lag_s"] for m in models]) - np.mean([f["lag_s"] for f in flies])), 6),
+            "note": NOTE}
 
 
 def steering_curve(t, x, y, yaw, target, bins=np.arange(-180, 181, 30)) -> list[dict]:

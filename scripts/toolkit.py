@@ -6,6 +6,7 @@
     backend/.venv/bin/python scripts/toolkit.py paths --source LC10a --target DNa02
     backend/.venv/bin/python scripts/toolkit.py jump --set neural_model=connectome --set seed=3 --duration 60 --jump-seed 11
     backend/.venv/bin/python scripts/toolkit.py compare --recording fly.csv --run runs/<run folder>
+    backend/.venv/bin/python scripts/toolkit.py compare --recording fly1.mat --recording fly2.mat --run runs/<a> --run runs/<b>
     backend/.venv/bin/python scripts/toolkit.py circuits
 
 --set and --vary take dotted RunConfig names (for bias, ablation and paths: ConnectomeParameters names,
@@ -248,13 +249,23 @@ def jump(args):
                                              "run": {**result, "path": str(shown(run))}}, circuits)
 
 
+def mean_sd(stats, fmt="{:.3f}", scale=1, unit="", with_range=False):
+    if stats is None:
+        return "n/a"
+    text = f"{fmt.format(stats['mean'] * scale)} ± {fmt.format(stats['sd'] * scale)}{unit}"
+    return text + (f" ({fmt.format(stats['min'] * scale)}–{fmt.format(stats['max'] * scale)}{unit})" if with_range else "")
+
+
 def compare(args):
     from digitalfly import compare as cmp
-    model = cmp.model_recording(args.run, args.readout) if args.run else None
-    fly, conversion = None, None
-    if args.recording:
-        if args.recording.endswith(".mat"):
-            fly, conversion = cmp.rayshubskiy_recording(args.recording, args.readout or "DNa02", positive_yaw=args.positive_yaw,
+    if args.save_recording and len(args.recording) > 1:
+        sys.exit("--save-recording converts one recording; give a single --recording with it.")
+    models = [cmp.model_recording(run, args.readout) for run in args.run]
+    flies, conversions = [], []
+    for path in args.recording:
+        conversion = None
+        if path.endswith(".mat"):
+            fly, conversion = cmp.rayshubskiy_recording(path, args.readout or "DNa02", positive_yaw=args.positive_yaw,
                                                         exclude_stimulus=not args.include_stimulus)
             stim = conversion["stimulus"]
             print(f"Converted {conversion['source']}: {conversion['duration_s']:.0f} s, spikes left {conversion['spikes']['left']:,} "
@@ -267,10 +278,17 @@ def compare(args):
             if args.save_recording:
                 cmp.save_recording(fly, args.save_recording)
         else:
-            fly = cmp.load_recording(args.recording, args.readout or "DNa02")
-    if not model and not fly:
+            fly = cmp.load_recording(path, args.readout or "DNa02")
+        flies.append(fly)
+        conversions.append(conversion)
+    if not models and not flies:
         sys.exit("Give --recording (a fly recording: CSV, NPZ or a Rayshubskiy .mat) and/or --run (an exported run folder).")
-    sources = {"fly": fly, "model": model}
+    # One fly or run keeps the plain label ("fly", "model"); several are numbered ("fly 1", "fly 2", ...).
+    labels = {group: [group] if len(items) <= 1 else [f"{group} {k}" for k in range(1, len(items) + 1)]
+              for group, items in (("fly", flies), ("model", models))}
+    sources = {}
+    for group, items in (("fly", flies), ("model", models)):
+        sources.update(zip(labels[group], items or [None]))
     fits = {k: cmp.fit_turning(r, args.max_lag) if r else None for k, r in sources.items()}
     def filter_fit(recording):
         try:
@@ -287,20 +305,46 @@ def compare(args):
             held_out = f"{filt['heldout_r2']:.3f}" if filt else "too short"
             print(f"| {label}: {fit['source']} | {fit['readout']} | {fit['lag_s'] * 1000:.0f} ms | "
                   f"{fit['gain']:.4g} {fit['gain_units']} | {fit['r2']:.3f} | {held_out} |")
+    across = {group: cmp.summarize_fits([fits[k] for k in names], [filters[k] for k in names])
+              for group, names in labels.items() if len(names) > 1}
+    if across:
+        print("\n| Across | Recordings | Best single lag: mean ± SD (range) | Gain: mean ± SD | r²: mean ± SD | "
+              "Held-out r²: mean ± SD (recordings) |\n| --- | --- | --- | --- | --- | --- |")
+        for group, s in across.items():
+            gain = f"{mean_sd(s['gain'], '{:.4g}')} {s['gain_units']}" if s["gain"] else s["gain_units"]
+            held_out = f"{mean_sd(s['heldout_r2'])} ({s['heldout_r2']['n']})" if s["heldout_r2"] else "too short"
+            print(f"| {group} | {s['recordings']} | {mean_sd(s['lag_s'], '{:.0f}', 1000, ' ms', True)} | {gain} | "
+                  f"{mean_sd(s['r2'])} | {held_out} |")
     print("\n| Source | Units | Left: mean, median, 99th percentile | Right: mean, median, 99th percentile |\n| --- | --- | --- | --- |")
     for label, summary in rates.items():
         if summary:
             sides = [f"{s['mean']:.3g}, {s['median']:.3g}, {s['p99']:.3g}" if s else "n/a"
                      for s in (summary["left"], summary["right"])]
             print(f"| {label} | {summary['units']} | {sides[0]} | {sides[1]} |")
-    result = {"fits": fits, "filters": filters, "rates": rates, "conversion": conversion}
-    if args.run:
-        neural = json.loads((Path(args.run) / "metadata.json").read_text())["neural"]
-        result["run"] = {"path": args.run, "circuit": neural.get("circuit"), "circuit_sha256": neural.get("circuit_sha256")}
-    if fly and model:
-        result["comparison"] = cmp.compare(fly, model, args.max_lag)
+    result = {"fits": fits, "filters": filters, "rates": rates}
+    if len(flies) > 1:
+        result["conversions"] = dict(zip(labels["fly"], conversions))
+    else:
+        result["conversion"] = conversions[0] if conversions else None
+    runs = {}
+    for label, run in zip(labels["model"], args.run):
+        neural = json.loads((Path(run) / "metadata.json").read_text())["neural"]
+        runs[label] = {"path": run, "circuit": neural.get("circuit"), "circuit_sha256": neural.get("circuit_sha256")}
+    if len(runs) == 1:
+        result["run"] = runs["model"]
+    elif runs:
+        result["runs"] = runs
+    if across:
+        result["across"] = across
+    if len(flies) == 1 and len(models) == 1:
+        result["comparison"] = cmp.compare(flies[0], models[0], args.max_lag)
         c = result["comparison"]
         print(f"\nSame sign: {c['same_sign']}. Model lag − fly lag: {c['lag_difference_s'] * 1000:+.0f} ms. {c['note']}")
+    elif flies and models:
+        result["comparison"] = cmp.compare_groups([fits[k] for k in labels["fly"]], [fits[k] for k in labels["model"]])
+        c = result["comparison"]
+        print(f"\nSame sign in every fit: {c['same_sign']}. Mean model lag − mean fly lag: "
+              f"{c['lag_difference_s'] * 1000:+.0f} ms. {c['note']}")
     save(output_stem("compare", args.out), [], {"command": "compare", "rotation": "rightward positive, deg/s", **result})
 
 
@@ -358,14 +402,16 @@ def main():
     j.set_defaults(handler=jump)
     c = commands.add_parser("circuits", help="List committed and local circuits")
     c.set_defaults(handler=circuits)
-    m = commands.add_parser("compare", help="Fit turning to right − left readout activity in a recording and/or a run")
-    m.add_argument("--recording", help="Fly recording: CSV/NPZ (columns in digitalfly/compare.py) or a Rayshubskiy et al. 2025 dual .mat")
+    m = commands.add_parser("compare", help="Fit turning to right − left readout activity in recordings and/or runs")
+    m.add_argument("--recording", action="append", default=[],
+                   help="Fly recording: CSV/NPZ (columns in digitalfly/compare.py) or a Rayshubskiy et al. 2025 dual .mat; "
+                        "repeat it for several flies (adds their mean and spread)")
     m.add_argument("--positive-yaw", choices=["right", "left"], default="right",
                    help="Which way the .mat file's positive yaw turns (default right, inferred; see the research guide)")
     m.add_argument("--include-stimulus", action="store_true",
                    help="Keep the .mat file's optogenetic stimulus epochs in the fits (default: leave them out)")
     m.add_argument("--save-recording", help="Also write the converted .mat recording as a CSV here")
-    m.add_argument("--run", help="Exported DigitalFly run folder (runs/<id>)")
+    m.add_argument("--run", action="append", default=[], help="Exported DigitalFly run folder (runs/<id>); repeatable")
     m.add_argument("--readout", help="Readout cell type (default: the run's first readout, or DNa02)")
     m.add_argument("--max-lag", type=float, default=.5, help="Largest lag of turning behind the neurons, s")
     m.add_argument("--out", help="Output file stem (.json is written)")
