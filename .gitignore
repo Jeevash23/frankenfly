@@ -43,6 +43,8 @@ __pycache__/
 !/data/recordings/LICENSE.md
 # Circuits built locally from the app or the builder's `build` command stay on this machine.
 /data/circuits/local/
+# So do presets saved from the app.
+/configs/local/
 
 # Execution evidence can contain local paths, device details and session IDs.
 # Only the generic instructions belong in the public repository.

@@ -554,7 +554,7 @@ Replay a saved directory:
 backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER
 ```
 
-Replace `YOUR_RUN_FOLDER` with the name of a run you exported locally. Reference validation reproduced visual-input and timed target-reversal trials with maximum absolute error 0 at a tolerance of 1e-8. Vision rendering and numerical behavior may differ on another graphics/software stack. Personal run records and raw evidence are excluded from the public repository.
+Replace `YOUR_RUN_FOLDER` with the name of a run you exported locally. The running app does the same check in the background (`POST /api/runs/YOUR_RUN_FOLDER/replay`) and shows the verdict, with whether the software still matches the run's recorded versions and lockfiles, as the run's `verified` field (see the [usage guide](USAGE.md#saved-runs-and-replay)). Reference validation reproduced visual-input and timed target-reversal trials with maximum absolute error 0 at a tolerance of 1e-8. Vision rendering and numerical behavior may differ on another graphics/software stack. Personal run records and raw evidence are excluded from the public repository.
 
 ## What remains before biological simulation claims
 

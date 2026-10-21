@@ -3,6 +3,7 @@ import csv
 from functools import lru_cache
 import hashlib
 import json
+import math
 import re
 import shutil
 import uuid
@@ -29,13 +30,46 @@ def run_detail(key: str, root: Path | None = None, include_trajectory=True):
         with csv_path.open() as file:
             rows = list(csv.DictReader(file))[:30000]
         interval = max(1, len(rows)//400)
-        trajectory = [[float(row[k]) for k in ["time_s", "x_mm", "y_mm", "speed_mm_s"]]
-                      for i, row in enumerate(rows) if i % interval == 0 or i == len(rows)-1]
+        points = (_point(row) for i, row in enumerate(rows) if i % interval == 0 or i == len(rows)-1)
+        trajectory = [point for point in points if point is not None]
     return {"key": key, "run_id": meta["run_id"], "created_utc": meta["created_utc"],
         "config": meta["initial_config"], "samples": meta["recorded_samples"],
         "metrics": meta.get("metrics", {}), "trial": meta.get("trial"),
-        "error": meta.get("error"), "provenance": meta["provenance"],
+        "error": meta.get("error"), "provenance": meta["provenance"], "verified": verification(directory),
         "trajectory": trajectory, "download_url": f"/api/exports/{key}.zip"}
+
+
+def _point(row):
+    """A trajectory point, or None for a damaged row (missing or non-finite values), which is left out."""
+    try:
+        point = [float(row[k]) for k in ["time_s", "x_mm", "y_mm", "speed_mm_s"]]
+    except (KeyError, TypeError, ValueError):
+        return None
+    return point if all(math.isfinite(value) for value in point) else None
+
+
+VERDICT_FIELDS = ("ok", "max_abs_error", "tolerance", "checked", "same_software", "message")
+
+
+def verification(directory: Path) -> dict | None:
+    """The latest replay check's verdict (replay.json, written by scripts/replay.py --save), or None."""
+    path = directory / "replay.json"
+    try:
+        stat = path.lstat()
+    except OSError:
+        return None
+    return _verdict(str(path), stat.st_mtime_ns, stat.st_size) if path.is_file() and not path.is_symlink() else None
+
+
+@lru_cache(maxsize=2048)
+def _verdict(path: str, mtime_ns: int, size: int):
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or any(field not in data for field in VERDICT_FIELDS):
+        return None
+    return data
 
 
 @lru_cache(maxsize=2048)
@@ -63,7 +97,7 @@ def list_runs(root: Path | None = None, include_empty=True) -> list[dict]:
             except (OSError, ValueError, KeyError, TypeError):
                 continue
             if include_empty or item["samples"] > 1:
-                records.append(item)
+                records.append({**item, "verified": verification(path)})  # replay.json changes; the metadata never does
     return records
 
 

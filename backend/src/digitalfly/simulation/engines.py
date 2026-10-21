@@ -8,6 +8,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import threading
 import numpy as np
 from digitalfly.api.models import Pose, Stimulus, SensorState, Interventions
 
@@ -25,6 +26,7 @@ _GL_PROBE = ("import mujoco\n"
              "m = mujoco.MjModel.from_xml_string('<mujoco><worldbody><light/></worldbody></mujoco>')\n"
              "r = mujoco.Renderer(m, 8, 8)\nr.update_scene(mujoco.MjData(m))\nr.render()\nr.close()\n")
 _gl = {}  # this process's choice: {"backend": name, or None when none works, "tried": {backend: reason}}
+_gl_lock = threading.Lock()
 
 
 def probe_gl(backend: str, timeout: float = 60) -> str | None:
@@ -42,19 +44,21 @@ def probe_gl(backend: str, timeout: float = 60) -> str | None:
 def select_gl() -> str | None:
     """MuJoCo's OpenGL backend, chosen once per process before MuJoCo is imported. An explicit MUJOCO_GL is
     always kept. Otherwise, on Linux, the first that renders: GLFW when there is a display (MuJoCo's default),
-    then EGL, then OSMesa. None when none does: physics still runs, without rendering (see gl_help)."""
-    if "backend" not in _gl:
-        explicit = os.environ.get("MUJOCO_GL")
-        _gl.update(backend=explicit or "default", explicit=explicit, tried={})
-        if not explicit and sys.platform.startswith("linux") and "mujoco" not in sys.modules:
-            display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-            _gl["backend"] = None
-            for backend in ["glfw"] * bool(display) + ["egl", "osmesa"]:
-                _gl["tried"][backend] = probe_gl(backend)
-                if _gl["tried"][backend] is None:
-                    _gl["backend"] = os.environ["MUJOCO_GL"] = backend
-                    break
-    return _gl["backend"]
+    then EGL, then OSMesa. None when none does: physics still runs, without rendering (see gl_help).
+    Thread-safe: the simulation, /api/capabilities and replay jobs may ask at the same time."""
+    with _gl_lock:
+        if "backend" not in _gl:
+            explicit = os.environ.get("MUJOCO_GL")
+            _gl.update(backend=explicit or "default", explicit=explicit, tried={})
+            if not explicit and sys.platform.startswith("linux") and "mujoco" not in sys.modules:
+                display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+                _gl["backend"] = None
+                for backend in ["glfw"] * bool(display) + ["egl", "osmesa"]:
+                    _gl["tried"][backend] = probe_gl(backend)
+                    if _gl["tried"][backend] is None:
+                        _gl["backend"] = os.environ["MUJOCO_GL"] = backend
+                        break
+        return _gl["backend"]
 
 
 def gl_help() -> str:

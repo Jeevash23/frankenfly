@@ -1,18 +1,16 @@
-"""Circuit builds started from the app: one subprocess at a time, running the repository's own builder.
+"""Circuit builds started from the app: a background job (jobs.py) running the repository's own builder, one at a time.
 
 Arguments are validated and passed as a list, never through a shell. The builder reads only the
 prepared FlyWire archive in the ignored cache, needs no network and writes to data/circuits/local/.
 """
 import json
-import subprocess
 import sys
 import threading
-import time
-from collections import deque
 from pathlib import Path
 from typing import Annotated
 from pydantic import Field
 from digitalfly.api.models import CircuitName, StrictModel
+from digitalfly.data.jobs import JobManager
 
 ROOT = Path(__file__).resolve().parents[4]
 PREPARED = ROOT / ".cache/circuits/fafb783-connectome.npz"
@@ -41,21 +39,32 @@ def catalog_ready() -> bool:
 
 
 class BuildManager:
-    def __init__(self):
+    """Builds as "build" jobs. A build never queues: a second one is refused while one runs. status() keeps the
+    shape GET /api/connectome/build has always had; GET /api/jobs lists the same jobs."""
+
+    def __init__(self, jobs: JobManager | None = None):
+        self.jobs = jobs or JobManager()
         self.lock = threading.Lock()
-        self.process = None
-        self.lines = deque(maxlen=200)
-        self.state = {"status": "idle"}
+        self.job = None  # the latest build started here, and its request
+        self.request = None
 
     def status(self):
         with self.lock:
-            return {**self.state, "log": list(self.lines)[-40:]}
+            job, request = self.job, self.request
+        if job is None:
+            return {"status": "idle", "log": []}
+        with self.jobs.lock:
+            state = {"status": {"queued": "running", "cancelled": "failed"}.get(job.status, job.status),
+                     "name": request.name, "request": request.model_dump(), "started": job.started_s}
+            if not job.active:
+                state.update(exit_code=job.exit_code, result=job.result, finished=job.finished_s)
+            return {**state, "log": list(job.lines)[-40:]}
 
     def building(self) -> str | None:
         """The name of the circuit a running build will write, if a build is running."""
         with self.lock:
-            running = self.process is not None and self.process.poll() is None
-            return self.state.get("name") if running else None
+            job, request = self.job, self.request
+        return request.name if job is not None and job.active else None
 
     def start(self, request: BuildRequest, in_use: set[str] = frozenset()):
         """Start a build. `in_use` names the circuits the simulation has loaded: rebuilding one of them in place would
@@ -71,15 +80,9 @@ class BuildManager:
                              "Choose another name, or reset onto another circuit or model first.")
         command = self.command(request)
         with self.lock:
-            if self.process is not None and self.process.poll() is None:
-                raise ValueError("A circuit build is already running. Wait for it to finish.")
-            self.lines.clear()
-            self.process = subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                            text=True, start_new_session=True)
-            self.state = {"status": "running", "name": request.name, "request": request.model_dump(),
-                          "started": time.time()}
-            process = self.process
-        threading.Thread(target=self._follow, args=(process,), daemon=True).start()
+            self.job = self.jobs.submit("build", f"Build circuit {request.name}", command, target=request.name,
+                                        busy="A circuit build is already running. Wait for it to finish.")
+            self.request = request
         return self.status()
 
     @staticmethod
@@ -89,28 +92,5 @@ class BuildManager:
         command += [part for seed in request.seeds for part in ("--seed", seed)]
         return command + (["--whole-brain"] if request.whole_brain else [])
 
-    def _follow(self, process):
-        for line in process.stdout:
-            with self.lock:
-                self.lines.append(line.rstrip())
-        code = process.wait()
-        with self.lock:
-            if process is self.process:
-                result = None
-                if code == 0 and self.lines:
-                    try:
-                        result = json.loads(self.lines[-1])
-                    except ValueError:
-                        pass
-                self.state = {**self.state, "status": "done" if code == 0 else "failed", "exit_code": code,
-                              "result": result, "finished": time.time()}
-
     def close(self):
-        with self.lock:
-            process = self.process
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
+        self.jobs.close("build")

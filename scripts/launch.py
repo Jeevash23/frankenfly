@@ -18,7 +18,8 @@ def main():
     parser.add_argument("--no-render", action="store_true", help="Use the labeled backend-pose arena view")
     parser.add_argument("--dev", action="store_true", help="Allow the frontend development server instead of a built UI")
     parser.add_argument("--open", action="store_true", help="Open the page in your browser")
-    parser.add_argument("--config", type=Path, help="Load a saved RunConfig JSON file")
+    parser.add_argument("--config", help="Start from a preset (a name such as steering-circuit, from configs/ or "
+                        "configs/local/) or a RunConfig or preset JSON file")
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:
         sys.exit("Choose a port from 1024 to 65535.")
@@ -41,6 +42,7 @@ def main():
         import uvicorn
         from digitalfly.main import create_app
         from digitalfly.api.models import RunConfig
+        from digitalfly.data.presets import load_config
     except ImportError as exc:
         sys.exit(f"Missing project dependency: {exc}. Run ./scripts/setup.sh, or python3 scripts/doctor.py to see what is missing.")
     url = f"http://127.0.0.1:{5173 if args.dev else args.port}"
@@ -50,7 +52,7 @@ def main():
         timer.daemon = True
         timer.start()
     try:
-        config = RunConfig.model_validate_json(args.config.read_text()) if args.config else RunConfig()
+        config = load_config(args.config) if args.config else RunConfig()
     except Exception as exc:
         sys.exit(f"Invalid configuration: {exc}")
     if args.toy:
