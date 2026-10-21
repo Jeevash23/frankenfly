@@ -8,12 +8,38 @@
 ./scripts/start.sh --no-render                 # real physics without the 3D camera
 ./scripts/start.sh --toy                       # kinematic toy demo, no physics
 ./scripts/start.sh --port 8001                 # use another port
-./scripts/start.sh --config configs/default.json
+./scripts/start.sh --config steering-circuit       # start from a preset (see below) or a configuration file
 ```
 
 The app opens paused at http://127.0.0.1:8000. To stop the server, click **Quit** in the upper-right corner, optionally saving the current run first, or press **Control+C** in the terminal that started it. Closing the browser tab or pressing Pause does not stop the server.
 
 Extra browser tabs on the same computer share one simulation: Run, Reset, interventions and Quit affect all of them. A copy of the project on another computer runs independently, with its own saved runs.
+
+When the server starts, it removes what an interrupted export, run deletion, replay check or circuit build left behind more than an hour earlier (hidden `runs/.tmp-*`, `runs/.deleting-*` and `.part` files), and names them in the terminal.
+
+### Presets
+
+A preset is a named run configuration. `--config` takes a preset name or the path of a configuration file. These ship with DigitalFly, in `configs/`:
+
+| Preset | Starts |
+| --- | --- |
+| `default` | The default configuration: FlyGym body, engineered six-unit model, geometric sensing |
+| `steering-circuit` | The connectome model on the 4,000-neuron steering circuit, rate dynamics |
+| `spiking-dna02` | The DNa02 circuit with spiking neurons |
+| `flyvis-eyes` | FlyVis eyes driving the DNa02 circuit; needs the optional FlyVis install and OpenGL |
+| `first-experiment` | The engineered model with the 2 s target-reversal protocol of the research guide's first experiment |
+
+Presets you save through the API go to `configs/local/`, which git ignores:
+
+```sh
+curl http://127.0.0.1:8000/api/configs                       # every preset, with a description
+curl http://127.0.0.1:8000/api/configs/steering-circuit      # one preset's configuration
+curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:8000/api/configs \
+     -d '{"name": "my-setup", "description": "Steering circuit, seed 7", "config": {"seed": 7, "neural_model": "connectome", "connectome_parameters": {"circuit": "fafb783-steering"}}}'
+curl -X DELETE http://127.0.0.1:8000/api/configs/my-setup
+```
+
+Names use lowercase letters, digits, `-` and `_` (up to 48 characters); a preset file may be at most 64 KB. Saving checks the configuration in full, circuit included, and replaces a local preset of the same name; the shipped presets cannot be replaced or deleted. Every preset is checked again whenever it is listed or read: one this computer cannot run (FlyVis not installed, a circuit that is not there) is listed with `"available": false` and the reason, and a damaged file is listed with an `error`, never hiding the others. A preset file holds `{"description": "...", "config": {...}}`; a plain configuration file, such as `configs/default.json` or an export's `initial_config` saved on its own, works too.
 
 ## Controls
 
@@ -90,7 +116,7 @@ Charts use simulated time and freeze during Pause. Sensor readouts can update wh
 
 Exports are written only inside `runs/`; the app never accepts a destination path. Every export includes the initial configuration, final state, dependency versions and the SHA-256 of each `backend/requirements*.lock`, neural weights, units, time steps, and every event stamped with its control step; FlyVis-eye runs add the FlyVis release, network and checkpoint hash, and the bridge file with its hash. An export is written into a hidden folder in `runs/` and renamed into place only when complete, so an interrupted export never appears in the run library.
 
-Recording keeps every sample from Reset, up to 30,000 (about 300 simulated seconds), rather than silently dropping the start of a run. At that limit the run pauses with a note in the session log; it stays valid and exports normally, and Reset starts a new one. Up to 10,000 manual input changes (target, interventions and parameters) are recorded; after that, further changes are refused until you export and reset. Run, Pause, Step, speed changes and exports never count, and repeated changes of one kind within the same 10 ms step, such as a slider dragged while paused, are saved as one event holding the final value, which is the only one the simulation used.
+Recording keeps every sample from Reset, up to 30,000 (about 300 simulated seconds), rather than silently dropping the start of a run. At that limit the run pauses with a note in the session log; it stays valid and exports normally, and Reset starts a new one. Up to 10,000 manual input changes (target, interventions and parameters) are recorded; after that, further changes are refused until you export and reset. Run, Pause, Step, speed changes and exports never count; the session log keeps the first 10,000 of those per run and then one note that later ones are left out, which never affects replay. Repeated changes of one kind within the same 10 ms step, such as a slider dragged while paused, are saved as one event holding the final value, which is the only one the simulation used.
 
 To publish a run, export it share-safe: `POST /api/export` with the body `{"share_safe": true}` leaves out the operating-system string and replaces absolute paths with paths relative to the project (or `<local>`) and the computer's name with `<local>` in errors and log messages:
 
@@ -104,7 +130,17 @@ The API also lists saved runs page by page (`GET /api/runs?offset=0&limit=100&in
 backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER
 ```
 
-Replace `YOUR_RUN_FOLDER` with a folder created by Export or by a completed comparison. Replay re-runs the recorded schedule and checks body position, yaw, neural rates and motor outputs against the saved telemetry, at a tolerance of `1e-8`. Results match on the same software and graphics stack; other devices or dependency versions may differ slightly. A connectome run records the SHA-256 of its circuit file; if that circuit has since been rebuilt or edited, replay stops and says so (`--allow-circuit-mismatch` tries anyway).
+Replace `YOUR_RUN_FOLDER` with a folder created by Export or by a completed comparison. Replay re-runs the recorded schedule and checks body position, yaw, neural rates and motor outputs against the saved telemetry, at a tolerance of `1e-8`. It reports the largest difference in each column and, when they differ, the first sample with the largest one; a damaged `telemetry.csv` (a value that is not a number, missing rows or columns) fails the check. Results match on the same software and graphics stack; other devices or dependency versions may differ slightly. A connectome run records the SHA-256 of its circuit file; if that circuit has since been rebuilt or edited, replay stops and says so (`--allow-circuit-mismatch` tries anyway). `--save` also writes the verdict to the run's `replay.json`.
+
+The running app verifies a saved run the same way, in a separate process, so the simulation never waits for it: `POST /api/runs/FOLDER_NAME/replay` (body `{}`) queues the check and answers 202 with the job. One check runs at a time; others wait their turn, and a FlyGym run is replayed with the OpenGL backend the server chose. The verdict is saved in the run's `replay.json` and appears as `verified` on the run in `GET /api/runs` and `GET /api/runs/FOLDER_NAME`: `ok`, `max_abs_error`, `tolerance`, when it was `checked`, a `message`, and `same_software`, which says whether the Python version, the package versions and the lockfile hashes the run recorded match the installed ones (when they do not, the message lists the differences). A check that cannot run at all, for example because the circuit changed, fails its job with the reason and leaves the previous verdict in place.
+
+```sh
+curl -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8000/api/runs/YOUR_RUN_FOLDER/replay
+curl http://127.0.0.1:8000/api/jobs                                   # replay checks and circuit builds, newest first
+curl -X POST -H 'Content-Type: application/json' -d '{}' http://127.0.0.1:8000/api/jobs/JOB_ID/cancel
+```
+
+`GET /api/jobs` lists the last 50 jobs (circuit builds from **Build a circuit** included) with their status (`queued`, `running`, `done`, `failed` or `cancelled`), progress, the last 200 lines of output, the result and any error. Cancelling stops the job's process and everything it started. Quitting the server stops running jobs.
 
 To measure throughput on your machine:
 

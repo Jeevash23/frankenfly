@@ -18,12 +18,12 @@ from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, St
 from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
 from digitalfly.neural.model import NAMES as ENGINEERED_UNITS, RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog, catalog_ready
-from digitalfly.data import presets
+from digitalfly.data import jobs as background, presets
 from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION, RECORD_LIMIT
 from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
     run_detail, delete_run)
-from digitalfly.simulation.engines import CONTROL_DT, NEURAL_DT, PHYSICS_DT, ROOT
+from digitalfly.simulation.engines import CONTROL_DT, NEURAL_DT, PHYSICS_DT, ROOT, select_gl
 from digitalfly.simulation.worker import PUBLISH_INTERVAL, Rejected, SimulationWorker, WorkerStopped
 
 
@@ -40,23 +40,27 @@ def validation_details(errors, prefix=()):
 
 def create_app(config: RunConfig | None = None, render: bool = True):
     worker = SimulationWorker(config, render)
-    builds = BuildManager()
+    jobs = background.JobManager()
+    builds = BuildManager(jobs)
     port = int(os.environ.get("DIGITALFLY_PORT", "8000"))
     allowed_origins = {f"http://{host}:{p}" for host in ["127.0.0.1", "localhost"] for p in [port, 5173]}
 
     @asynccontextmanager
     async def lifespan(app):
+        # Folders and files that interrupted exports, deletions and builds left behind more than an hour ago.
+        app.state.removed_leftovers = await asyncio.to_thread(background.remove_leftovers, ROOT)
         worker.start()
         try:
             yield
         finally:
-            await asyncio.to_thread(builds.close)
+            await asyncio.to_thread(jobs.close)
             await asyncio.to_thread(worker.close)
 
     # No Swagger/ReDoc pages: they need a CDN and inline scripts that the CSP below blocks. The schema stays.
     app = FastAPI(title="DigitalFly", version=APPLICATION_VERSION, lifespan=lifespan, docs_url=None, redoc_url=None,
                   openapi_url="/api/openapi.json")
     app.state.worker = worker
+    app.state.jobs = jobs
     app.state.shutdown_callback = None
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
 
@@ -144,7 +148,9 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         return {"engines": list(get_args(fields["engine"].annotation)), "default_engine": fields["engine"].default,
                 "rendering": state["rendering"],
                 "control_interval_s": CONTROL_DT, "neural_interval_s": NEURAL_DT, "physics_interval_s": PHYSICS_DT,
-                "telemetry_target_hz": round(1 / PUBLISH_INTERVAL), "compound_eye_sensor": True,
+                "telemetry_target_hz": round(1 / PUBLISH_INTERVAL),
+                # Compound-eye vision renders the eyes, so it needs a working OpenGL backend (engines.select_gl).
+                "compound_eye_sensor": select_gl() is not None,
                 "neural_models": {
                     "engineered": f"{len(ENGINEERED_UNITS)} engineered leaky rate units with hand-chosen weights (default)",
                     "connectome": "FlyWire v783 circuits with rate or spiking dynamics: data-derived wiring, assumed signs, engineered dynamics"},
@@ -162,6 +168,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 "neural_units": len(ENGINEERED_UNITS) if model == "engineered" else circuit.get("neurons"),
                 "single_authoritative_instance": True, "input_queue_capacity": worker.commands.maxsize,
                 "recording_limit": RECORD_LIMIT, "provenance": state["provenance"],
+                "jobs": {"available": True, "kinds": list(background.KINDS)},
                 "presets": {"available": presets.CONFIG_DIR.is_dir()}}
 
     @app.post("/api/run")
@@ -363,7 +370,33 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             raise HTTPException(404, "Connectivity format example is missing.")
         return FileResponse(path, media_type="application/json", filename="connectivity-example.json")
 
-    # Named configurations (presets).
+    # Background jobs (circuit builds and replay checks, in their own processes) and named configurations.
+    @app.get("/api/jobs")
+    def job_list():
+        return {"jobs": jobs.listing()}
+
+    @app.post("/api/jobs/{job_id}/cancel")
+    def job_cancel(job_id: str, body: StrictModel):
+        try:
+            return {"job": jobs.cancel(job_id)}
+        except KeyError as exc:
+            raise HTTPException(404, "Job not found.") from exc
+
+    @app.post("/api/runs/{key}/replay", status_code=202)
+    def replay_saved_run(key: str, body: StrictModel):
+        directory = ROOT / "runs" / key
+        if not RUN_KEY.fullmatch(key) or directory.is_symlink() or not (directory / "metadata.json").is_file():
+            raise HTTPException(404, "Saved run not found.")
+        try:
+            job = background.submit_replay(jobs, directory)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"job": jobs.describe(job)}
+
     @app.get("/api/configs")
     def config_list():
         return {"configs": presets.list_presets()}
