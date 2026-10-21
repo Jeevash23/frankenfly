@@ -6,20 +6,23 @@ What each part is:
   assumed       signs: acetylcholine excitatory; GABA and glutamate inhibitory (as in Shiu et al. 2024);
                 dopamine, serotonin, octopamine and unknown transmitters excluded unless switched on
   engineered    the dynamics' global gains; which populations receive the sensors, read out turning
-                and (optionally) set walking speed; forward drive as a tonic term
+                and (optionally) set walking speed; forward drive as a tonic term; the motor path
 
 Rate dynamics, an Euler update every 1 ms for every neuron i:
   r_i += dt/tau × (clip(sum_j W_ij r_j + input_i, 0, 1) − r_i),  W_ij = sign(j) × synapses(j → i) × global_gain
 Spiking dynamics: the leaky integrate-and-fire model and parameters of Shiu et al. 2024, stepped at 0.1 ms.
-Turning: turn = output gain × Σ_types (mean right − mean left) over the readout types. A more active
-right DNa02 turns the fly right (Rayshubskiy et al. 2025); FlyGym's HybridTurningController turns right
-when the left legs' amplitude exceeds the right's.
+Turning: turn = output gain × Σ_types w_type × (mean right − mean left) over the readout types (w = 1 unless
+set; "mean" pooling divides by the number of types). A more active right DNa02 turns the fly right
+(Rayshubskiy et al. 2025); FlyGym's HybridTurningController turns right when the left legs' amplitude exceeds
+the right's. Motor: the command [forward + turn, forward − turn] passes an optional delay line and first-order
+low-pass, updated every neural step (both off by default), then motor = 1.4 × clip(command, 0, 1).
 """
 import hashlib
 import io
 import json
 import math
 import re
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 import numpy as np
@@ -379,6 +382,9 @@ class ConnectomeCircuit:
         self._silence_key = None
         self._silenced = np.array([], dtype=np.int64)
         self.visual = None  # FlyVis responses (eyes × types) when the FlyVis sensor drives the circuit
+        self._history = self._lowpassed = None  # the motor path's delay line and low-passed command, when on
+        self._motor_steps = self._motor_clipped = 0
+        self._advanced = False
         self.configure(parameters or ConnectomeParameters())
 
     def configure(self, parameters: ConnectomeParameters):
@@ -392,17 +398,22 @@ class ConnectomeCircuit:
             self.data = data
             self.rates = np.zeros(len(data.ids))
             self._silence_key = None
+            self._history = self._lowpassed = None
         self.parameters = parameters.model_copy(deep=True)
         p = self.parameters
         readout_types = p.readout_types if p.readout_types is not None else data.defaults["readout_types"]
         if not readout_types:
             raise ValueError(f"Choose readout cell types: the {data.key} circuit has no default steering readout.")
+        unweighted = sorted(set(p.readout_weights or {}) - set(readout_types))
+        if unweighted:
+            raise ValueError(f"Readout weights name cell types that are not read out: {', '.join(unweighted)}.")
         self.readouts = []
         for name in readout_types:
             left, right = data.members(name, "left"), data.members(name, "right")
             if not len(left) or not len(right):
                 raise ValueError(f"{name} needs neurons on both sides to read out turning.")
             self.readouts.append((name, left, right))
+        self._readout_weights = [float((p.readout_weights or {}).get(name, 1.)) for name in readout_types]
         self.input_left, self.input_right = input_population(data, p.input_types)
         input_label = "Visual input" if p.input_types is None else "Input"
         if not len(self.input_left) or not len(self.input_right):
@@ -436,6 +447,10 @@ class ConnectomeCircuit:
             "excitatory_connections": int((active & (signs[data.pre] > 0)).sum()),
             "inhibitory_connections": int((active & (signs[data.pre] < 0)).sum()),
         }
+        if not (p.motor_delay_ms or p.motor_tau_ms):
+            self._history = self._lowpassed = None
+        elif self._history is None:  # switched on: the delay line starts full of the current command
+            self._restart_motor_path()
 
     def silenced(self, interventions: Interventions) -> np.ndarray:
         key = (interventions.silence_dna02, tuple(interventions.silence_types))
@@ -459,6 +474,12 @@ class ConnectomeCircuit:
             return self.spiking.rate_hz / self.parameters.spiking.rate_scale_hz
         return self.rates
 
+    def _activity_of(self, neurons: np.ndarray) -> np.ndarray:
+        """activity[neurons], without computing it for every neuron."""
+        if self.spiking is not None:
+            return self.spiking.rate_hz[neurons] / self.parameters.spiking.rate_scale_hz
+        return self.rates[neurons]
+
     def apply_silencing(self, interventions: Interventions):
         silenced = self.silenced(interventions)
         if self.spiking is not None:
@@ -472,6 +493,10 @@ class ConnectomeCircuit:
         self.rates.fill(0)
         if self.spiking is not None:
             self.spiking.reset(self._seed)
+        self._motor_steps = self._motor_clipped = 0
+        self._advanced = False
+        if self._history is not None:
+            self._restart_motor_path()
 
     def set_visual(self, responses: np.ndarray | None):
         """Drive the input neurons from FlyVis (an eyes × types array, left eye first) through the circuit's
@@ -501,37 +526,77 @@ class ConnectomeCircuit:
                 raise ValueError(f"Spiking dynamics step in multiples of {LIF['dt_ms']:g} ms, not {dt * 1000:g} ms.")
             self.spiking.advance(sensors.left, sensors.right, silenced, visual, round(substeps))
             self.spiking.rate_hz[silenced] = 0
-            return
-        rates = self.rates
-        rates[silenced] = 0
-        drive = self.W @ rates
-        gain = self.parameters.input_gain
-        if visual is not None:
-            drive += gain * visual
         else:
-            drive[self.input_left] += gain * sensors.left
-            drive[self.input_right] += gain * sensors.right
-        np.clip(drive, 0, 1, out=drive)
-        rates += dt / self.tau * (drive - rates)
-        rates[silenced] = 0
-        if not np.isfinite(rates).all():
-            raise FloatingPointError("Nonfinite neural state; simulation paused.")
+            rates = self.rates
+            rates[silenced] = 0
+            drive = self.W @ rates
+            gain = self.parameters.input_gain
+            if visual is not None:
+                drive += gain * visual
+            else:
+                drive[self.input_left] += gain * sensors.left
+                drive[self.input_right] += gain * sensors.right
+            np.clip(drive, 0, 1, out=drive)
+            rates += dt / self.tau * (drive - rates)
+            rates[silenced] = 0
+            if not np.isfinite(rates).all():
+                raise FloatingPointError("Nonfinite neural state; simulation paused.")
+        self._advanced = True
+        if self._history is not None:
+            self._advance_motor_path(dt)
 
     def turn(self) -> float:
         """Positive when the readout's right side is more active: a rightward turn command."""
-        r = self.activity
-        return self.parameters.output_gain * float(sum(r[right].mean() - r[left].mean() for _, left, right in self.readouts))
+        p = self.parameters
+        total = sum(w * (self._activity_of(right).mean() - self._activity_of(left).mean())
+                    for w, (_, left, right) in zip(self._readout_weights, self.readouts))
+        if p.readout_pool == "mean":
+            total /= len(self.readouts)
+        return p.output_gain * float(total)
 
     def forward(self) -> float:
         p = self.parameters
-        return p.tonic_drive if self.speed is None else p.tonic_drive + p.speed_gain * float(self.activity[self.speed].mean())
+        return p.tonic_drive if self.speed is None else p.tonic_drive + p.speed_gain * float(self._activity_of(self.speed).mean())
+
+    def command(self) -> np.ndarray:
+        """The descending command [forward + turn, forward − turn] now, before the motor path and the clip."""
+        turn, forward = self.turn(), self.forward()
+        return np.array([forward + turn, forward - turn])
+
+    def _restart_motor_path(self):
+        command = self.command()
+        self._history, self._lowpassed = deque([command]), command
+
+    def _advance_motor_path(self, dt: float):
+        """One neural step of the engineered motor path: a delay line of whole neural steps, then a first-order
+        low-pass, on the descending command."""
+        p, history = self.parameters, self._history
+        slots = round(p.motor_delay_ms / (1000 * dt)) + 1
+        if history.maxlen != slots:  # the delay changed: keep the newest commands, repeat the oldest to fill
+            history = self._history = deque([history[0]] * (slots - len(history)) + list(history), maxlen=slots)
+        history.append(self.command())
+        delayed = history[0]
+        if p.motor_tau_ms:
+            self._lowpassed = self._lowpassed + (1 - math.exp(-1000 * dt / p.motor_tau_ms)) * (delayed - self._lowpassed)
+        else:
+            self._lowpassed = delayed
 
     def motor(self, baseline: bool = False) -> np.ndarray:
         if baseline:
             return np.ones(2)
-        turn, forward = self.turn(), self.forward()
+        command = self.command() if self._lowpassed is None else self._lowpassed
+        if self._advanced:  # count each command sent after the circuit advanced: one per control interval
+            self._advanced = False
+            self._motor_steps += 1
+            self._motor_clipped += bool((command < 0).any() or (command > 1).any())
         # Larger left-leg amplitude turns FlyGym's body (and the toy body) to the right.
-        return np.clip(np.array([forward + turn, forward - turn]), 0, 1) * MOTOR_SCALE
+        return np.clip(command, 0, 1) * MOTOR_SCALE
+
+    @property
+    def motor_clipped_fraction(self) -> float:
+        """Engineered diagnostic: the fraction of control intervals since the reset whose descending command left
+        [0, 1] on either side, so the clip, not the circuit, set that side's amplitude."""
+        return self._motor_clipped / self._motor_steps if self._motor_steps else 0.
 
     def readout(self) -> list[float]:
         r = self.activity
@@ -557,6 +622,13 @@ class ConnectomeCircuit:
             input_mapping = ((f"Engineered: the left/right sensor value × input gain drives every neuron of {', '.join(p.input_types)} on that side"
                               if p.input_types else "Engineered: the left/right sensor value × input gain drives every visual projection neuron on that side")
                              + (" as Poisson spikes (input rate × sensor)" if spiking else ""))
+        readout = ", ".join(name if p.readout_weights is None else f"{w:g} × {name}"
+                            for w, (name, _, _) in zip(self._readout_weights, self.readouts))
+        path = ([f"delayed by {p.motor_delay_ms:g} ms (in whole neural steps)"] if p.motor_delay_ms else []) + \
+            ([f"low-passed with tau {p.motor_tau_ms:g} ms (each neural step: c += (1 − exp(−dt/tau)) × (input − c))"]
+             if p.motor_tau_ms else [])
+        motor = ("command = [forward + turn, forward − turn], " + ", then ".join(path) + "; motor = 1.4 × clip(command, 0, 1)"
+                 if path else "motor = 1.4 × clip([forward + turn, forward − turn], 0, 1)")
         return {
             "kind": self.kind, "unit_names": self.unit_names, "parameters": p.model_dump(),
             "circuit": data.key, "circuit_file": str(data.path.relative_to(ROOT)) if data.path.is_relative_to(ROOT) else data.path.name,
@@ -580,14 +652,17 @@ class ConnectomeCircuit:
             "input_mapping": input_mapping,
             "flyvis_bridge": {"file": str(bridge.relative_to(ROOT)) if bridge.is_relative_to(ROOT) else bridge.name,
                               "signs": "unsigned: every FlyVis cell type's input counts as excitatory"} if flyvis else None,
-            "output_mapping": ("Engineered readout: turn = output gain × Σ (right − left) over "
-                               f"{', '.join(name for name, _, _ in self.readouts)}; forward = tonic"
+            "output_mapping": (f"Engineered readout: turn = output gain × {'mean' if p.readout_pool == 'mean' else 'Σ'} (right − left) over "
+                               f"{readout}; forward = tonic"
                                + (f" + speed gain × mean({', '.join(p.speed_types)})" if p.speed_types else "")
-                               + "; motor = 1.4 × clip([forward + turn, forward − turn], 0, 1). "
+                               + f"; {motor}. "
                                "Direction: higher right DNa02 → rightward turn (Rayshubskiy et al. 2025); larger left amplitude turns right (FlyGym HybridTurningController)."),
+            "motor_clipped_fraction": self.motor_clipped_fraction,
             "labels": {"structure": "data-derived", "signs": "assumed", "dynamics": "engineered" if not spiking else "published model (Shiu et al. 2024 parameters)",
                        "input_mapping": "engineered, unsigned FlyVis bridge" if flyvis else "engineered",
-                       "output_mapping": "engineered, direction from literature"},
+                       "output_mapping": "engineered, direction from literature",
+                       "motor_path": "engineered (readout weights and pooling, delay, low-pass)",
+                       "motor_clipped_fraction": "engineered diagnostic"},
         }
 
 

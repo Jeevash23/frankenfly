@@ -203,7 +203,8 @@ motor = 1.4 × clip([forward + turn, forward − turn], 0, 1)    # [left legs, r
 ```
 
 - **Direction.** Rayshubskiy et al. 2025 ([eLife 13:RP102230](https://doi.org/10.7554/eLife.102230)) found the fly's rotational velocity linearly related to the right − left difference in DNa02 firing, and the same relation in a paired DNa01 recording, with DNa02 predicting large, transient turns and DNa01 smaller, slower ones. Bidaye et al. 2020 ([Neuron 108:469](https://doi.org/10.1016/j.neuron.2020.07.032)) found that P9 (DNp09) drives forward walking with turning toward its own side and receives input from visual projection neurons. So a more active right neuron of any of these types means a right turn.
-- **Weights.** Readout types are summed with equal weights. That is an assumption: the measured gains differ between DNa01 and DNa02.
+- **Weights.** By default readout types are summed with equal weights. That is an assumption: the measured gains differ between DNa01 and DNa02. `readout_weights` (−5 to 5 per type, 1 when not given) and `readout_pool` (`sum`, or `mean`, which divides by the number of readout types) change that; both are engineered.
+- **Delay and smoothing.** `motor_delay_ms` (0–500) delays the command `[forward + turn, forward − turn]` by whole 1 ms neural steps, and `motor_tau_ms` (0–1000) then low-passes it, `c += (1 − exp(−dt/τ)) × (delayed − c)` every neural step, before the clip. Both are 0 by default, which leaves the v0.5 output unchanged. They are engineered stand-ins for the nerve cord and leg dynamics the model lacks, not fitted values; the exact rules are in [ARCHITECTURE.md](ARCHITECTURE.md#connectome-motor-path).
 - **Which amplitude turns which way.** FlyGym 2.1.0's `HybridTurningController.step` sets the first three CPG amplitudes (legs LF, LM, LH) from `descending_signal[0]` and the last three (RF, RM, RH) from `descending_signal[1]`. A larger left amplitude turns the body right: `[1.2, 0.4]` turns the FlyGym body 146° clockwise in 1 s, and the toy body turns the same way.
 - **Forward drive** is the tonic term. **Populations → Speed drive** adds the mean activity of named cell types (for example DNp09) × the speed gain. It is off by default.
 
@@ -211,7 +212,7 @@ Readout, input and speed populations are set by cell type in **Neural atlas → 
 
 ### Parameters and how the defaults were chosen
 
-Only global parameters exist: synapse threshold (1–1000, applied on top of the circuit's build threshold), global gain, input gain, output gain, tonic drive, τ, the transmitter switch, the speed gain and, for spiking, the weight per synapse, the input rate, the rate window and the rate scale. Edit them in **Neural atlas → Live circuit**; changes are recorded and replayed. Circuit, dynamics and populations are fixed for a run.
+Only global parameters exist: synapse threshold (1–1000, applied on top of the circuit's build threshold), global gain, input gain, output gain, tonic drive, τ, the transmitter switch, the speed gain and, for spiking, the weight per synapse, the input rate, the rate window and the rate scale. Edit them in **Neural atlas → Live circuit**; changes are recorded and replayed. The motor path's readout weights, pooling, delay and low-pass are set through the API (`POST /api/connectome/parameters`) or the toolkit (for example `--set connectome_parameters.motor_delay_ms=180`), and are live-editable and replayed in the same way. Circuit, dynamics and populations are fixed for a run.
 
 | Parameter | Default | Choice |
 | --- | --- | --- |
@@ -244,6 +245,8 @@ Compared with a target straight ahead, moving it to either side shifts activity 
 | Steering circuit, spiking | −2.02 (left) | −0.40 (left) | −1.91 (left) | 1.07 |
 
 Positive turns are rightward. The spiking values are averaged over the last 400 ms of 800 ms (seed 1).
+
+**The clip, and how to read `motor_clipped_fraction`.** Once the turn command's size exceeds min(forward, 1 − forward), 0.35 with the default tonic drive, one side of `[forward + turn, forward − turn]` leaves [0, 1], and the clip in the motor equation pins that side's legs at amplitude 0 or 1.4. The spiking turns above (−2.02, −1.91) are far past that, so with the default spiking calibration the steering is mostly saturated: the sign of the turn reaches the legs, its size does not. Each run reports the share of control intervals (10 ms) whose command was clipped on either side as `motor_clipped_fraction`, an engineered diagnostic, in exports (`metadata.neural.motor_clipped_fraction`) and in the live connectome block. Near 0, the legs follow the circuit's graded output; near 1, turning speed is set by the clip, so input differences that change only the size of the turn cannot be told apart, and slope fits of turning against the readout (such as the turning-per-spike numbers below) measure the clip as much as the circuit. Results that depend only on the turn's sign (first turn, reaching) are less affected. Over the first 5 s of a default toy-body run (seed 1), it is 0 for the DNa02 circuit and 0.12 for the steering circuit with rate dynamics, and 0.57 and 0.67 with spiking dynamics. The default spiking calibration was not changed; lowering the output gain or raising the rate scale reduces the clipping.
 
 ### Where the side bias comes from
 
@@ -381,7 +384,7 @@ The model runs come from `toolkit.jumping_target_run` (the target jumps to a ran
 What this says about the model:
 
 - **Turning per spike.** On the FlyGym body the DNa02 circuit turns 2.7 °/s per spike/s of DNa02 difference, near the fly's 3.4 °/s (single-lag fits; noise in the fly's rate estimate lowers its value).
-- **Timing.** The fly turns about 180 ms after its DNa02 difference; the model within 10–20 ms. The model has no delay between descending neurons and the legs beyond the body's own.
+- **Timing.** The fly turns about 180 ms after its DNa02 difference; the model within 10–20 ms. By default the model has no delay between descending neurons and the legs beyond the body's own; `motor_delay_ms` and `motor_tau_ms` add one, but no value has been fitted.
 - **How much DNa02 explains.** In the fly, DNa02 predicts about 10% of held-out turning. In the DNa02 circuit it predicts 42% on FlyGym and 71% on the toy body, because the model's turning is wired to DNa02 by construction. In the steering circuit, where DNp09 does most of the steering, DNa02 predicts 7%, close to the fly, for that reason rather than a biological one.
 - **Firing rates.** The spiking model's DNa02 fire far more than the recorded ones: means of 52–143 spikes/s against 1–3, and 99th percentiles of 212–230 spikes/s against 36 (`runs/toolkit/dna02-rates-fly-vs-model.json`). The Poisson input (150 Hz at full sensor value, Shiu et al.'s default) drives the network much harder than walking drives this fly.
 
@@ -429,7 +432,7 @@ With the target directly behind, the engineered model's left and right inputs ar
 - **Not a whole brain in the closed loop by default, and not validated.** The committed circuits hold 3,000 and 4,000 of FlyWire's roughly 140,000 neurons, chosen by synapse paths to their seeds. The whole brain can be built and run, slowly. Behavior was compared between models, not against flies.
 - **Signs** come from per-neuron transmitter predictions. Glutamate is treated as inhibitory although it can excite; neuromodulators are left out by default; electrical synapses are absent.
 - **Dynamics.** The rate model is one leaky-rate rule with a single gain, time constant and rectification. The spiking model uses Shiu et al.'s single set of constants for every neuron, with no adaptation, receptor kinetics or neuromodulation, and forward-Euler integration rather than Brian2's exact linear integration.
-- **Input and output.** Every input neuron on a side gets the same value, whatever its visual feature (with FlyVis eyes, an unsigned drive through the bridge). Turning is an equal-weight sum over the readout types, and forward drive is a tonic term. The nerve cord and the body's other descending neurons are not modeled.
+- **Input and output.** Every input neuron on a side gets the same value, whatever its visual feature (with FlyVis eyes, an unsigned drive through the bridge). Turning is an equal-weight sum over the readout types unless weights are set, and forward drive is a tonic term. The nerve cord and the body's other descending neurons are not modeled.
 - **Sampling.** The cap keeps neurons by path strength, which can sample a cell type unevenly between the sides.
 - **Sides** follow FlyWire's annotations; FAFB is a single female brain, and individual flies differ.
 - **The side biases** are properties of these models on this wiring; they are not known to describe flies.

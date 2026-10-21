@@ -113,7 +113,7 @@ def test_live_edits_keep_the_spiking_state():
     assert edited.turn() == fresh.turn() != 0
     # Network parameters take effect on the same state; a new input population, or a reset, starts afresh.
     weights = state.weights.copy()
-    edited.configure(ConnectomeParameters(dynamics="spiking", input_gain=1.2,
+    edited.configure(ConnectomeParameters(dynamics="spiking", input_gain=1.2, motor_delay_ms=50,
                                           spiking={"synapse_weight_mv": .55, "rate_window_ms": 100}))
     assert edited.spiking is state and state.step_index == 2000
     assert np.allclose(state.weights, 2 * weights) and state.kick == 250 * .55 and state.rate_jump == 10

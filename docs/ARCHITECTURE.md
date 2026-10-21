@@ -27,7 +27,7 @@ The browser sends validated commands and plots Python samples. It never integrat
 - Body pose: world position `[x,y,z]` in **mm**, yaw in **radians**, speed in **mm/s**. Right-handed frame, `+z` upward, yaw counterclockwise from `+x`. The thorax's local `+x` determines forward heading.
 - Sensor encoder: geometric pose/stimulus features or rendered eye pixels → dimensionless bilateral intensities in `[0,1]`, followed by input interventions. Raw intensities, geometric bearing and distance are retained as diagnostics. Neural and motor code receive no target coordinates.
 - Neural circuit: declared two sensor values + silencing mask → dimensionless continuous rates (six for the engineered model; one per neuron for the connectome model, of which the readout pairs, the mean input per side, the circuit mean and an optional speed drive are recorded; spiking activity is firing rate ÷ the rate scale). No privileged target-coordinate shortcut reaches neural or motor code.
-- Motor interface: engineered descending rates × 1.4, clipped to `[0,1.4]`, or for the connectome model `1.4 × clip([forward + turn, forward − turn], 0, 1)` with `turn = output gain × Σ (readout R − readout L)` over the readout cell types and `forward = tonic (+ speed gain × speed population)` → upstream CPG amplitudes `[left legs, right legs]`. The explicit baseline returns `[1,1]` regardless of rates and is labeled as a bypass.
+- Motor interface: engineered descending rates × 1.4, clipped to `[0,1.4]`, or for the connectome model `1.4 × clip([forward + turn, forward − turn], 0, 1)` with `turn = output gain × Σ (readout R − readout L)` over the readout cell types and `forward = tonic (+ speed gain × speed population)`, optionally weighted, delayed and low-passed (the [motor path](#connectome-motor-path) below) → upstream CPG amplitudes `[left legs, right legs]`. The explicit baseline returns `[1,1]` regardless of rates and is labeled as a bypass.
 - Body adapter: descending command → 100 upstream controller/physics updates per control interval → finite body state. Controller proprioception uses FlyGym's supported `HybridControllerObservation.from_sim`.
 - The target also appears as a non-colliding green landmark in the MuJoCo world. The optional vision adapter pools actual eye-camera pixels through the upstream retina and an engineered contrast encoder. See `RESEARCH.md` for exact rates, units and assumptions.
 
@@ -52,6 +52,22 @@ b = [0, 0, 0, 0, 0.35, 0.35]
 `B` injects left/right signals into their sensory units. Steering uses a hand-chosen opponent difference (`±1.7`). Descending units receive sensory sum (`0.45` each) and opposing steering terms (`±0.85`). Exact matrices live in `backend/src/digitalfly/neural/model.py` and each export. They are not synapse counts or inferred biological weights. Silenced rates are clamped before and after every neural update and immediately at intervention boundaries.
 
 The connectome model's equations, data and assumptions are in [RESEARCH.md](RESEARCH.md#the-connectome-model): `r += dt/τ × (clip(W r + input, 0, 1) − r)` with `W_ij = sign(j) × synapses(j→i) × global gain`, a CSR sparse matrix rebuilt only when parameters change.
+
+### Connectome motor path
+
+Everything between the readout and the legs is **engineered**. With `w_t` = `readout_weights[t]` (1 when not set), `K` readout types and neural step `k` (dt = 1 ms):
+
+```text
+turn_k = output_gain × P_t w_t × (mean_R(t) − mean_L(t))       P = Σ ("sum", default) or Σ/K ("mean")
+c_k    = [forward_k + turn_k, forward_k − turn_k]                after the network update of step k
+d_k    = c_{k−D},  D = round(motor_delay_ms / dt)                delay line; c_j = c_s for j < s, s = when the path came on
+y_k    = y_{k−1} + (1 − exp(−dt / motor_tau_ms)) × (d_k − y_{k−1}),  y_s = c_s;  y_k = d_k when motor_tau_ms = 0
+motor  = 1.4 × clip(y, 0, 1)                                     read at the end of each 10 ms control interval
+```
+
+With `motor_delay_ms = motor_tau_ms = 0` (the defaults) the path is off and `motor = 1.4 × clip(c, 0, 1)` is computed from the current activity, exactly as in v0.5. The path comes on at a reset or a live edit (`POST /api/connectome/parameters`), with the delay line and `y` full of the command at that moment; later edits keep both. A longer delay keeps the newest commands and repeats the oldest to fill the line (the output holds for the difference), a shorter one drops the oldest; switching the path off drops it. `turn()` and the recorded readouts stay instantaneous.
+
+`motor_clipped_fraction` is an engineered diagnostic: the fraction of control intervals since the reset whose command `y` (or `c`) left `[0, 1]` on either side, counted once per interval on the command sent to the body (observations between steps and baseline intervals are not counted). `ConnectomeCircuit.description()` reports it, so exports carry it in `metadata.neural`.
 
 The toy adapter uses speed `12 × mean(motor)` mm/s and yaw rate `4 × (right − left)` rad/s. It has no collision or leg physics. Seed initializes a small heading offset. The FlyGym model instead resolves MuJoCo contact, actuated joints and adhesion.
 
