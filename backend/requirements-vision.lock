@@ -1227,6 +1227,7 @@ mujoco==3.9.0 \
     --hash=sha256:ff40abf8d5154fd847d610176dd3a7edd6f3e7392f957151fb0f0f4e8c20e771
     # via
     #   -c backend/requirements.lock
+    #   digitalfly (backend/pyproject.toml)
     #   flygym
 narwhals==2.27.1 \
     --hash=sha256:aed93076a3ea42d9c32c88e4eb5ea422a21937011cbe1f480f9572a523c82094 \
@@ -1538,6 +1539,7 @@ pillow==12.3.0 \
     --hash=sha256:ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7
     # via
     #   -c backend/requirements.lock
+    #   digitalfly (backend/pyproject.toml)
     #   flygym
     #   imageio
     #   matplotlib

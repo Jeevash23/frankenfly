@@ -531,7 +531,9 @@ mujoco==3.9.0 \
     --hash=sha256:f8c6769ac1463752ff392d8c4d20014e54220112d772e6ccecdf6bcdb6d43e07 \
     --hash=sha256:fc9a82c103b15086e43aa4278bcd52cb11a3e5e3da2cba2239cd80a08a4d51fa \
     --hash=sha256:ff40abf8d5154fd847d610176dd3a7edd6f3e7392f957151fb0f0f4e8c20e771
-    # via flygym
+    # via
+    #   digitalfly (backend/pyproject.toml)
+    #   flygym
 numba==0.67.0 \
     --hash=sha256:00c964a5b94d3ae82d83ac162cd610755875b98dadb779fdde06e6bfcdbca47e \
     --hash=sha256:3fa3d1b27f96f2c0d54513d953d7197886aa1eaa7d2439a0eedc44d993fb181a \
@@ -740,6 +742,7 @@ pillow==12.3.0 \
     --hash=sha256:fe3cca2e4e8a592be0f269a1ca4835c25199d9f3ce815c8491048f785b0a0198 \
     --hash=sha256:ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7
     # via
+    #   digitalfly (backend/pyproject.toml)
     #   flygym
     #   imageio
     #   matplotlib
