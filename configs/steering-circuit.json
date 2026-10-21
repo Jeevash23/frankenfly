@@ -1,0 +1,10 @@
+{
+  "description": "FlyGym body steered by the 4,000-neuron FlyWire steering circuit (readout DNa01, DNa02 and DNp09), rate dynamics, geometric sensing.",
+  "config": {
+    "engine": "flygym",
+    "seed": 42,
+    "neural_model": "connectome",
+    "connectome_parameters": {"circuit": "fafb783-steering", "dynamics": "rate"},
+    "stimulus": {"x": 12, "y": 8, "intensity": 1}
+  }
+}

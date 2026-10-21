@@ -1,0 +1,14 @@
+{
+  "description": "The research guide's first experiment: the engineered model on a 2 s target reversal (the target moves from (12, 8) to (12, -8) mm at 1 s). Compare conditions on the Experiments page.",
+  "config": {
+    "engine": "flygym",
+    "seed": 42,
+    "neural_model": "engineered",
+    "stimulus": {"x": 12, "y": 8, "intensity": 1},
+    "protocol": {
+      "name": "Target reversal",
+      "duration_steps": 200,
+      "events": [{"step": 100, "stimulus": {"x": 12, "y": -8, "intensity": 1}}]
+    }
+  }
+}

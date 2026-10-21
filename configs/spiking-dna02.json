@@ -1,0 +1,10 @@
+{
+  "description": "FlyGym body with the 3,000-neuron DNa02 circuit as spiking neurons (Shiu et al. 2024 constants), geometric sensing. The default calibration mostly saturates the steering.",
+  "config": {
+    "engine": "flygym",
+    "seed": 42,
+    "neural_model": "connectome",
+    "connectome_parameters": {"circuit": "fafb783-dna02", "dynamics": "spiking"},
+    "stimulus": {"x": 12, "y": 8, "intensity": 1}
+  }
+}

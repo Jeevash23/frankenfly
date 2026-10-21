@@ -18,6 +18,7 @@ from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, St
 from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
 from digitalfly.neural.model import NAMES as ENGINEERED_UNITS, RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog, catalog_ready
+from digitalfly.data import presets
 from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION, RECORD_LIMIT
 from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
@@ -78,7 +79,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 length = int(request.headers.get("content-length", "0") or 0)
             except ValueError:
                 return JSONResponse({"detail": "Invalid content length."}, status_code=400)
-            limit = 2_000_000 if request.url.path == "/api/connectivity/import" else 16384
+            limit = {"/api/connectivity/import": 2_000_000, "/api/configs": presets.SIZE_LIMIT}.get(request.url.path, 16384)
             if length > limit or len(await request.body()) > limit:
                 return JSONResponse({"detail": "Command body is too large."}, status_code=413)
         response = await call_next(request)
@@ -160,7 +161,8 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 "shutdown_available": app.state.shutdown_callback is not None,
                 "neural_units": len(ENGINEERED_UNITS) if model == "engineered" else circuit.get("neurons"),
                 "single_authoritative_instance": True, "input_queue_capacity": worker.commands.maxsize,
-                "recording_limit": RECORD_LIMIT, "provenance": state["provenance"]}
+                "recording_limit": RECORD_LIMIT, "provenance": state["provenance"],
+                "presets": {"available": presets.CONFIG_DIR.is_dir()}}
 
     @app.post("/api/run")
     async def run(body: StrictModel):
@@ -360,6 +362,45 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         if not path.is_file():
             raise HTTPException(404, "Connectivity format example is missing.")
         return FileResponse(path, media_type="application/json", filename="connectivity-example.json")
+
+    # Named configurations (presets).
+    @app.get("/api/configs")
+    def config_list():
+        return {"configs": presets.list_presets()}
+
+    @app.get("/api/configs/{name}")
+    def config_get(name: str):
+        try:
+            return presets.load(name)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except presets.PresetUnavailable as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(422, f"The {name} preset is invalid: {exc}") from exc
+
+    @app.post("/api/configs", status_code=201)
+    def config_save(body: presets.PresetRequest):
+        # Validated again here, off the event loop, against the circuit files (see models.reads_files_later).
+        try:
+            return presets.save(body)
+        except presets.PresetConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"The preset could not be saved: {exc.strerror or type(exc).__name__}.") from exc
+
+    @app.delete("/api/configs/{name}")
+    def config_delete(name: str):
+        try:
+            return presets.delete(name)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except presets.PresetConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(500, f"The preset could not be deleted: {exc.strerror or type(exc).__name__}.") from exc
 
     class Shutdown(StrictModel):
         instance_id: str
