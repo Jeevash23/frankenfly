@@ -1,0 +1,33 @@
+# docker compose up --build, then open http://localhost:8000 (Ctrl+C or Quit in the app to stop).
+# Optional settings, in the environment or a .env file next to this one (see docs/INSTALL.md):
+#   DIGITALFLY_PORT_ON_HOST=8001     publish on another host port (its origins are allowed automatically)
+#   DIGITALFLY_EXTRAS=flyvis         optional parts built into the image: flyvis, builder, recording
+#   DIGITALFLY_UID=1000              the container user's id, if you bind-mount host folders (id -u)
+name: digitalfly
+services:
+  digitalfly:
+    build:
+      context: .
+      args:
+        EXTRAS: ${DIGITALFLY_EXTRAS:-}
+        UID: ${DIGITALFLY_UID:-1000}
+    image: digitalfly
+    init: true
+    # Published to this computer only: the app has no login (see docs/INSTALL.md).
+    ports:
+      - "127.0.0.1:${DIGITALFLY_PORT_ON_HOST:-8000}:8000"
+    environment:
+      DIGITALFLY_ALLOWED_ORIGINS: "http://localhost:${DIGITALFLY_PORT_ON_HOST:-8000},http://127.0.0.1:${DIGITALFLY_PORT_ON_HOST:-8000}"
+    # Saved runs, downloads and caches, circuits built in the app and imported connectivity outlive the
+    # container. To keep runs in this checkout's runs/ instead, use ./runs:/app/runs (and DIGITALFLY_UID).
+    volumes:
+      - runs:/app/runs
+      - cache:/app/.cache
+      - local-circuits:/app/data/circuits/local
+      - connectivity:/app/data/connectivity
+
+volumes:
+  runs:
+  cache:
+  local-circuits:
+  connectivity:

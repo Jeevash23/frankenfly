@@ -1,0 +1,31 @@
+// VS Code dev container and GitHub Codespaces: the repository's Dockerfile, "dev" target
+// (Ubuntu 24.04, Python 3.12, Node 24, Mesa EGL and OSMesa, Xvfb). See docs/INSTALL.md.
+{
+  "name": "DigitalFly",
+  "build": {
+    "dockerfile": "../Dockerfile",
+    "context": "..",
+    "target": "dev"
+  },
+  "remoteUser": "ubuntu",
+  // Linux builds of the Python environment and the frontend packages live in volumes, so they never
+  // mix with a native setup of the same checkout on the host.
+  "mounts": [
+    "source=digitalfly-venv-${devcontainerId},target=${containerWorkspaceFolder}/backend/.venv,type=volume",
+    "source=digitalfly-node-modules-${devcontainerId},target=${containerWorkspaceFolder}/frontend/node_modules,type=volume"
+  ],
+  "postCreateCommand": "sudo chown ubuntu:ubuntu backend/.venv frontend/node_modules && ./scripts/setup.sh --check",
+  "forwardPorts": [8000, 5173],
+  "portsAttributes": {
+    "8000": { "label": "DigitalFly (./scripts/start.sh)", "onAutoForward": "notify" },
+    "5173": { "label": "Development UI (./scripts/dev.sh)", "onAutoForward": "notify" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "esbenp.prettier-vscode"],
+      "settings": {
+        "python.defaultInterpreterPath": "backend/.venv/bin/python"
+      }
+    }
+  }
+}
