@@ -1,7 +1,9 @@
 """Circuit files and the circuit registry, configurable populations, summaries and path tracing."""
+import json
 import numpy as np
 import pytest
-from conftest import write_circuit
+from pydantic import ValidationError
+from conftest import toy_circuit, write_circuit
 from digitalfly.api.models import ConnectomeParameters, Interventions, RunConfig, SensorState
 from digitalfly.neural import connectome
 from digitalfly.neural.connectome import (CircuitData, ConnectomeCircuit, circuit_path, circuit_summary, list_circuits,
@@ -20,6 +22,49 @@ def test_json_npz_and_v03_files_load_the_same_way(tmp_path):
     v03 = load_circuit()
     assert v03.version == 1 and v03.defaults["readout_types"] == ["DNa02"] and v03.seeds[0]["seed"] == "DNa02"
     assert v03.summary()["committed"] and v03.summary()["neurons"] == 3000
+
+
+def corrupt(neurons=None, edges=None, lookups=None):
+    """A change to one field of the toy circuit: {field: function of the field's list}."""
+    def apply(header, neuron_table, edge_table):
+        for table, changes in ((neuron_table, neurons), (edge_table, edges), (header["lookups"], lookups)):
+            for key, change in (changes or {}).items():
+                table[key] = change(list(table[key]))
+                if table[key] is None:
+                    del table[key]
+    return apply
+
+
+def at(index, value):
+    return lambda values: values[:index] + [value] + values[index + 1:]
+
+
+@pytest.mark.parametrize("change, message", [
+    (corrupt(neurons={"cell_type": at(0, 99)}), "cell_type has index 99, outside the 6 entries"),
+    (corrupt(neurons={"super_class": at(8, -1)}), "super_class has index -1"),  # used to wrap to the last class silently
+    (corrupt(neurons={"side": at(2, 3)}), "side has index 3"),
+    (corrupt(neurons={"transmitter": at(4, 1.5)}), "transmitter must be a list of whole numbers"),
+    (corrupt(neurons={"cell_class": at(1, None)}), "cell_class must be a list of whole numbers"),
+    (corrupt(neurons={"hop": at(0, "1")}), "hop must be a list of whole numbers"),
+    (corrupt(neurons={"hop": lambda v: v[:-1]}), "hop has 9 entries for 10 neurons"),
+    (corrupt(neurons={"id": at(1, "1")}), "IDs must be unique"),
+    (corrupt(lookups={"transmitter": lambda v: None}), "lacks the circuit field 'transmitter'"),
+    (corrupt(edges={"post": at(3, 10)}), "edge post has index 10, outside the 10 entries"),
+    (corrupt(edges={"pre": at(0, -1)}), "edge pre has index -1"),
+    (corrupt(edges={"pre": at(0, 2.5)}), "edge pre must be a list of whole numbers"),
+    (corrupt(edges={"synapses": lambda v: v[:-1]}), "differ in length"),
+    (corrupt(edges={"synapses": at(0, float("nan"))}), "synapse counts must be positive"),
+    (corrupt(edges={"synapses": at(0, 0)}), "synapse counts must be positive"),
+])
+def test_loader_rejects_corrupted_circuits(tmp_path, monkeypatch, change, message):
+    header, neurons, edges = toy_circuit("broken")
+    change(header, neurons, edges)
+    monkeypatch.setattr(connectome, "LOCAL_DIR", tmp_path)
+    (tmp_path / "broken.json").write_text(json.dumps({**header, "neurons": neurons, "edges": edges}))
+    with pytest.raises(ValueError, match=message):
+        CircuitData(tmp_path / "broken.json")
+    with pytest.raises(ValidationError, match="unavailable"):  # a 422 from the API, not a crash
+        RunConfig(neural_model="connectome", connectome_parameters={"circuit": "broken"})
 
 
 def test_registry_finds_committed_then_local_circuits_safely(tmp_path, monkeypatch):

@@ -97,6 +97,11 @@ class ConnectomeParameters(StrictModel):
     speed_types: list[CellTypeName] = Field(default_factory=list, max_length=8)
     speed_gain: float = Field(default=1, ge=0, le=10)
     spiking: SpikingParameters = Field(default_factory=SpikingParameters)
+    # Engineered motor path. The defaults reproduce v0.5: equal weights, summed, no delay, no low-pass.
+    readout_weights: dict[CellTypeName, Annotated[float, Field(ge=-5, le=5)]] | None = Field(default=None, max_length=8)
+    readout_pool: Literal["sum", "mean"] = "sum"
+    motor_delay_ms: float = Field(default=0, ge=0, le=500)  # descending command → walking controller
+    motor_tau_ms: float = Field(default=0, ge=0, le=1000)  # first-order low-pass on that command; 0 = none
 
     @model_validator(mode="after")
     def distinct_populations(self):
@@ -118,6 +123,9 @@ class ConnectomeParameters(StrictModel):
         for name in readout:
             if not (len(data.members(name, "left")) and len(data.members(name, "right"))):
                 raise ValueError(f"{name} needs neurons on both sides to read out turning.")
+        unweighted = sorted(set(self.readout_weights or {}) - set(readout))
+        if unweighted:
+            raise ValueError(f"Readout weights name cell types that are not read out: {', '.join(unweighted)}.")
         for name in self.speed_types:
             data.members(name)
         if self.input_types:

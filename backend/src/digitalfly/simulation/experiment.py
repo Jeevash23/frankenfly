@@ -325,6 +325,7 @@ class Experiment:
         return {"circuit": circuit.data.key, "dynamics": circuit.parameters.dynamics, "unit_names": circuit.unit_names,
                 "readout_types": [name for name, _, _ in circuit.readouts],
                 "type_rates": np.round(means, 4).tolist(), "turn": circuit.turn(),
+                "motor_clipped_fraction": circuit.motor_clipped_fraction,
                 "silenced_neurons": int(len(circuit.silenced(self.interventions))),
                 "trace_t": [s.t for s in self.history][-len(traces):] if len(traces) else [],
                 "top_types": [{"index": i, "name": circuit.data.type_names[i],
