@@ -179,6 +179,23 @@ def test_doctor_reads_locks_and_version_ranges(tmp_path):
     assert not doctor.satisfies("v22.11.9", ">=22.12 <27") and not doctor.satisfies("v27.0.0", ">=22.12 <27")
 
 
+def test_doctor_backend_only_and_image_modes(tmp_path, monkeypatch, capsys):
+    doctor = load_doctor()
+    monkeypatch.setattr(doctor, "ROOT", tmp_path)  # no frontend/ at all, as after setup.sh --backend-only
+    monkeypatch.setattr(doctor, "BACKEND_ONLY", True)
+    doctor.check_node()
+    doctor.check_frontend()
+    out = capsys.readouterr().out
+    assert doctor.failures == [] and out.count("[info]") == 2 and "--backend-only" in out, out
+    monkeypatch.setattr(doctor, "BACKEND_ONLY", False)
+    monkeypatch.setattr(doctor, "IMAGE", True)
+    doctor.check_node()
+    doctor.check_frontend()
+    out = capsys.readouterr().out
+    assert "the image ships the built interface" in out and doctor.failures == ["Frontend build"], out
+    assert "docker build -t digitalfly ." in out
+
+
 def test_doctor_prints_one_line_per_check():
     python = ROOT / "backend/.venv/bin/python"
     python = python if python.is_file() else sys.executable  # a worktree may share another checkout's environment
