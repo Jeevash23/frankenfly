@@ -100,10 +100,27 @@ def _info(path: str, mtime_ns: int) -> dict:
     return _describe(path, raw, header)
 
 
+def _whole(values, field: str, size: int | None = None) -> np.ndarray:
+    """A list of whole numbers, each an index below `size` when given, or a ValueError naming the field."""
+    array = np.asarray(values)
+    if array.ndim != 1 or (array.size and array.dtype.kind not in "iu"):
+        raise ValueError(f"Circuit field {field} must be a list of whole numbers.")
+    if size is not None and array.size and (array.min() < 0 or array.max() >= size):
+        bad = int(array[(array < 0) | (array >= size)][0])
+        raise ValueError(f"Circuit field {field} has index {bad}, outside the {size} entries it refers to.")
+    return array.astype(np.int64)
+
+
 class CircuitData:
     """One circuit file (format 1 or 2, JSON or NumPy), validated once and shared by every model."""
 
     def __init__(self, path: Path):
+        try:
+            self._load(path)
+        except KeyError as exc:  # a hand-made or truncated file: a validation error, not a crash
+            raise ValueError(f"{path.name} lacks the circuit field {exc}.") from exc
+
+    def _load(self, path: Path):
         raw, header, neurons, edges = _read(path)
         if header.get("format") != "digitalfly-circuit" or header.get("version") not in (1, 2):
             raise ValueError(f"{path.name} is not a DigitalFly circuit file.")
@@ -118,24 +135,27 @@ class CircuitData:
         lookups = header["lookups"]
         self.ids = [str(i) for i in np.asarray(neurons["id"]).tolist()]
         n = len(self.ids)
+        if len(set(self.ids)) != n:
+            raise ValueError("Circuit neuron IDs must be unique.")
         for key in ["cell_type", "super_class", "cell_class", "transmitter", "side", "hop"]:
             if len(neurons[key]) != n:
                 raise ValueError(f"Circuit field {key} has {len(neurons[key])} entries for {n} neurons.")
+        # Every lookup column must index its table: an out-of-range or negative index would otherwise wrap or crash later.
+        column = {key: _whole(neurons[key], key, len(lookups[key]))
+                  for key in ["cell_type", "super_class", "cell_class", "transmitter", "side"]}
         self.type_names = list(lookups["cell_type"])
-        self.type_index = np.asarray(neurons["cell_type"], dtype=np.int64)
-        self.super_class = np.asarray(lookups["super_class"], dtype=object)[np.asarray(neurons["super_class"])]
-        self.cell_class = np.asarray(lookups["cell_class"], dtype=object)[np.asarray(neurons["cell_class"])]
-        self.transmitter = np.asarray(lookups["transmitter"], dtype=object)[np.asarray(neurons["transmitter"])]
-        self.side = np.asarray(lookups["side"], dtype=object)[np.asarray(neurons["side"])]
-        self.hop = np.asarray(neurons["hop"], dtype=np.int64)
-        self.pre = np.asarray(edges["pre"], dtype=np.int64)
-        self.post = np.asarray(edges["post"], dtype=np.int64)
+        self.type_index = column["cell_type"]
+        self.super_class = np.asarray(lookups["super_class"], dtype=object)[column["super_class"]]
+        self.cell_class = np.asarray(lookups["cell_class"], dtype=object)[column["cell_class"]]
+        self.transmitter = np.asarray(lookups["transmitter"], dtype=object)[column["transmitter"]]
+        self.side = np.asarray(lookups["side"], dtype=object)[column["side"]]
+        self.hop = _whole(neurons["hop"], "hop")
+        self.pre = _whole(edges["pre"], "edge pre", n)
+        self.post = _whole(edges["post"], "edge post", n)
         self.synapses = np.asarray(edges["synapses"], dtype=np.float64)
-        if not (len(self.pre) == len(self.post) == len(self.synapses)):
+        if self.synapses.ndim != 1 or not (len(self.pre) == len(self.post) == len(self.synapses)):
             raise ValueError("Circuit edge arrays differ in length.")
-        if len(self.pre) and (min(self.pre.min(), self.post.min()) < 0 or max(self.pre.max(), self.post.max()) >= n):
-            raise ValueError("Circuit edge refers to a missing neuron.")
-        if (self.synapses < 1).any():
+        if not np.isfinite(self.synapses).all() or (self.synapses < 1).any():
             raise ValueError("Circuit synapse counts must be positive.")
         if self.version == 1:  # v0.3 files describe one DNa02 pair
             dna02 = self.provenance["dna02"]
