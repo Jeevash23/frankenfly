@@ -1,4 +1,5 @@
 from typing import Annotated, Literal
+import asyncio
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -17,22 +18,36 @@ CircuitName = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 DEFAULT_CIRCUIT = "fafb783-dna02"
 
 
+def reads_files_later() -> bool:
+    """True while validating on an asyncio event loop, as FastAPI does with every request body. Checks that read
+    circuit files are skipped there, so a large circuit never stalls the API and its telemetry; the simulation
+    worker validates every configuration again, in full and in its own thread, before using it."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def silenced_types(interventions: "Interventions") -> list[str]:
     """Every cell type an intervention silences in the connectome model, DNa02 included."""
     return list(dict.fromkeys(interventions.silence_types + ["DNa02"] * (interventions.silence_dna02 != "none")))
 
 
-def check_cell_types(names: list[str], circuit: str = DEFAULT_CIRCUIT) -> list[str]:
-    """Cell types must exist in the named connectome circuit."""
+def check_cell_types(names: list[str], circuit=DEFAULT_CIRCUIT) -> list[str]:
+    """Cell types must exist in the connectome circuit: one named on disk, or a loaded CircuitData (what a run uses)."""
     if not names:
         return names
     if len(set(names)) != len(names):
         raise ValueError("List each cell type once.")
-    from digitalfly.neural.connectome import known_cell_types
-    try:
-        known = known_cell_types(circuit)
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"The connectome circuit is unavailable: {exc}") from exc
+    if isinstance(circuit, str):
+        from digitalfly.neural.connectome import known_cell_types
+        try:
+            known = known_cell_types(circuit)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"The connectome circuit is unavailable: {exc}") from exc
+    else:
+        known, circuit = circuit.type_members, circuit.key
     unknown = [name for name in names if name not in known]
     if unknown:
         raise ValueError(f"Not a cell type in the {circuit} circuit: {', '.join(unknown)}.")
@@ -110,13 +125,17 @@ class ConnectomeParameters(StrictModel):
                 raise ValueError("List each cell type once per population.")
         return self
 
-    def check_against_circuit(self):
-        """Raise ValueError unless the circuit exists and every named population is in it."""
-        from digitalfly.neural.connectome import load_circuit
-        try:
-            data = load_circuit(self.circuit)
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"The {self.circuit} circuit is unavailable: {exc}") from exc
+    def check_against_circuit(self, data=None, flyvis: bool = False):
+        """Raise ValueError unless the circuit exists and every population works in it: readout and input neurons on
+        both sides (the default visual input too) and, with FlyVis eyes, input neurons that the circuit's FlyVis
+        bridge reaches on both sides. `data` checks a loaded CircuitData instead of the file on disk."""
+        import numpy as np
+        from digitalfly.neural.connectome import INPUT_SUPER_CLASS, bridge_path, load_bridge, load_circuit
+        if data is None:
+            try:
+                data = load_circuit(self.circuit)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"The {self.circuit} circuit is unavailable: {exc}") from exc
         readout = self.readout_types or data.defaults["readout_types"]
         if not readout:
             raise ValueError(f"Choose readout cell types: the {self.circuit} circuit has no default steering readout.")
@@ -129,9 +148,27 @@ class ConnectomeParameters(StrictModel):
         for name in self.speed_types:
             data.members(name)
         if self.input_types:
-            sides = {data.side[i] for name in self.input_types for i in data.members(name)}
-            if not {"left", "right"} <= sides:
+            inputs = np.concatenate([data.members(name) for name in self.input_types])
+            if not {"left", "right"} <= set(data.side[inputs]):
                 raise ValueError("The input cell types need neurons on both sides.")
+        else:
+            inputs = np.flatnonzero(data.super_class == INPUT_SUPER_CLASS)
+            for side in ("left", "right"):
+                if not (data.side[inputs] == side).any():
+                    raise ValueError(f"The {data.key} circuit has no visual projection neurons on the {side} side, so "
+                                     "its default visual input cannot steer. Choose input cell types with neurons on "
+                                     "both sides.")
+        if flyvis:
+            if not bridge_path(data).is_file():
+                raise ValueError(f"The {data.key} circuit has no FlyVis bridge. Build it with "
+                                 f"scripts/build_circuit.py flyvis-bridge --circuit {data.key}")
+            matrix, _ = load_bridge(data)
+            reached = matrix[inputs].getnnz(axis=1) > 0
+            for side in ("left", "right"):
+                if not reached[data.side[inputs] == side].any():
+                    raise ValueError(f"FlyVis eyes would give the circuit no {side} input: its FlyVis bridge reaches "
+                                     f"none of the {side} input neurons. The bridge feeds visual projection neurons; "
+                                     "use the default visual input or visual projection cell types.")
         return data
 
 
@@ -190,15 +227,11 @@ class RunConfig(StrictModel):
             ok, reason = available()
             if not ok:
                 raise ValueError(reason)
-            from digitalfly.neural.connectome import bridge_path, load_circuit
-            if not bridge_path(load_circuit(self.connectome_parameters.circuit)).is_file():
-                raise ValueError(f"The {self.connectome_parameters.circuit} circuit has no FlyVis bridge. Build it with "
-                                 f"scripts/build_circuit.py flyvis-bridge --circuit {self.connectome_parameters.circuit}")
         scheduled = [e.interventions for e in self.protocol.events if e.interventions is not None] if self.protocol else []
         for interventions in [self.initial_interventions] + scheduled:
             interventions.for_model(self.neural_model)
-        if self.neural_model == "connectome":
-            self.connectome_parameters.check_against_circuit()
+        if self.neural_model == "connectome" and not reads_files_later():
+            self.connectome_parameters.check_against_circuit(flyvis=self.sensor_model == "flyvis")
             for interventions in [self.initial_interventions] + scheduled:
                 check_cell_types(silenced_types(interventions), self.connectome_parameters.circuit)
         return self
@@ -217,6 +250,8 @@ class BatchRequest(StrictModel):
     conditions: list[Condition] = Field(
         default_factory=lambda: ["control", "left_sensor_off"], min_length=1, max_length=4)
     cell_type: CellTypeName | None = None
+    # True runs the trials unpaced, as fast as the computer allows; otherwise the display speed paces them.
+    max_speed: bool = False
 
     @model_validator(mode="after")
     def bounded(self):
@@ -227,15 +262,19 @@ class BatchRequest(StrictModel):
             raise ValueError("DNa02 and cell-type conditions need the connectome model. Select it before comparing.")
         if model == "connectome" and ENGINEERED_ONLY & set(self.conditions):
             raise ValueError("“Descending units off” belongs to the engineered model; use a DNa02 condition instead.")
+        if self.config.sensor_model == "flyvis" and "engineered_model" in self.conditions:
+            raise ValueError("FlyVis eyes drive only the connectome model, so “engineered model” cannot be compared "
+                             "with them. Choose compound-eye or geometric sensing for that comparison.")
         if ("cell_type_off" in self.conditions) != (self.cell_type is not None):
             raise ValueError("Choose a cell type for the “cell type off” condition, and only with that condition.")
         circuit = self.config.connectome_parameters.circuit
-        if "connectome_model" in self.conditions:
-            self.config.connectome_parameters.check_against_circuit()
-        if self.cell_type is not None:
-            check_cell_types([self.cell_type], circuit)
-        if (CONNECTOME_ONLY - {"cell_type_off"}) & set(self.conditions):
-            check_cell_types(["DNa02"], circuit)
+        if not reads_files_later():
+            if "connectome_model" in self.conditions:
+                self.config.connectome_parameters.check_against_circuit()
+            if self.cell_type is not None:
+                check_cell_types([self.cell_type], circuit)
+            if (CONNECTOME_ONLY - {"cell_type_off"}) & set(self.conditions):
+                check_cell_types(["DNa02"], circuit)
         if len(set(self.seeds)) != len(self.seeds) or any(s < 0 or s > 2147483647 for s in self.seeds):
             raise ValueError("Seeds must be distinct integers between 0 and 2147483647.")
         if len(set(self.conditions)) != len(self.conditions):

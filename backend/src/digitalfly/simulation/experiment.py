@@ -16,7 +16,7 @@ import zipfile
 import numpy as np
 from digitalfly import __version__ as APPLICATION_VERSION
 from digitalfly.api.models import ConnectomeParameters, Event, Interventions, RunConfig, Sample, Stimulus, NeuralParameters
-from digitalfly.neural.connectome import TRACE_TYPES, ConnectomeCircuit
+from digitalfly.neural.connectome import TRACE_TYPES, ConnectomeCircuit, load_circuit
 from digitalfly.neural.model import RateCircuit
 from digitalfly.simulation.engines import FlyGymBody, ToyBody, CONTROL_DT, PHYSICS_DT, NEURAL_DT, ROOT
 
@@ -90,9 +90,43 @@ class Experiment:
         self.circuit = RateCircuit()
         self.status = "initializing"
         self.error = None
-        self.reset(config)
+        try:
+            self.reset(config)
+        except Exception as exc:
+            # Nothing to keep yet: an empty run in the error state reports why; Reset recovers.
+            self._new_run(config)
+            self.fail(exc)
 
     def reset(self, config: RunConfig):
+        """Start a new run. The circuit, and the body when it changes, are built before anything is replaced, so a
+        configuration that cannot be built raises and leaves the current run as it was; a later failure leaves the
+        new run in the error state. Either way the configuration matches the circuit and body in use."""
+        circuit = make_circuit(config)
+        circuit.reset(config.seed)
+        if circuit.kind == "connectome":
+            scheduled = [e.interventions for e in config.protocol.events if e.interventions] if config.protocol else []
+            for interventions in [config.initial_interventions] + scheduled:
+                circuit.silenced(interventions)  # a cell type this circuit lacks fails here, before anything changes
+        reuse = self.body is not None and self.body.name == config.engine and self.body.sensor_model == config.sensor_model
+        body = self.body if reuse else (FlyGymBody if config.engine == "flygym" else ToyBody)(
+            config.seed, self.render_enabled, config.sensor_model)
+        previous, self.circuit, self.body = self.body, circuit, body
+        self._new_run(config)
+        try:
+            if reuse:
+                body.reset(config.seed)
+            elif previous is not None:
+                previous.close()
+            body.set_stimulus(config.stimulus)
+            self.observe()
+            self.initial_pose = self.sample.pose.model_copy(deep=True)
+            self.record()
+            self.status = "paused"
+            self.event("reset", "Experiment initialized · seed " + str(config.seed), config.model_dump())
+        except Exception as exc:
+            self.fail(exc)
+
+    def _new_run(self, config: RunConfig):
         self.status = "initializing"
         self.config = config.model_copy(deep=True)
         self.initial_config = config.model_copy(deep=True)
@@ -116,29 +150,6 @@ class Experiment:
         self.protocol_complete = False
         self.trial = None
         self.error = None
-        try:
-            if self.circuit.kind != config.neural_model:
-                self.circuit = make_circuit(config)
-            elif config.neural_model == "connectome":
-                self.circuit.configure(config.connectome_parameters)
-            else:
-                self.circuit.configure(config.neural_parameters)
-            self.circuit.reset(config.seed)
-            if self.body is not None and self.body.name == config.engine and self.body.sensor_model == config.sensor_model:
-                self.body.reset(config.seed)
-            else:
-                if self.body is not None:
-                    self.body.close()
-                self.body = None
-                self.body = (FlyGymBody if config.engine == "flygym" else ToyBody)(config.seed, self.render_enabled, config.sensor_model)
-            self.body.set_stimulus(config.stimulus)
-            self.observe()
-            self.initial_pose = self.sample.pose.model_copy(deep=True)
-            self.record()
-            self.status = "paused"
-            self.event("reset", "Experiment initialized · seed " + str(config.seed), config.model_dump())
-        except Exception as exc:
-            self.fail(exc)
 
     def _merges(self, kind: str, source=None) -> bool:
         last = self.events[-1] if self.events else None
@@ -279,11 +290,18 @@ class Experiment:
 
     def set_interventions(self, interventions: Interventions, source="manual"):
         self._schedule_room("interventions", source)
-        interventions.for_model(self.config.neural_model)
-        self.interventions = interventions
+        # Checked against the circuit that is running, and kept only once they apply.
+        interventions.for_model(self.circuit.kind)
+        if self.circuit.kind == "connectome":
+            self.circuit.silenced(interventions)
+        previous, self.interventions = self.interventions, interventions
         if self.body is not None and self.status != "error":
-            self.observe()
-        if self.config.neural_model == "connectome":
+            try:
+                self.observe()
+            except Exception:
+                self.interventions = previous
+                raise
+        if self.circuit.kind == "connectome":
             silenced = ", ".join([f"DNa02 {interventions.silence_dna02}"] * (interventions.silence_dna02 != "none")
                                  + interventions.silence_types) or "none"
         else:
@@ -292,7 +310,7 @@ class Experiment:
 
     def set_parameters(self, parameters: NeuralParameters):
         self._schedule_room("parameters")
-        if self.config.neural_model != "engineered":
+        if self.circuit.kind != "engineered":
             raise ValueError("These parameters belong to the engineered six-unit model. Use the connectome parameters instead.")
         self.config.neural_parameters = parameters
         self.circuit.configure(parameters)
@@ -300,7 +318,7 @@ class Experiment:
 
     def set_connectome_parameters(self, parameters: ConnectomeParameters):
         self._schedule_room("connectome_parameters")
-        if self.config.neural_model != "connectome":
+        if self.circuit.kind != "connectome":
             raise ValueError("Connectome parameters apply when the connectome model is selected.")
         current = self.config.connectome_parameters
         fixed = ["circuit", "dynamics", "readout_types", "input_types", "speed_types"]
@@ -308,7 +326,16 @@ class Experiment:
             # These change what is recorded (the rate columns), so they belong to a new run.
             raise ValueError("Changing the circuit, dynamics or populations starts a fresh run: "
                              "use Reset with the new settings.")
-        parameters.check_against_circuit()
+        data = self.circuit.data
+        try:
+            on_disk = load_circuit(parameters.circuit).sha256
+        except (OSError, ValueError):
+            on_disk = None
+        if on_disk != data.sha256:
+            # configure() reads the file by name: a rebuilt file would replace this run's wiring mid-run.
+            raise ValueError(f"The {data.key} circuit file has changed since this run loaded it. "
+                             "Reset to load the new build.")
+        parameters.check_against_circuit(data)
         self.config.connectome_parameters = parameters
         self.circuit.configure(parameters)
         self.event("connectome_parameters", "Connectome parameters updated", parameters.model_dump())
@@ -322,7 +349,8 @@ class Experiment:
         readout = {circuit.data.type_names.index(name) for name, _, _ in circuit.readouts}
         order = [int(i) for i in np.argsort(-means, kind="stable") if i not in readout][:TRACE_TYPES]
         traces = np.array([row[order] for row in self.type_history]) if self.type_history else np.zeros((0, len(order)))
-        return {"circuit": circuit.data.key, "dynamics": circuit.parameters.dynamics, "unit_names": circuit.unit_names,
+        return {"circuit": circuit.data.key, "circuit_sha256": circuit.data.sha256,
+                "dynamics": circuit.parameters.dynamics, "unit_names": circuit.unit_names,
                 "readout_types": [name for name, _, _ in circuit.readouts],
                 "type_rates": np.round(means, 4).tolist(), "turn": circuit.turn(),
                 "motor_clipped_fraction": circuit.motor_clipped_fraction,
@@ -356,7 +384,7 @@ class Experiment:
 
     @property
     def provenance(self):
-        connectome = self.config.neural_model == "connectome"
+        connectome = self.circuit.kind == "connectome"
         if connectome:
             info = self.circuit.description()
             readout = ", ".join(item["cell_type"] for item in info["readout"])
