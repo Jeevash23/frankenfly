@@ -19,7 +19,8 @@ Structural reconstructions for display, not an executable connectome: the female
 | --- | --- |
 | `fafb783-dna02.json` | The default circuit: both DNa02 neurons and their presynaptic partners up to two hops back (3,000 neurons, 78,615 connections, 1,257 cell types) |
 | `fafb783-steering.json` | The steering circuit around DNa01, DNa02 and DNp09 (4,000 neurons, 120,728 connections, 1,650 cell types) |
-| `fafb783-dna02.flyvis.json`, `fafb783-steering.flyvis.json` | FlyVis bridges: FlyWire v783 synapse counts from the optic-lobe cell types FlyVis models onto each circuit's visual projection neurons, by eye, tied to the circuit by its SHA-256. Only the optional FlyVis eyes read them; they never appear as circuits |
+| `fafb783-dna02-balanced.json`, `fafb783-steering-balanced.json` | The same seeds and caps built with `--balance-sides`: the cap keeps each cell type's left and right neurons in pairs (3,000 neurons and 1,056 cell types; 3,999 neurons and 1,438 cell types) |
+| `fafb783-dna02.flyvis.json`, `fafb783-steering.flyvis.json`, `fafb783-dna02-balanced.flyvis.json`, `fafb783-steering-balanced.flyvis.json` | FlyVis bridges: FlyWire v783 synapse counts from the optic-lobe cell types FlyVis models onto each circuit's visual projection neurons, by eye, tied to the circuit by its SHA-256. Only the optional FlyVis eyes read them; they never appear as circuits |
 | `downloads.json` | URL, release, size and SHA-256 of the two FlyWire v783 downloads the circuits are built from |
 | `local/` (ignored by git) | Circuits you build in the app or with `scripts/build_circuit.py build`, and their bridges. They stay on your computer and keep the FlyWire license |
 

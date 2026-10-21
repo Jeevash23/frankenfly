@@ -27,6 +27,7 @@ class BuildRequest(StrictModel):
     threshold: int = Field(default=5, ge=1, le=1000)
     cap: int = Field(default=3000, ge=10, le=200_000)
     whole_brain: bool = False
+    balance_sides: bool = False  # the cap per cell type and side (build_circuit.py --balance-sides)
 
 
 def catalog():
@@ -87,7 +88,7 @@ class BuildManager:
         command = [sys.executable, str(ROOT / "scripts/build_circuit.py"), "build", "--name", request.name,
                    "--hops", str(request.hops), "--threshold", str(request.threshold), "--cap", str(request.cap)]
         command += [part for seed in request.seeds for part in ("--seed", seed)]
-        return command + (["--whole-brain"] if request.whole_brain else [])
+        return command + (["--whole-brain"] if request.whole_brain else []) + (["--balance-sides"] if request.balance_sides else [])
 
     def _follow(self, process):
         for line in process.stdout:

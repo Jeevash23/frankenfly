@@ -84,7 +84,8 @@ def _describe(path: Path, raw: bytes, header: dict) -> dict:
             "format": path.suffix[1:], "version": header["version"], "neurons": counts.get("neurons"),
             "connections": counts.get("connections"), "cell_types": counts.get("cell_types"),
             "seeds": seeds, "readout_types": readout,
-            "build": {k: build.get(k) for k in ["synapse_threshold", "hops", "neuron_cap", "whole_brain", "seeds"]},
+            "build": {**{k: build.get(k) for k in ["synapse_threshold", "hops", "neuron_cap", "whole_brain", "seeds"]},
+                      "balance_sides": bool(build.get("balance_sides"))},  # absent before v0.6 and in unbalanced builds
             "coverage": prov.get("coverage"), "license": prov.get("license"), "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest()}
 
