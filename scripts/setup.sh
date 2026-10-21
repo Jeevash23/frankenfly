@@ -37,7 +37,8 @@ fi
 backend/.venv/bin/python -c 'import sys; assert sys.version_info[:2] == (3,12), "Project environment requires Python 3.12"'
 export PIP_CACHE_DIR="$PROJECT_ROOT/.cache/pip"
 export PIP_TOOLS_CACHE_DIR="$PROJECT_ROOT/.cache/pip-tools"
-backend/.venv/bin/python -m pip install --disable-pip-version-check pip-tools==7.5.3 setuptools==84.0.0
+# pip itself, pip-tools and setuptools come from a hashed lock too, before any other install.
+backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-tools.lock
 backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements.lock
 backend/.venv/bin/python -m pip install --no-deps --no-build-isolation -e backend
 mkdir -p .cache
