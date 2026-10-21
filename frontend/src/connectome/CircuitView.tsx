@@ -1,6 +1,6 @@
-import {useEffect, useMemo, useState} from 'react';
+import {memo, useEffect, useMemo, useRef, useState, type KeyboardEvent} from 'react';
 import {ArrowRight, Network, Route, Search} from 'lucide-react';
-import type {Command, Config, ConnectomeParameters, State} from '../types';
+import type {Command, Config, ConnectomeParameters, InterventionChange, State} from '../types';
 import {fmt} from '../format';
 import {dynamicsLabels, readoutPairs} from '../models';
 import {useCircuit} from './useCircuit';
@@ -9,6 +9,7 @@ import {
   activityColor,
   edgesToDraw,
   layoutTypes,
+  neighbour,
   readoutRows,
   READOUT_X,
   topPartners,
@@ -16,6 +17,7 @@ import {
   type CircuitSummary,
   type CircuitType,
   type Node,
+  type Spot,
 } from './layout';
 import './connectome.css';
 
@@ -32,7 +34,7 @@ function curve(a: {x: number; y: number}, b: {x: number; y: number}) {
   return `M${a.x} ${a.y} C${a.x + dx} ${a.y},${b.x - dx} ${b.y},${b.x} ${b.y}`;
 }
 
-function Edge({
+const Edge = memo(function Edge({
   from,
   to,
   sign,
@@ -60,7 +62,7 @@ function Edge({
       <title>{title}</title>
     </path>
   );
-}
+});
 
 function ParameterForm({
   state,
@@ -226,25 +228,37 @@ function PathTrace({source, targets}: {source: string; targets: string[]}) {
   const [paths, setPaths] = useState<Path[] | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // Only the answer to the newest request for the current source and target is shown; selecting
+  // another cell type while a trace runs drops its answer.
+  const request = useRef(0);
   useEffect(() => {
+    request.current += 1;
     setPaths(null);
     setError('');
+    setLoading(false);
   }, [source, target]);
   useEffect(() => {
     if (!targets.includes(target)) setTarget(targets[0] ?? '');
   }, [targets.join('\n')]);
   const trace = () => {
+    const id = ++request.current;
     setLoading(true);
     const query = new URLSearchParams({source, target, max_hops: '4', limit: '5'});
     fetch(`/api/connectome/paths?${query}`)
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
+        if (id !== request.current) return;
         if (!r.ok) throw Error(typeof data.detail === 'string' ? data.detail : 'No paths found.');
+        if ((data.source ?? source) !== source || (data.target ?? target) !== target) return;
         setPaths(data.paths);
         setError('');
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (id === request.current) setError(e.message);
+      })
+      .finally(() => {
+        if (id === request.current) setLoading(false);
+      });
   };
   if (!targets.length || targets.includes(source)) return null;
   return (
@@ -286,17 +300,27 @@ function PathTrace({source, targets}: {source: string; targets: string[]}) {
 export function ConnectomeCircuitView({
   state,
   command,
+  intervene,
   reset,
   disabled,
 }: {
   state: State | null;
   command: Command;
+  intervene: (change: InterventionChange) => void;
   reset: (override?: Partial<Config>) => void;
   disabled: boolean;
 }) {
-  const {circuit, error} = useCircuit(state);
+  const {circuit, error, loading} = useCircuit(state);
   const [selected, setSelected] = useState<number | null>(null);
   const [query, setQuery] = useState('');
+  // The selection (and, by remounting the diagram, traced paths) resets only when another circuit
+  // file is shown; parameter edits keep it.
+  const identity = circuit ? `${circuit.name}\n${circuit.sha256}` : null;
+  const [shownIdentity, setShownIdentity] = useState(identity);
+  if (identity !== null && identity !== shownIdentity) {
+    setShownIdentity(identity);
+    if (shownIdentity !== null) setSelected(null);
+  }
   const activeBatch = !!state?.batch && ['running', 'paused'].includes(state.batch.status);
   const controlsDisabled = disabled || activeBatch;
   const readoutIndex = useMemo(
@@ -321,7 +345,6 @@ export function ConnectomeCircuitView({
         : [],
     [circuit, selected, readoutIndex],
   );
-  useEffect(() => setSelected(null), [circuit?.name]);
   if (!circuit)
     return (
       <section className="panel empty-research" role="status">
@@ -334,9 +357,12 @@ export function ConnectomeCircuitView({
     );
   return (
     <CircuitDiagram
+      key={identity}
       circuit={circuit}
+      loading={loading}
       state={state}
       command={command}
+      intervene={intervene}
       reset={reset}
       controlsDisabled={controlsDisabled}
       selected={selected}
@@ -350,10 +376,76 @@ export function ConnectomeCircuitView({
   );
 }
 
+// One cell type in the diagram. Memoized on its drawn values, so a snapshot redraws only the types
+// whose color (activity) or state changed, and nothing while paused.
+const TypeNode = memo(function TypeNode({
+  nodeKey,
+  name,
+  count,
+  layer,
+  transmitter,
+  x,
+  y,
+  r,
+  fill,
+  input,
+  active,
+  silenced,
+  tabbable,
+}: {
+  nodeKey: string;
+  name: string;
+  count: number;
+  layer: number;
+  transmitter: string;
+  x: number;
+  y: number;
+  r: number;
+  fill: string;
+  input: boolean;
+  active: boolean;
+  silenced: boolean;
+  tabbable: boolean;
+}) {
+  return (
+    <g
+      className="type-node"
+      data-node={nodeKey}
+      role="button"
+      tabIndex={tabbable ? 0 : -1}
+      aria-pressed={active}
+      aria-label={`Inspect ${name}: ${count} neurons`}
+    >
+      <circle
+        cx={x}
+        cy={y}
+        r={r}
+        fill={fill}
+        stroke={active ? '#ba9455' : input ? '#c29a55' : '#9fb390'}
+        strokeWidth={active ? 2.5 : input ? 1.4 : 0.7}
+        strokeDasharray={silenced ? '2 2' : undefined}
+      >
+        <title>
+          {name} · {count} neurons · hop {layer < 0 ? 'none' : layer} · {transmitter}
+        </title>
+      </circle>
+      {(active || count >= 12) && (
+        <text x={x} y={y - r - 3} textAnchor="middle" className="type-label">
+          {name}
+        </text>
+      )}
+    </g>
+  );
+});
+
+const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
+
 function CircuitDiagram({
   circuit,
+  loading,
   state,
   command,
+  intervene,
   reset,
   controlsDisabled,
   selected,
@@ -365,8 +457,10 @@ function CircuitDiagram({
   byIndex,
 }: {
   circuit: CircuitSummary;
+  loading: boolean;
   state: State | null;
   command: Command;
+  intervene: (change: InterventionChange) => void;
   reset: (override?: Partial<Config>) => void;
   controlsDisabled: boolean;
   selected: number | null;
@@ -382,19 +476,76 @@ function CircuitDiagram({
   const silenced = new Set(state?.interventions.silence_types ?? []);
   const dna02Silenced = state?.interventions.silence_dna02 ?? 'none';
   const pairs = readoutPairs(circuit.readouts.map((r) => r.cell_type));
-  const rows = readoutRows(circuit.readouts.length);
+  const rows = useMemo(() => readoutRows(circuit.readouts.length), [circuit]);
   const radius = Math.max(
     12,
     Math.min(30, (VIEW.bottom - 70 - VIEW.top) / circuit.readouts.length / 6),
   );
+  // The diagram is one tab stop: arrow keys move between its nodes (a roving tabindex).
+  const svg = useRef<SVGSVGElement>(null);
+  const spots = useMemo<Spot[]>(
+    () => [
+      ...circuit.types.flatMap((type) => {
+        const node = layout.get(type.index);
+        return node ? [{key: `t${type.index}`, x: node.x, y: node.y}] : [];
+      }),
+      ...circuit.readouts.flatMap((_, k) =>
+        (['left', 'right'] as const).map((side) => ({
+          key: `r${k}-${side}`,
+          x: READOUT_X,
+          y: rows[k][side],
+        })),
+      ),
+    ],
+    [circuit, layout, rows],
+  );
+  const [focused, setFocused] = useState<string | null>(null);
+  const tabStop =
+    focused !== null && spots.some((s) => s.key === focused)
+      ? focused
+      : selected !== null && layout.has(selected)
+        ? `t${selected}`
+        : (spots[0]?.key ?? null);
+  const activate = (nodeKey: string) => {
+    if (nodeKey.startsWith('t')) {
+      const index = Number(nodeKey.slice(1));
+      setSelected(selected === index ? null : index);
+    } else {
+      const k = Number(nodeKey.slice(1, nodeKey.indexOf('-')));
+      setSelected(circuit.readouts[k]?.type_index ?? null);
+    }
+  };
+  const nodeOf = (target: EventTarget) =>
+    target instanceof Element ? target.closest('[data-node]')?.getAttribute('data-node') : null;
+  const onKeyDown = (e: KeyboardEvent<SVGSVGElement>) => {
+    const here = nodeOf(e.target);
+    if (!here) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      activate(here);
+      return;
+    }
+    if (!ARROWS.includes(e.key)) return;
+    e.preventDefault();
+    const next = neighbour(spots, here, e.key);
+    if (!next) return;
+    setFocused(next);
+    svg.current?.querySelector<SVGElement>(`[data-node="${next}"]`)?.focus();
+  };
   const sampleRate = (index: number) => state?.sample?.rates[index] ?? 0;
   const isOff = (name: string, side: 'left' | 'right') =>
     silenced.has(name) ||
     (name === 'DNa02' && (dna02Silenced === side || dna02Silenced === 'both'));
   const selectedType = selected !== null ? (byIndex.get(selected) ?? null) : null;
   const name = (index: number) => byIndex.get(index)?.name ?? '?';
-  const silence = (types: string[]) =>
-    void command('interventions', {...state?.interventions, silence_types: types});
+  // Built on the newest interventions, so quick successive edits all apply.
+  const silence = (type: string, off: boolean) =>
+    intervene((current) => ({
+      silence_types: [
+        ...(current.silence_types ?? []).filter((t) => t !== type),
+        ...(off ? [type] : []),
+      ],
+    }));
   const matches = query
     ? circuit.types.filter((t) => t.name.toLowerCase().includes(query.toLowerCase())).slice(0, 8)
     : [];
@@ -402,7 +553,7 @@ function CircuitDiagram({
   const subset = circuit.types_shown < circuit.types_total;
   return (
     <div className="circuit-layout">
-      <section className="panel circuit-panel">
+      <section className="panel circuit-panel" aria-busy={loading}>
         <div className="panel-heading">
           <div>
             <Network size={17} />
@@ -410,6 +561,7 @@ function CircuitDiagram({
           </div>
           <span className="mini-badge">
             LIVE / FLYWIRE V783 / {dynamics === 'spiking' ? 'SPIKING' : 'RATE'}
+            {loading ? ' / UPDATING' : ''}
           </span>
         </div>
         <div className="connectome-labels" aria-label="What each part of the model is">
@@ -426,11 +578,45 @@ function CircuitDiagram({
             Sensor input & readout <b>engineered</b>
           </span>
         </div>
+        <div className="type-finder">
+          <label className="type-search">
+            <Search size={13} />
+            <input
+              aria-label="Find a cell type"
+              placeholder="Find a cell type"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+          {matches.map((t) => (
+            <button
+              key={t.index}
+              className="text-button"
+              onClick={() => {
+                setSelected(t.index);
+                if (layout.has(t.index)) setFocused(`t${t.index}`);
+                setQuery('');
+              }}
+            >
+              {t.name} · {t.count} <ArrowRight size={11} />
+            </button>
+          ))}
+        </div>
         <svg
+          ref={svg}
           viewBox={`0 0 ${VIEW.width} ${VIEW.height}`}
           className="circuit-svg connectome-svg"
           role="group"
-          aria-label={`Connectome circuit by cell type, from deeper inputs to the ${readoutNames.join(', ')} readout, with live computed activity`}
+          aria-label={`Connectome circuit by cell type, from deeper inputs to the ${readoutNames.join(', ')} readout. Arrow keys move between cell types; Enter inspects one.`}
+          onKeyDown={onKeyDown}
+          onClick={(e) => {
+            const here = nodeOf(e.target);
+            if (here) activate(here);
+          }}
+          onFocus={(e) => {
+            const here = nodeOf(e.target);
+            if (here) setFocused(here);
+          }}
         >
           <defs>
             <marker
@@ -518,60 +704,40 @@ function CircuitDiagram({
           {circuit.types.map((type) => {
             const node = layout.get(type.index);
             if (!node) return null;
-            const active = selected === type.index;
+            const key = `t${type.index}`;
+            const off = silenced.has(type.name);
             return (
-              <g
+              <TypeNode
                 key={type.index}
-                className="type-node"
-                role="button"
-                tabIndex={0}
-                aria-label={`Inspect ${type.name}: ${type.count} neurons, mean activity ${fmt(rates[type.index])}`}
-                onClick={() => setSelected(active ? null : type.index)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') setSelected(active ? null : type.index);
-                }}
-              >
-                <circle
-                  cx={node.x}
-                  cy={node.y}
-                  r={node.r}
-                  fill={silenced.has(type.name) ? '#e7e2d6' : activityColor(rates[type.index] ?? 0)}
-                  stroke={active ? '#ba9455' : type.input ? '#c29a55' : '#9fb390'}
-                  strokeWidth={active ? 2.5 : type.input ? 1.4 : 0.7}
-                  strokeDasharray={silenced.has(type.name) ? '2 2' : undefined}
-                >
-                  <title>
-                    {type.name} · {type.count} neurons · hop {type.layer < 0 ? 'none' : type.layer}{' '}
-                    · {type.transmitter}
-                  </title>
-                </circle>
-                {(active || type.count >= 12) && (
-                  <text
-                    x={node.x}
-                    y={node.y - node.r - 3}
-                    textAnchor="middle"
-                    className="type-label"
-                  >
-                    {type.name}
-                  </text>
-                )}
-              </g>
+                nodeKey={key}
+                name={type.name}
+                count={type.count}
+                layer={type.layer}
+                transmitter={type.transmitter}
+                x={node.x}
+                y={node.y}
+                r={node.r}
+                fill={off ? '#e7e2d6' : activityColor(rates[type.index] ?? 0)}
+                input={type.input}
+                active={selected === type.index}
+                silenced={off}
+                tabbable={tabStop === key}
+              />
             );
           })}
           {circuit.readouts.flatMap((readout, k) =>
             (['left', 'right'] as const).map((side) => {
               const value = sampleRate(side === 'left' ? pairs[k].left : pairs[k].right);
+              const key = `r${k}-${side}`;
               return (
                 <g
-                  key={`${readout.cell_type}-${side}`}
+                  key={key}
+                  className="type-node"
+                  data-node={key}
                   transform={`translate(${READOUT_X},${rows[k][side]})`}
                   role="button"
-                  tabIndex={0}
-                  aria-label={`Inspect ${readout.cell_type}`}
-                  onClick={() => setSelected(readout.type_index)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') setSelected(readout.type_index);
-                  }}
+                  tabIndex={tabStop === key ? 0 : -1}
+                  aria-label={`Inspect ${readout.cell_type} (${side} readout neuron)`}
                 >
                   <circle
                     r={radius}
@@ -635,27 +801,6 @@ function CircuitDiagram({
         </div>
       </section>
       <aside className="panel circuit-inspector">
-        <label className="type-search">
-          <Search size={13} />
-          <input
-            aria-label="Find a cell type"
-            placeholder="Find a cell type"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </label>
-        {matches.map((t) => (
-          <button
-            key={t.index}
-            className="text-button"
-            onClick={() => {
-              setSelected(t.index);
-              setQuery('');
-            }}
-          >
-            {t.name} · {t.count} <ArrowRight size={11} />
-          </button>
-        ))}
         {selectedType && selected !== null ? (
           <>
             <span className="eyebrow">SELECTED CELL TYPE</span>
@@ -711,12 +856,13 @@ function CircuitDiagram({
               </div>
             ))}
             <PathTrace source={selectedType.name} targets={readoutNames} />
+            {/* One toggle that stays enabled, so focus stays on it after the change. */}
             <button
               className="secondary-button"
-              disabled={controlsDisabled || silenced.has(selectedType.name)}
-              onClick={() => silence([...silenced, selectedType.name])}
+              disabled={controlsDisabled}
+              onClick={() => silence(selectedType.name, !silenced.has(selectedType.name))}
             >
-              Silence {selectedType.name}
+              {silenced.has(selectedType.name) ? 'Restore' : 'Silence'} {selectedType.name}
             </button>
           </>
         ) : (
@@ -751,7 +897,7 @@ function CircuitDiagram({
               <button
                 key={type}
                 disabled={controlsDisabled}
-                onClick={() => silence([...silenced].filter((t) => t !== type))}
+                onClick={() => silence(type, false)}
                 aria-label={`Restore ${type}`}
               >
                 {type} ×
@@ -763,7 +909,7 @@ function CircuitDiagram({
           className="text-button"
           disabled={controlsDisabled}
           onClick={() =>
-            void command('interventions', {
+            intervene({
               zero_left: false,
               zero_right: false,
               silence: 'none',

@@ -21,14 +21,15 @@ Extra browser tabs on the same computer share one simulation: Run, Reset, interv
 | --- | --- |
 | Run / Pause, or Space | Starts or freezes the Python simulation |
 | Step | Advances exactly **10 ms** of simulation while paused |
-| Reset | Restores the body, controller, neural state, seed, target `(12, 8)` mm at intensity 1, interventions, clock, history and recording. Keeps the selected parameters and protocol |
+| Reset | Restores the body, controller, neural state, seed, target `(12, 8)` mm at intensity 1, interventions, clock, history and recording. Keeps the selected parameters and any loaded protocol |
+| Remove protocol (free run) | On the protocol banner: starts a fresh run without the loaded protocol, so it runs until you pause it |
 | Seed | Applied on the next Reset; makes the walking-rhythm initialization repeatable |
 | Speed | Requests 0.05–2× simulated time per wall time; your hardware may run slower |
 | Specimen | Live 640×288 MuJoCo rendering; the camera follows the body |
 | Arena | Labeled top-down map from the simulated body poses; click to place the target |
-| Target X/Y, intensity | Moves the stimulus and its rendered landmark; press Enter or leave the field to apply coordinates |
+| Target X/Y, intensity | Moves the stimulus and its rendered landmark; press Enter or leave the field to apply coordinates. Dragging the intensity slider updates the target a few times a second and once more on release |
 | Sensor model | Geometric bearing, rendered compound eyes, or FlyVis eyes (the optional optic-lobe network; needs FlyGym, the connectome model and a circuit with a FlyVis bridge); switching starts a fresh experiment |
-| Neural model | The engineered six-unit loop (default) or the connectome circuit; switching starts a fresh experiment |
+| Neural model | The engineered six-unit loop (default) or the connectome circuit; switching starts a fresh experiment. FlyVis eyes drive only the connectome model, so switching to the engineered loop with them selected also switches to rendered compound eyes, with a note |
 | Circuit, Dynamics | With the connectome model: which FlyWire circuit (committed or built on this computer) and whether its neurons are rate units or spiking neurons (Shiu et al. 2024). Either change starts a fresh experiment |
 | Sensor switches | Zero the corresponding input to the neural circuit |
 | Neural silencing | Engineered model: clamps a group of units to zero. Connectome model: silences the left, right or both DNa02 neurons (when the circuit has them), or any cell type in the circuit |
@@ -44,7 +45,7 @@ Neural traces show continuous firing rates, not spikes. Silencing the descending
 
 **Driving the fly**, under the world view, names the model that currently drives the body. With the connectome model, **Inside the loop** shows each readout cell type's left and right neurons, the mean input on each side, or the five most active cell types. With spiking dynamics the traces show firing rate ÷ the rate scale (100 spikes/s by default), so they can exceed 1.
 
-**Neural atlas → Live circuit** shows the circuit by cell type: layers are hop distance to the circuit's seeds (not anatomy), node size is the number of neurons, fill is the live mean activity, solid lines are excitatory and dashed, capped lines inhibitory connections, and the readout neurons sit on the right. Click a type, or find it by name, to see its transmitter, partners and activity, trace its strongest paths to a readout type, or silence it. Large circuits show the 1,500 cell types nearest the readout. Below the diagram, **Global parameters** change the running model from the next step without restarting it (recorded for replay), and **Populations by cell type** choose the steering readout, the neurons that receive the sensors and an optional speed drive; names are separated by semicolons, and applying them starts a fresh run.
+**Neural atlas → Live circuit** shows the circuit by cell type: layers are hop distance to the circuit's seeds (not anatomy), node size is the number of neurons, fill is the live mean activity, solid lines are excitatory and dashed, capped lines inhibitory connections, and the readout neurons sit on the right. Click a type, or find it by name, to see its transmitter, partners and activity, trace its strongest paths to a readout type, or silence it. From the keyboard the diagram is a single Tab stop: arrow keys move between cell types and Enter inspects one. Large circuits show the 1,500 cell types nearest the readout. Changing a gain, the tonic drive or a time constant keeps the diagram, the selected type and its traced paths; another circuit, or a rebuilt one, starts the view afresh. Below the diagram, **Global parameters** change the running model from the next step without restarting it (recorded for replay), and **Populations by cell type** choose the steering readout, the neurons that receive the sensors and an optional speed drive; names are separated by semicolons, and applying them starts a fresh run.
 
 In **Male & female anatomy**, the two female DNa02 skeletons are tinted by the model's computed DNa02 activity when DNa02 is a readout. That tint is model output, not recorded neural data.
 

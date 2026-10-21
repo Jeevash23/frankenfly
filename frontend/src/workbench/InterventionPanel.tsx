@@ -1,6 +1,6 @@
 import {useState} from 'react';
 import {ChevronDown, SlidersHorizontal} from 'lucide-react';
-import type {Intervention, Sample, State} from '../types';
+import type {Intervention, InterventionChange, Sample, State} from '../types';
 import {fmt} from '../format';
 import {useCircuit} from '../connectome/useCircuit';
 import '../connectome/connectome.css';
@@ -24,7 +24,7 @@ function CellTypeSilencing({
 }: {
   state: State | null;
   editDisabled: boolean;
-  intervene: (value: Partial<Intervention>) => void;
+  intervene: (change: InterventionChange) => void;
 }) {
   const {circuit, error} = useCircuit(state);
   const [draft, setDraft] = useState('');
@@ -40,7 +40,9 @@ function CellTypeSilencing({
   const add = () => {
     const name = draft.trim();
     if (!name || (complete && !names.has(name)) || silenced.includes(name)) return;
-    intervene({silence_types: [...silenced, name]});
+    intervene((current) => ({
+      silence_types: [...(current.silence_types ?? []).filter((t) => t !== name), name],
+    }));
     setDraft('');
   };
   return (
@@ -101,7 +103,11 @@ function CellTypeSilencing({
               key={type}
               disabled={editDisabled}
               aria-label={`Restore ${type}`}
-              onClick={() => intervene({silence_types: silenced.filter((t) => t !== type)})}
+              onClick={() =>
+                intervene((current) => ({
+                  silence_types: (current.silence_types ?? []).filter((t) => t !== type),
+                }))
+              }
             >
               {type} ×
             </button>
@@ -119,7 +125,7 @@ export function InterventionPanel({
 }: {
   state: State | null;
   editDisabled: boolean;
-  intervene: (value: Partial<Intervention>) => void;
+  intervene: (change: InterventionChange) => void;
 }) {
   const sample: Sample | undefined = state?.sample ?? undefined;
   const interventions = state?.interventions;
@@ -139,14 +145,14 @@ export function InterventionPanel({
           subtitle="Zero the left input channel"
           checked={interventions?.zero_left ?? false}
           disabled={editDisabled}
-          onChange={() => intervene({zero_left: !interventions?.zero_left})}
+          onChange={() => intervene((current) => ({zero_left: !current.zero_left}))}
         />
         <Toggle
           label="Silence right sensor"
           subtitle="Zero the right input channel"
           checked={interventions?.zero_right ?? false}
           disabled={editDisabled}
-          onChange={() => intervene({zero_right: !interventions?.zero_right})}
+          onChange={() => intervene((current) => ({zero_right: !current.zero_right}))}
         />
         {state?.config.neural_model === 'connectome' ? (
           <CellTypeSilencing state={state} editDisabled={editDisabled} intervene={intervene} />

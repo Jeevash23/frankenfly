@@ -1,7 +1,9 @@
 import {CircleHelp, Power} from 'lucide-react';
 import {FlyMark} from './FlyMark';
+import {tabKeys} from '../keys';
 
 export type Page = 'workbench' | 'atlas' | 'experiments';
+const PAGES: readonly Page[] = ['workbench', 'atlas', 'experiments'];
 
 export function AppHeader({
   page,
@@ -9,6 +11,7 @@ export function AppHeader({
   connected,
   serverClosed,
   disabled,
+  version,
   openModelNotes,
   openQuit,
 }: {
@@ -17,6 +20,7 @@ export function AppHeader({
   connected: boolean;
   serverClosed: boolean;
   disabled: boolean;
+  version: string | null;
   openModelNotes: () => void;
   openQuit: () => void;
 }) {
@@ -35,9 +39,19 @@ export function AppHeader({
           DigitalFly<span className="brand-period">.</span>
         </span>
       </a>
-      <nav aria-label="Main navigation">
-        {(['workbench', 'atlas', 'experiments'] as const).map((p) => (
-          <button key={p} className={page === p ? 'nav-active' : ''} onClick={() => setPage(p)}>
+      <nav aria-label="Main navigation" role="tablist" onKeyDown={tabKeys(PAGES, page, setPage)}>
+        {PAGES.map((p) => (
+          <button
+            key={p}
+            id={`page-tab-${p}`}
+            role="tab"
+            data-tab={p}
+            aria-selected={page === p}
+            aria-controls="page-panel"
+            tabIndex={page === p ? 0 : -1}
+            className={page === p ? 'nav-active' : ''}
+            onClick={() => setPage(p)}
+          >
             {p === 'atlas' ? 'Neural atlas' : p === 'experiments' ? 'Experiments' : 'Workbench'}
           </button>
         ))}
@@ -47,7 +61,7 @@ export function AppHeader({
         <span>
           {serverClosed ? 'Server stopped' : connected ? 'Local connection' : 'Connecting locally'}
         </span>
-        <span className="version">v0.3</span>
+        {version && <span className="version">v{version}</span>}
         <button className="icon-button" onClick={openModelNotes} aria-label="Open model notes">
           <CircleHelp size={16} />
         </button>

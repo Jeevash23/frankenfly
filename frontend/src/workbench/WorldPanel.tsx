@@ -10,7 +10,8 @@ export type WorldView = 'specimen' | 'arena';
 export function WorldPanel({
   state,
   command,
-  busy,
+  transportPending,
+  runButton,
   disabled,
   editDisabled,
   valid,
@@ -25,7 +26,9 @@ export function WorldPanel({
 }: {
   state: State | null;
   command: Command;
-  busy: boolean;
+  // A run or pause command is waiting for its answer.
+  transportPending: boolean;
+  runButton: RefObject<HTMLButtonElement | null>;
   disabled: boolean;
   editDisabled: boolean;
   valid: boolean;
@@ -51,6 +54,7 @@ export function WorldPanel({
         <div className="segmented" aria-label="World view">
           <button
             className={effectiveView === 'specimen' ? 'selected' : ''}
+            aria-pressed={effectiveView === 'specimen'}
             disabled={!state?.rendering}
             onClick={() => setView('specimen')}
           >
@@ -58,6 +62,7 @@ export function WorldPanel({
           </button>
           <button
             className={effectiveView === 'arena' ? 'selected' : ''}
+            aria-pressed={effectiveView === 'arena'}
             onClick={() => setView('arena')}
           >
             Arena
@@ -127,11 +132,16 @@ export function WorldPanel({
       <div className="transport">
         <div className="playback">
           <button
+            ref={runButton}
             className="primary-button run-button"
             disabled={disabled || !valid || !!state?.metrics.protocol_complete}
-            onClick={() => void command(running ? 'pause' : 'run')}
+            aria-busy={transportPending}
+            onClick={() => {
+              // Stays enabled while waiting, so keyboard focus stays here; repeats are ignored.
+              if (!transportPending) void command(running ? 'pause' : 'run');
+            }}
           >
-            {busy ? (
+            {transportPending ? (
               <LoaderCircle size={16} className="spin" />
             ) : running ? (
               <Pause size={15} fill="currentColor" />
@@ -194,11 +204,7 @@ export function WorldPanel({
           </div>
         </div>
       </div>
-      {slow && (
-        <p className="slowdown-note" role="status">
-          {slow}
-        </p>
-      )}
+      {slow && <p className="slowdown-note">{slow}</p>}
       <div className="telemetry-strip">
         <div>
           <span>Simulated time</span>

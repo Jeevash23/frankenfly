@@ -154,6 +154,38 @@ export function activityColor(rate: number): string {
   return `rgb(${from.map((v, i) => Math.round(v + (to[i] - v) * t)).join(',')})`;
 }
 
+// A focusable spot in the diagram, for keyboard movement between nodes.
+export type Spot = {key: string; x: number; y: number};
+
+// Arrow-key movement between diagram nodes: Up and Down to the nearest node above or below in the
+// same column, Left and Right to the nearest node in the next column over, Home and End to the first
+// and last node (columns left to right, top to bottom). Null for other keys or past an edge.
+export function neighbour(spots: Spot[], current: string, key: string): string | null {
+  if (!spots.length) return null;
+  if (key === 'Home' || key === 'End') {
+    const ordered = [...spots].sort((a, b) => a.x - b.x || a.y - b.y);
+    return ordered[key === 'Home' ? 0 : ordered.length - 1].key;
+  }
+  const here = spots.find((s) => s.key === current);
+  if (!here) return null;
+  const column = (s: Spot) => Math.abs(s.x - here.x) < 1;
+  let candidates: Spot[];
+  if (key === 'ArrowUp' || key === 'ArrowDown') {
+    const sign = key === 'ArrowUp' ? -1 : 1;
+    candidates = spots.filter((s) => column(s) && (s.y - here.y) * sign > 0);
+  } else if (key === 'ArrowLeft' || key === 'ArrowRight') {
+    const sign = key === 'ArrowLeft' ? -1 : 1;
+    const beyond = spots.filter((s) => !column(s) && (s.x - here.x) * sign > 0);
+    if (!beyond.length) return null;
+    const nearest = Math.min(...beyond.map((s) => Math.abs(s.x - here.x)));
+    candidates = beyond.filter((s) => Math.abs(s.x - here.x) - nearest < 1);
+  } else return null;
+  if (!candidates.length) return null;
+  return candidates.reduce((best, s) =>
+    Math.abs(s.y - here.y) < Math.abs(best.y - here.y) ? s : best,
+  ).key;
+}
+
 // For the dark anatomy canvas: dim green at rest, bright lime-white at full activity.
 export function glowColor(rate: number): string {
   const t = Math.max(0, Math.min(1, rate));

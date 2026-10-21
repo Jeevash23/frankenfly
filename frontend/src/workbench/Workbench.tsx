@@ -1,7 +1,16 @@
-import type {RefObject} from 'react';
-import {ArrowDownToLine, ArrowRight, ArrowUpRight, FlaskConical, Layers3} from 'lucide-react';
-import type {Command, Config, Intervention, State, Stimulus} from '../types';
+import {useEffect, useRef, useState, type RefObject} from 'react';
+import {
+  ArrowDownToLine,
+  ArrowRight,
+  ArrowUpRight,
+  FlaskConical,
+  Layers3,
+  LoaderCircle,
+  X,
+} from 'lucide-react';
+import type {Command, Config, InterventionChange, State, Stimulus} from '../types';
 import {fmt} from '../format';
+import {neuralStage} from '../models';
 import {BodyMeasurements, EyePanel} from '../ResearchPanels';
 import {InterventionPanel} from './InterventionPanel';
 import {SessionLog} from './SessionLog';
@@ -12,7 +21,8 @@ import {type WorldView, WorldPanel} from './WorldPanel';
 export function Workbench({
   state,
   command,
-  busy,
+  transportPending,
+  exportPending,
   disabled,
   editDisabled,
   valid,
@@ -34,7 +44,8 @@ export function Workbench({
 }: {
   state: State | null;
   command: Command;
-  busy: boolean;
+  transportPending: boolean;
+  exportPending: boolean;
   disabled: boolean;
   editDisabled: boolean;
   valid: boolean;
@@ -47,13 +58,25 @@ export function Workbench({
   setSeed: (seed: number) => void;
   draft: Draft;
   setDraft: (draft: Draft | ((previous: Draft) => Draft)) => void;
-  moveTarget: (target: Partial<Stimulus>) => void;
-  intervene: (value: Partial<Intervention>) => void;
-  reset: (override?: Partial<Config>) => void;
+  moveTarget: (target: Partial<Stimulus>) => Promise<unknown>;
+  intervene: (change: InterventionChange) => void;
+  reset: (override?: Partial<Config>) => Promise<unknown>;
   exportRun: () => Promise<void>;
   openModelNotes: () => void;
   openExperiments: () => void;
 }) {
+  const runButton = useRef<HTMLButtonElement>(null);
+  // The banner and its button disappear with the protocol, so focus moves on to Run.
+  const [focusRun, setFocusRun] = useState(false);
+  const protocol = state?.config.protocol;
+  useEffect(() => {
+    if (!focusRun || protocol) return;
+    runButton.current?.focus();
+    setFocusRun(false);
+  }, [focusRun, protocol]);
+  const freeRun = async () => {
+    if (await reset({protocol: null})) setFocusRun(true);
+  };
   return (
     <>
       {state?.config.protocol && (
@@ -62,13 +85,26 @@ export function Workbench({
             <FlaskConical size={15} />
             <strong>{state.config.protocol.name}</strong> · stops at{' '}
             {fmt(state.config.protocol.duration_steps / 100)} s
+            {state.metrics.protocol_complete ? ' · completed' : ''}
           </span>
-          <button onClick={openExperiments}>
-            {batchActive
-              ? `Comparison trial ${state.batch?.current}/${state.batch?.total}`
-              : 'Edit protocol'}{' '}
-            <ArrowRight size={13} />
-          </button>
+          <span>
+            <button onClick={openExperiments}>
+              {batchActive
+                ? `Comparison trial ${state.batch?.current}/${state.batch?.total}`
+                : 'Edit protocol'}{' '}
+              <ArrowRight size={13} />
+            </button>
+            {!batchActive && (
+              <button
+                disabled={editDisabled}
+                title="Start a fresh run without a protocol; it runs until you pause it"
+                onClick={() => void freeRun()}
+              >
+                <X size={13} />
+                Remove protocol (free run)
+              </button>
+            )}
+          </span>
         </div>
       )}
       <div className="workspace-grid">
@@ -76,7 +112,8 @@ export function Workbench({
           <WorldPanel
             state={state}
             command={command}
-            busy={busy}
+            transportPending={transportPending}
+            runButton={runButton}
             disabled={disabled}
             editDisabled={editDisabled}
             valid={valid}
@@ -85,7 +122,7 @@ export function Workbench({
             setView={setView}
             viewportRef={viewportRef}
             moveTarget={moveTarget}
-            reset={() => reset()}
+            reset={() => void reset()}
             seed={seed}
             setSeed={setSeed}
           />
@@ -107,7 +144,7 @@ export function Workbench({
               }
             </span>
             <ArrowRight size={13} />
-            <span>6 rate units</span>
+            <span>{neuralStage(state?.config ?? {neural_model: 'engineered'})}</span>
             <ArrowRight size={13} />
             <span>{state?.config.engine === 'toy' ? 'Kinematics' : 'FlyGym body'}</span>
             <button onClick={openModelNotes} aria-label="Inspect model provenance">
@@ -129,9 +166,16 @@ export function Workbench({
           <button
             className="export-button"
             disabled={disabled || !state?.sample}
-            onClick={() => void exportRun()}
+            aria-busy={exportPending}
+            onClick={() => {
+              if (!exportPending) void exportRun();
+            }}
           >
-            <ArrowDownToLine size={16} />
+            {exportPending ? (
+              <LoaderCircle size={16} className="spin" />
+            ) : (
+              <ArrowDownToLine size={16} />
+            )}
             <span>
               Export this run<small>Telemetry, configuration & events</small>
             </span>

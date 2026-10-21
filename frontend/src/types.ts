@@ -10,6 +10,10 @@ export type Intervention = {
   silence_dna02?: 'none' | 'left' | 'right' | 'both';
   silence_types?: string[];
 };
+// A change to the live interventions: fields to set, or a function of the newest interventions
+// (including a change still in flight), for toggles and list edits.
+export type InterventionChange =
+  Partial<Intervention> | ((current: Intervention) => Partial<Intervention>);
 export type NeuralParameters = {
   sensory_gain: number;
   steering_gain: number;
@@ -151,6 +155,8 @@ export type Batch = {
 // Live, display-only activity of the connectome model (not recorded).
 export type ConnectomeLive = {
   circuit: string;
+  // SHA-256 of the circuit file loaded in the running model; absent from servers before v0.6.
+  circuit_sha256?: string;
   dynamics: Dynamics;
   unit_names: string[];
   readout_types: string[];

@@ -1,9 +1,10 @@
 import {useEffect, useMemo, useState} from 'react';
 import {Hammer, LoaderCircle, Plus, X} from 'lucide-react';
 import type {BuildStatus, Command, Config, State} from '../types';
+import type {Pending} from '../useSimulation';
 import {configForCircuit} from '../models';
 import {buildProblem, defaultBuild, suggestTypes, type BuildRequest} from './build';
-import {useCircuitList} from './useCircuit';
+import {invalidateCircuits, useCircuitList} from './useCircuit';
 import './connectome.css';
 
 type Catalog = {
@@ -18,6 +19,10 @@ type Catalog = {
 };
 
 const PREPARE = 'backend/.venv/bin/python scripts/build_circuit.py prepare';
+
+// The build last seen running, kept across visits to this tab: when it is seen finished, cached
+// circuit summaries are dropped, because it may have rewritten a circuit already in use.
+let followed: string | null = null;
 
 function useCatalog(): {catalog: Catalog | null; missing: boolean} {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -48,11 +53,13 @@ function useCatalog(): {catalog: Catalog | null; missing: boolean} {
 export function BuildPanel({
   state,
   command,
+  pending,
   reset,
   disabled,
 }: {
   state: State | null;
   command: Command;
+  pending: Pending;
   reset: (override?: Partial<Config>) => void;
   disabled: boolean;
 }) {
@@ -78,9 +85,14 @@ export function BuildPanel({
     let timer: ReturnType<typeof setTimeout>;
     const poll = () =>
       fetch('/api/connectome/build')
-        .then((r) => r.json())
+        .then((r) => (r.ok ? r.json() : Promise.reject(Error(`HTTP ${r.status}`))))
         .then((next: BuildStatus) => {
           if (cancelled) return;
+          if (next.status === 'running') followed = next.name ?? '';
+          else if (followed !== null) {
+            followed = null;
+            invalidateCircuits();
+          }
           setStatus((previous) => {
             if (previous.status === 'running' && next.status !== 'running') refresh();
             return next;
@@ -102,8 +114,12 @@ export function BuildPanel({
     setSeedDraft('');
   };
   const start = async () => {
+    if (pending['connectome/build']) return;
     const result = await command('connectome/build', request);
-    if (result) setStatus(result);
+    if (result) {
+      if (result.status === 'running') followed = result.name ?? request.name;
+      setStatus(result);
+    }
   };
   const use = (name: string) => {
     if (!state) return;
@@ -272,8 +288,8 @@ export function BuildPanel({
           </form>
         )}
         {status.status !== 'idle' && (
-          <div className="build-status" aria-live="polite">
-            <span className="eyebrow">
+          <div className="build-status">
+            <span className="eyebrow" role="status">
               {status.status === 'running'
                 ? `BUILDING ${status.name?.toUpperCase()}`
                 : status.status === 'done'
@@ -294,7 +310,7 @@ export function BuildPanel({
                 </button>
               </p>
             )}
-            <pre className="build-log">{status.log.slice(-12).join('\n')}</pre>
+            <pre className="build-log">{(status.log ?? []).slice(-12).join('\n')}</pre>
           </div>
         )}
       </section>
