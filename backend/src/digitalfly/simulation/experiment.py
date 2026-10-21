@@ -1,10 +1,15 @@
 from collections import deque
 from datetime import datetime, timezone
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 import csv
+import hashlib
 import json
+import os
 import platform
+import re
+import shutil
+import socket
 import time
 import uuid
 import zipfile
@@ -16,7 +21,56 @@ from digitalfly.neural.model import RateCircuit
 from digitalfly.simulation.engines import FlyGymBody, ToyBody, CONTROL_DT, PHYSICS_DT, NEURAL_DT, ROOT
 
 RECORD_LIMIT = 30000
-EVENT_LIMIT = 10000
+EVENT_LIMIT = 10000  # manual input changes, the schedule a replay re-applies; bookkeeping events do not count
+SCHEDULE_KINDS = {"stimulus", "interventions", "parameters", "connectome_parameters"}
+MERGED_KINDS = SCHEDULE_KINDS | {"speed"}  # repeats within one control step keep only the last value
+SCHEMA_VERSION = 4  # 4 adds lockfiles, optional dependencies, vision.flyvis/bridge and share_safe
+DEPENDENCIES = ["flygym", "mujoco", "numpy", "fastapi", "pydantic", "numba", "scipy"]
+OPTIONAL_DEPENDENCIES = ["llvmlite", "pillow", "torch", "torchvision", "flyvis"]
+BACKEND = Path(__file__).resolve().parents[3]
+LIMIT_MESSAGE = "Recording limit reached (30,000 samples, 300 simulated seconds). Export this run and reset to continue."
+SCHEDULE_MESSAGE = "Input schedule reached 10,000 changes. Export this run and reset to continue."
+_ABSOLUTE_PATH = re.compile(r"(?<![\w.:/\\)\]-])(?:/[^\s/'\"<>|:;,()\[\]]+){2,}/?|\b[A-Za-z]:\\[^\s'\"<>|]+")
+
+
+class RunLimit(RuntimeError):
+    """The run cannot advance (its protocol ended or its recording is full) but is valid: it pauses, never fails."""
+
+
+def _sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def dependency_versions() -> dict:
+    """Installed versions from package metadata; optional packages only when installed (never imported here)."""
+    versions = {name: version(name) for name in DEPENDENCIES}
+    for name in OPTIONAL_DEPENDENCIES:
+        try:
+            versions[name] = version(name)
+        except PackageNotFoundError:
+            pass
+    return versions
+
+
+def shareable(value, free_text=False):
+    """A copy of exported metadata for publishing: absolute paths become relative to the project, or <local>
+    outside it; in free text (errors and event messages) the host name becomes <local> too."""
+    if isinstance(value, dict):
+        return {k: shareable(v, free_text or k in {"error", "message"}) for k, v in value.items()}
+    if isinstance(value, list):
+        return [shareable(v, free_text) for v in value]
+    if not isinstance(value, str):
+        return value
+    project = re.escape(str(BACKEND.parent))
+    value = re.sub(project + r"(?![\w.-])", ".", re.sub(project + re.escape(os.sep), "", value))
+    value = _ABSOLUTE_PATH.sub("<local>", value)
+    host = socket.gethostname()
+    if free_text and len(host) > 2:
+        value = re.sub(rf"\b{re.escape(host)}\b", "<local>", value)
+    return value
 
 
 def make_circuit(config: RunConfig):
@@ -26,9 +80,13 @@ def make_circuit(config: RunConfig):
 
 
 class Experiment:
-    def __init__(self, config: RunConfig, render=True):
+    def __init__(self, config: RunConfig, render=True, record=True):
+        """record=False keeps no per-sample recording, for long programmatic trials: there is then no 30,000-sample
+        (300 s) limit, while the current sample, metrics, events and the bounded display history still update.
+        Such a run cannot be exported. The app always records."""
         self.body = None
         self.render_enabled = render
+        self.recording = bool(record)
         self.circuit = RateCircuit()
         self.status = "initializing"
         self.error = None
@@ -46,6 +104,7 @@ class Experiment:
         self.trail = deque(maxlen=600)
         self.records: list[Sample] = []
         self.events: list[Event] = []
+        self.schedule_events = 0
         self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.compute_s = self.active_wall_s = 0.
@@ -81,11 +140,31 @@ class Experiment:
         except Exception as exc:
             self.fail(exc)
 
+    def _merges(self, kind: str, source=None) -> bool:
+        last = self.events[-1] if self.events else None
+        return (kind in MERGED_KINDS and last is not None and last.kind == kind and last.step == self.step_index
+                and last.payload.get("source") == source)
+
+    def _schedule_room(self, kind: str, source=None):
+        """Refuse a manual input change before it is applied once the schedule is full: it could not be replayed."""
+        if source != "protocol" and self.schedule_events >= EVENT_LIMIT and not self._merges(kind, source):
+            raise ValueError(SCHEDULE_MESSAGE)
+
     def event(self, kind: str, message: str, payload: dict | None = None):
-        if len(self.events) >= EVENT_LIMIT:
-            raise RuntimeError("Input schedule reached 10,000 events. Export and reset to continue.")
+        """Log an event. Manual input changes count toward EVENT_LIMIT; protocol and bookkeeping events (run,
+        pause, step, speed, export, ...) never do. A repeat of an input or speed change within the same control
+        step replaces the previous one: only the last value ever applied, so replay is unchanged."""
+        payload = payload or {}
+        if self._merges(kind, payload.get("source")):
+            self.events[-1] = self.events[-1].model_copy(update={"message": message, "payload": payload})
+            return
         self.events.append(Event(seq=len(self.events), step=self.step_index, t=self.t,
-                                 kind=kind, message=message, payload=payload or {}))
+                                 kind=kind, message=message, payload=payload))
+        if kind in SCHEDULE_KINDS and payload.get("source") != "protocol":
+            self.schedule_events += 1
+            if self.schedule_events == EVENT_LIMIT:
+                self.event("limit", "Input schedule reached 10,000 changes: further input changes are refused. "
+                                    "Export this run and reset to continue.")
 
     @property
     def t(self):
@@ -129,7 +208,8 @@ class Experiment:
         # Retain full pose in the latest sample only, avoiding repeated mesh/joint history.
         # Samples are never mutated after creation, so shallow copies are safe here.
         sample = self.sample.model_copy(update={"pose": self.sample.pose.model_copy(update={"legs": []})})
-        self.records.append(sample)
+        if self.recording:
+            self.records.append(sample)
         if self.step_index % 2 == 0:
             self.history.append(sample.model_copy(update={"body_signals": {
                 k: v for k, v in sample.body_signals.items() if k != "joint_position_rad"}}))
@@ -137,14 +217,17 @@ class Experiment:
                 self.type_history.append(self.circuit.type_means().astype(np.float32))
         self.trail.append([sample.pose.x, sample.pose.y])
 
+    def check_advance(self):
+        """Raise RunLimit when a finished protocol or a full recording stops the run; the run stays valid."""
+        if self.protocol_complete:
+            raise RunLimit("Protocol finished. Reset to repeat it.")
+        if self.recording and len(self.records) >= RECORD_LIMIT:
+            raise RunLimit(LIMIT_MESSAGE)
+
     def advance(self):
         if self.status == "error":
             raise RuntimeError("Reset the experiment before stepping after an error.")
-        if len(self.records) >= RECORD_LIMIT:
-            self.status = "paused"
-            raise RuntimeError("Recording limit reached. Export this run and reset to continue.")
-        if self.protocol_complete:
-            raise RuntimeError("Protocol finished. Reset to repeat it.")
+        self.check_advance()
         before = time.perf_counter()
         protocol = self.config.protocol
         if protocol:
@@ -181,8 +264,13 @@ class Experiment:
             self.stop_clock()
             self.status = "paused"
             self.event("protocol_complete", f"{protocol.name} completed · {self.t:g} simulated seconds")
+        elif self.recording and len(self.records) >= RECORD_LIMIT:
+            self.stop_clock()
+            self.status = "paused"
+            self.event("limit", LIMIT_MESSAGE)
 
     def set_stimulus(self, stimulus: Stimulus, source="manual"):
+        self._schedule_room("stimulus", source)
         self.config.stimulus = stimulus
         if self.body is not None and self.status != "error":
             self.body.set_stimulus(stimulus)
@@ -190,6 +278,7 @@ class Experiment:
         self.event("stimulus", f"Target moved to ({stimulus.x:g}, {stimulus.y:g}) mm · intensity {stimulus.intensity:g}", {**stimulus.model_dump(), "source": source})
 
     def set_interventions(self, interventions: Interventions, source="manual"):
+        self._schedule_room("interventions", source)
         interventions.for_model(self.config.neural_model)
         self.interventions = interventions
         if self.body is not None and self.status != "error":
@@ -202,6 +291,7 @@ class Experiment:
         self.event("interventions", f"Inputs L {'off' if interventions.zero_left else 'on'} / R {'off' if interventions.zero_right else 'on'} · silence {silenced}", {**interventions.model_dump(), "source": source})
 
     def set_parameters(self, parameters: NeuralParameters):
+        self._schedule_room("parameters")
         if self.config.neural_model != "engineered":
             raise ValueError("These parameters belong to the engineered six-unit model. Use the connectome parameters instead.")
         self.config.neural_parameters = parameters
@@ -209,6 +299,7 @@ class Experiment:
         self.event("parameters", "Neural parameters updated", parameters.model_dump())
 
     def set_connectome_parameters(self, parameters: ConnectomeParameters):
+        self._schedule_room("connectome_parameters")
         if self.config.neural_model != "connectome":
             raise ValueError("Connectome parameters apply when the connectome model is selected.")
         current = self.config.connectome_parameters
@@ -253,11 +344,14 @@ class Experiment:
             "duration_s": self.t, "protocol_complete": self.protocol_complete}
 
     def fail(self, exc: Exception):
+        """Enter the error state, except for a RunLimit: a finished protocol or a full recording only pauses."""
         self.stop_clock()
+        if isinstance(exc, RunLimit):
+            self.status = "paused" if self.status == "running" else self.status
+            return
         self.status = "error"
         self.error = f"{type(exc).__name__}: {exc}"
-        if len(self.events) < EVENT_LIMIT:
-            self.event("error", self.error)
+        self.event("error", self.error)
 
     @property
     def provenance(self):
@@ -298,14 +392,24 @@ class Experiment:
                               else "Published male/female anatomical samples are separate from this controller"),
         }
 
-    def export(self, directory: Path | None = None):
-        # Caller never supplies a filesystem path. Generated IDs are confined under runs/.
-        base = directory or ROOT / "runs"
-        base.mkdir(parents=True, exist_ok=True)
-        destination = base / f"{self.run_id}-{uuid.uuid4().hex[:6]}"
-        destination.mkdir()
+    def vision_provenance(self) -> dict:
+        """The eye renderer's settings and, with FlyVis eyes, the FlyVis release and network, its checkpoint's
+        hash, and the bridge file the circuit reads."""
+        vision = {k: v for k, v in self.body.vision.items() if k not in {"left", "right"}} if self.body else {}
+        flyvis = getattr(self.body, "flyvis", None)
+        if flyvis is not None:
+            from digitalfly.vision.flyvis_eyes import network_dir
+            vision["flyvis"] = {**flyvis.describe(), "checkpoint": f"{flyvis.name}/best_chkpt",
+                                "checkpoint_sha256": _sha256(network_dir(flyvis.name) / "best_chkpt")}
+            if self.circuit.kind == "connectome":
+                from digitalfly.neural.connectome import bridge_path
+                path = bridge_path(self.circuit.data)
+                vision["bridge"] = {"file": path.name, "sha256": _sha256(path), "circuit_sha256": self.circuit.data.sha256}
+        return vision
+
+    def metadata(self, share_safe=False) -> dict:
         metadata = {
-            "schema_version": 3, "application_version": APPLICATION_VERSION, "run_id": self.run_id,
+            "schema_version": SCHEMA_VERSION, "application_version": APPLICATION_VERSION, "run_id": self.run_id,
             "created_utc": self.started_at, "exported_utc": datetime.now(timezone.utc).isoformat(),
             "initial_config": self.initial_config.model_dump(), "final_config": self.config.model_dump(),
             "final_interventions": self.interventions.model_dump(), "final_sample": self.sample.model_dump() if self.sample else None,
@@ -319,28 +423,58 @@ class Experiment:
             "performance": {"active_wall_s": self.wall_s, "compute_s": self.compute_s},
             "neural": self.circuit.description(), "metrics": self.metrics, "trial": self.trial,
             "body_joint_order": [str(dof) for dof in self.body.fly.get_jointdofs_order()] if self.body is not None and self.config.engine == "flygym" else [],
-            "vision": {k: v for k, v in self.body.vision.items() if k not in {"left", "right"}} if self.body else {},
+            "vision": self.vision_provenance(),
             "events": [event.model_dump() for event in self.events],
             "recorded_samples": len(self.records), "complete_from_reset": True,
             "platform": platform.platform(), "python": platform.python_version(),
-            "dependencies": {name: version(name) for name in ["flygym", "mujoco", "numpy", "fastapi", "pydantic", "numba", "scipy"]},
+            "dependencies": dependency_versions(),
+            "lockfiles": {path.name: _sha256(path) for path in sorted(BACKEND.glob("requirements*.lock"))},
+            "share_safe": share_safe,
             "reproducibility": "Fixed seed and step-indexed stimulus/intervention schedule. Same pinned stack tested at absolute tolerance 1e-8; cross-device bitwise equality is not promised.",
         }
-        (destination / "metadata.json").write_text(json.dumps(metadata, indent=2, allow_nan=False))
-        with (destination / "telemetry.csv").open("w", newline="") as output:
-            writer = csv.writer(output)
-            writer.writerow(["step", "time_s", "x_mm", "y_mm", "z_mm", "yaw_rad", "speed_mm_s", "sensor_l", "sensor_r", "raw_sensor_l", "raw_sensor_r", *["rate_" + n.lower().replace(" ", "_") for n in self.circuit.unit_names], "motor_l", "motor_r"])
-            for s in self.records:
-                writer.writerow([s.step, s.t, s.pose.x, s.pose.y, s.pose.z, s.pose.yaw, s.pose.velocity,
-                                 s.sensors.left, s.sensors.right, s.sensors.raw_left, s.sensors.raw_right, *s.rates, *s.motor])
-        with (destination / "body_signals.jsonl").open("w") as output:
-            for s in self.records:
-                if s.body_signals:
-                    output.write(json.dumps({"step": s.step, "t": s.t, **s.body_signals}, allow_nan=False)+"\n")
-        archive = destination.with_suffix(".zip")
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
-            for file in destination.iterdir():
-                output.write(file, file.name)
+        if share_safe:
+            del metadata["platform"]
+            metadata = shareable(metadata)
+        return metadata
+
+    def export(self, directory: Path | None = None, share_safe=False):
+        """Save the run as a folder and a ZIP under runs/. Files are written into a hidden temporary folder inside
+        runs/ that is renamed into place only when complete, so an interrupted export never lists as a run.
+        share_safe=True leaves out the platform string and replaces absolute paths and the host name (see shareable),
+        for runs meant to be published."""
+        if not self.recording:
+            raise ValueError("This experiment keeps no recording (record=False), so there is nothing to export.")
+        # Caller never supplies a filesystem path. Generated IDs are confined under runs/.
+        base = directory or ROOT / "runs"
+        base.mkdir(parents=True, exist_ok=True)
+        name = f"{self.run_id}-{uuid.uuid4().hex[:6]}"
+        destination, archive = base / name, base / f"{name}.zip"
+        staging, staged_archive = base / f".tmp-{name}", base / f".tmp-{name}.zip"
+        metadata = self.metadata(share_safe)
+        try:
+            staging.mkdir()
+            (staging / "metadata.json").write_text(json.dumps(metadata, indent=2, allow_nan=False))
+            with (staging / "telemetry.csv").open("w", newline="") as output:
+                writer = csv.writer(output)
+                writer.writerow(["step", "time_s", "x_mm", "y_mm", "z_mm", "yaw_rad", "speed_mm_s", "sensor_l", "sensor_r", "raw_sensor_l", "raw_sensor_r", *["rate_" + n.lower().replace(" ", "_") for n in self.circuit.unit_names], "motor_l", "motor_r"])
+                for s in self.records:
+                    writer.writerow([s.step, s.t, s.pose.x, s.pose.y, s.pose.z, s.pose.yaw, s.pose.velocity,
+                                     s.sensors.left, s.sensors.right, s.sensors.raw_left, s.sensors.raw_right, *s.rates, *s.motor])
+            with (staging / "body_signals.jsonl").open("w") as output:
+                for s in self.records:
+                    if s.body_signals:
+                        output.write(json.dumps({"step": s.step, "t": s.t, **s.body_signals}, allow_nan=False)+"\n")
+            with zipfile.ZipFile(staged_archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                for file in sorted(staging.iterdir()):
+                    output.write(file, file.name)
+            os.replace(staged_archive, archive)
+            os.replace(staging, destination)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            staged_archive.unlink(missing_ok=True)
+            if not destination.exists():
+                archive.unlink(missing_ok=True)
+            raise
         return {"run_id": self.run_id, "samples": len(self.records), "path": str(destination),
                 "download_url": f"/api/exports/{archive.name}"}
 

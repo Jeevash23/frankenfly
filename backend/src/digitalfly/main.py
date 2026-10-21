@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import Field
 from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, StrictModel, NeuralParameters,
     ConnectomeParameters, BatchRequest, check_cell_types, silenced_types)
 from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
@@ -160,9 +161,13 @@ def create_app(config: RunConfig | None = None, render: bool = True):
     async def speed(body: Speed):
         return await command("speed", body.model_dump())
 
+    class ExportRequest(StrictModel):
+        # Leaves out the platform string and replaces absolute paths and the host name, for runs to publish.
+        share_safe: bool = Field(default=False, strict=True)
+
     @app.post("/api/export")
-    async def export(body: StrictModel):
-        return await command("export")
+    async def export(body: ExportRequest):
+        return await command("export", body.model_dump())
 
     @app.post("/api/parameters")
     async def parameters(body: NeuralParameters):
