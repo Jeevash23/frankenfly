@@ -36,7 +36,7 @@ from statistics import NormalDist
 import subprocess
 import sys
 import numpy as np
-from digitalfly.api.models import ConnectomeParameters, Interventions, RunConfig, SensorState, Stimulus
+from digitalfly.api.models import CellTypeIntervention, ConnectomeParameters, Interventions, RunConfig, SensorState, Stimulus
 from digitalfly.neural.connectome import ConnectomeCircuit, load_circuit
 from digitalfly.simulation.engines import CONTROL_DT
 
@@ -92,6 +92,7 @@ def describe_config(config: RunConfig) -> dict:
                     "speed_types": "+".join(p.speed_types), "output_gain": p.output_gain, "global_gain": p.global_gain})
     i = config.initial_interventions
     row["silenced"] = "+".join([f"DNa02 {i.silence_dna02}"] * (i.silence_dna02 != "none") + i.silence_types
+                               + [c.target if c.mode == "silence" else c.label(p.dynamics) for c in i.cell_types]
                                + [f"{i.silence} units"] * (i.silence != "none")) or "none"
     return row
 
@@ -430,39 +431,72 @@ def bias_curve(parameters: ConnectomeParameters, levels=(.25, .5, .75, 1.), diff
 
 
 def _ablate(task):
-    parameters, cell_type, left, right, ms, average_ms, seed = task
-    parameters = ConnectomeParameters.model_validate(parameters)
-    silence = Interventions.model_construct(**{**Interventions().model_dump(), "silence_types": [cell_type] if cell_type else []})
-    return cell_type, hold(parameters, left, right, ms, silence, seed, average_ms)["turn"]
+    """(cell type, turn, error): one type's manipulation under clamped input, or none for the intact circuit. An
+    exception becomes the error text, so one failing type never ends a scan."""
+    parameters, cell_type, left, right, ms, average_ms, seed, mode, side, value = task
+    try:
+        parameters = ConnectomeParameters.model_validate(parameters)
+        if cell_type is None:
+            interventions = Interventions()
+        elif mode == "silence" and side == "both":  # the v0.5 scan, unchanged
+            interventions = Interventions.model_construct(**{**Interventions().model_dump(), "silence_types": [cell_type]})
+        else:
+            interventions = Interventions(cell_types=[CellTypeIntervention(name=cell_type, side=side, mode=mode, value=value)])
+        return cell_type, hold(parameters, left, right, ms, interventions, seed, average_ms)["turn"], None
+    except Exception as exc:
+        return cell_type, None, f"{type(exc).__name__}: {exc}"
 
 
 def ablation_scan(parameters: ConnectomeParameters, left: float = .5, right: float = .5, ms: int = 400,
-                  cell_types: list[str] | None = None, workers: int = 1, average_ms: int = 0, seed: int = 0) -> dict:
-    """Silence each cell type in turn (all of its neurons, both sides) under fixed sensor input, and rank
-    the types by how much the turn command changes. With equal input on both sides this finds the types
-    that create a side bias: a positive change means the type was pushing the fly to the left."""
+                  cell_types: list[str] | None = None, workers: int = 1, average_ms: int = 0, seed: int = 0,
+                  mode: str = "silence", value: float = 0., side: str = "both") -> dict:
+    """Manipulate each cell type in turn under fixed sensor input, and rank the types by how much the turn
+    command changes. The default silences all of a type's neurons (both sides); `mode` "scale" multiplies their
+    output by `value` (0–2) and "activate" drives them at `value` (Hz in spiking dynamics, a clamped rate of 0–1
+    in rate dynamics); `side` "left" or "right" manipulates one side only, and skips types with no neurons there.
+    With equal input on both sides, silencing finds the types that create a side bias: a positive change means
+    the type was pushing the fly to the left. A type whose run fails gets a row with an `error` text."""
+    if mode not in ("silence", "scale", "activate") or side not in ("both", "left", "right"):
+        raise ValueError("Choose mode silence, scale or activate and side both, left or right.")
+    Interventions(cell_types=[CellTypeIntervention(name="probe", side=side, mode=mode, value=value)]).for_dynamics(
+        parameters.dynamics)  # a value the mode or dynamics cannot take fails here, before the scan
     data = load_circuit(parameters.circuit)
     unknown = [n for n in cell_types or [] if n not in data.type_members]
     if unknown:
         raise ValueError(f"Not a cell type in the {data.key} circuit: {', '.join(unknown)}.")
+    absent = [n for n in cell_types or [] if side != "both" and not len(data.members(n, side))]
+    if absent:
+        raise ValueError(f"No {side} neurons in the {data.key} circuit: {', '.join(absent)}.")
     readout = set(parameters.readout_types or data.defaults["readout_types"])
     names = [n for n in (cell_types or data.type_names) if n not in readout]
-    tasks = [(parameters.model_dump(), name, left, right, ms, average_ms, seed) for name in [None] + names]
+    skipped = [n for n in names if side != "both" and not len(data.members(n, side))]
+    names = [n for n in names if n not in skipped]
+    tasks = [(parameters.model_dump(), name, left, right, ms, average_ms, seed, mode, side, value) for name in [None] + names]
     if workers > 1:
         with thread_limit(workers), _pool(workers) as pool:
             results = list(pool.map(_ablate, tasks, chunksize=16))
     else:
         results = [_ablate(task) for task in tasks]
-    intact = results[0][1]
+    intact, error = results[0][1:]
+    if error:
+        raise RuntimeError(f"The intact circuit could not run: {error}")
     rows = []
-    for name, turn in results[1:]:
+    for name, turn, error in results[1:]:
         members = data.members(name)
         rows.append({"cell_type": name, "neurons": int(len(members)), "left": int((data.side[members] == "left").sum()),
-                     "right": int((data.side[members] == "right").sum()), "turn": turn, "change": turn - intact})
-    rows.sort(key=lambda r: -abs(r["change"]))
-    return {"circuit": data.key, "dynamics": parameters.dynamics, "left": left, "right": right, "intact_turn": intact,
-            "types_scanned": len(rows), "rows": rows,
-            "note": "change = turn with the type silenced − intact turn; positive = the type pushed the fly to the left."}
+                     "right": int((data.side[members] == "right").sum()), "turn": turn,
+                     "change": None if error else turn - intact, "error": error})
+    rows.sort(key=lambda r: (r["error"] is not None, -abs(r["change"] or 0)))
+    done = {"silence": "silenced", "scale": f"output scaled ×{value:g}",
+            "activate": f"activated at {value:g} Hz" if parameters.dynamics == "spiking" else f"clamped at rate {value:g}"}[mode]
+    note = ("change = turn with the type silenced − intact turn; positive = the type pushed the fly to the left."
+            if mode == "silence" and side == "both" else
+            f"change = turn with the type {done}{'' if side == 'both' else f' on the {side}'} − intact turn; "
+            "positive = a rightward shift.")
+    return {"circuit": data.key, "dynamics": parameters.dynamics, "left": left, "right": right, "mode": mode,
+            "side": side, "value": None if mode == "silence" else value, "intact_turn": intact,
+            "types_scanned": len(rows), "errors": sum(r["error"] is not None for r in rows), "skipped": skipped,
+            "rows": rows, "note": note}
 
 
 def wilson_interval(successes: int, n: int, level: float = .95) -> tuple[float, float] | None:

@@ -207,18 +207,31 @@ def bias(args):
 
 def ablation(args):
     p = parameters(args.set)
+    if (args.value is None) != (args.mode == "silence"):
+        sys.exit("--mode scale and --mode activate need --value; silencing takes none.")
     types = [t for t in args.types.split(",") if t] if args.types else []
     types += args.type  # repeatable, for names that contain commas
+    value = args.value or 0.
     scan = toolkit.ablation_scan(p, left=args.left, right=args.right, ms=args.ms, cell_types=types or None,
-                                 workers=args.workers, average_ms=args.average_ms, seed=args.seed)
+                                 workers=args.workers, average_ms=args.average_ms, seed=args.seed, mode=args.mode,
+                                 value=value, side=args.side)
+    done = {"silence": "silenced", "scale": f"scaled ×{value:g}",
+            "activate": f"activated at {value:g} Hz" if p.dynamics == "spiking" else f"clamped at rate {value:g}"}[args.mode]
+    done += "" if args.side == "both" else f" on the {args.side}"
     print(f"Circuit {scan['circuit']}, {scan['dynamics']} dynamics, sensors {args.left:g}/{args.right:g}: "
-          f"intact turn {scan['intact_turn']:+.4f} ({scan['types_scanned']} types silenced one at a time).\n")
-    print("| Silenced cell type | Neurons (left/right) | Turn | Change |\n| --- | --- | --- | --- |")
+          f"intact turn {scan['intact_turn']:+.4f} ({scan['types_scanned']} types {done} one at a time"
+          + (f"; {len(scan['skipped'])} without {args.side} neurons skipped" if scan["skipped"] else "") + ").\n")
+    heading = "Silenced cell type" if args.mode == "silence" and args.side == "both" else f"Cell type, {done}"
+    print(f"| {heading} | Neurons (left/right) | Turn | Change |\n| --- | --- | --- | --- |")
     for row in scan["rows"][:args.top]:
-        print(f"| {row['cell_type']} | {row['neurons']} ({row['left']}/{row['right']}) | {row['turn']:+.4f} | {row['change']:+.4f} |")
-    print("\nPositive change: the type was pushing the fly to the left.")
+        result = (f"{row['turn']:+.4f} | {row['change']:+.4f}" if row["error"] is None else f"failed: {row['error']} | —")
+        print(f"| {row['cell_type']} | {row['neurons']} ({row['left']}/{row['right']}) | {result} |")
+    print("\nPositive change: the type was pushing the fly to the left." if args.mode == "silence" and args.side == "both"
+          else f"\n{scan['note']}")
     save(output_stem("ablation", args.out), scan["rows"], {"command": "ablation", "parameters": p.model_dump(), **scan},
          [p.circuit])
+    if scan["errors"]:
+        sys.exit(f"{scan['errors']} of {scan['types_scanned']} cell types failed (see the error column); the others are saved.")
 
 
 def paths(args):
@@ -374,11 +387,16 @@ def main():
     b.add_argument("--levels", default=".25,.5,.75,1")
     b.add_argument("--differences", default="-.4,-.2,0,.2,.4", help="Right − left sensor values; write --differences=-.2,0,.2")
     b.set_defaults(handler=bias)
-    a = commands.add_parser("ablation", help="Silence each cell type in turn and rank the change in turning")
+    a = commands.add_parser("ablation", help="Silence (or scale, or activate) each cell type in turn and rank the change in turning")
     a.add_argument("--left", type=float, default=.5)
     a.add_argument("--right", type=float, default=.5)
     a.add_argument("--types", help="Comma-separated cell types to scan (default: all except the readout)")
     a.add_argument("--type", action="append", default=[], help="One cell type to scan; repeat it, and use it for names with commas")
+    a.add_argument("--mode", choices=["silence", "scale", "activate"], default="silence",
+                   help="silence (default); scale: output × --value (0-2); activate: --value Hz (spiking) or clamped rate 0-1 (rate)")
+    a.add_argument("--value", type=float, help="The scale factor or activation for --mode scale or activate")
+    a.add_argument("--side", choices=["both", "left", "right"], default="both",
+                   help="Manipulate both sides (default) or one; types without neurons on that side are skipped")
     a.add_argument("--top", type=int, default=25)
     a.set_defaults(handler=ablation)
     for sub in (b, a):
