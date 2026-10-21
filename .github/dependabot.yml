@@ -1,0 +1,50 @@
+# Weekly update pull requests, with minor and patch updates grouped per ecosystem. The
+# backend locks are pip-compile output: regenerate them as docs/DEPENDENCIES.md describes
+# before merging a pip update (CI's pip check fails while pyproject and the lock disagree).
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    groups:
+      backend:
+        patterns: ['*']
+        update-types: [minor, patch]
+    ignore:
+      # These change replay numbers; bump them deliberately.
+      - dependency-name: numpy
+      - dependency-name: scipy
+      - dependency-name: numba
+      - dependency-name: llvmlite
+      - dependency-name: mujoco
+      - dependency-name: flygym
+      - dependency-name: torch
+      - dependency-name: torchvision
+      - dependency-name: pyarrow
+
+  # pip-audit for the CI security job (requirements-audit.in and its hashed .txt).
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly
+    groups:
+      audit:
+        patterns: ['*']
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        patterns: ['*']
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
