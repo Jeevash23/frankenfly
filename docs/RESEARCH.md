@@ -23,7 +23,7 @@ This is an experimental sensorimotor workbench with explicit modeling assumption
 3. Inspect **Through the eyes**, run briefly, and pause. Moving the target changes rendered eye input, neural activity, and motor commands.
 4. Open **Experiments**. Choose **Target reversal**, set duration to 0.5 or 2 simulated seconds, seeds to `42, 43`, and conditions to **Neural control** and **Descending units off**.
 5. **Run comparison** resets and runs one trial for each seed/condition pair. The target reverses halfway through each trial. Every finished trial saves automatically. Pause freezes the current trial; Cancel retains the current partial trial for manual export and stops remaining trials.
-6. Select saved runs in **Run library** to compare their trajectories and measurements. Save ZIPs for analysis elsewhere. “Restore starting configuration” initializes a fresh paused experiment; it does not replay the old trajectory.
+6. Select saved runs in **Run library** to compare their trajectories and measurements. Save ZIPs for analysis elsewhere. “Restore starting configuration” initializes a fresh paused experiment; it does not replay the old trajectory. The library lists the newest 100 runs and says how many there are; **Load more** shows older ones. The bin icon, then **Delete**, removes a run's folder and ZIP from `runs/`.
 
 **Set up the first experiment** on the Experiments page fills in steps 4 and 5 in one click: target reversal over 2 simulated seconds, seeds 42 and 43, and **Neural control** against **Descending units off** (or **Both DNa02 off** with a connectome circuit that contains DNa02). It keeps the current body and sensor, so switch to compound eyes on the Workbench first if you want step 2 as well.
 

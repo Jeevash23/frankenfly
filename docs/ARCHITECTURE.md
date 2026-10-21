@@ -114,7 +114,7 @@ Complete methods, data licensing and limitations are in [RESEARCH.md](RESEARCH.m
 - **Comparisons.** Conditions add `engineered_model` and `connectome_model` (switch the model for that trial), `dna02_left_off`, `dna02_right_off`, `dna02_both_off` and `cell_type_off` (with `BatchRequest.cell_type`). Model-specific conditions are validated against the configuration's model.
 - **Data.** `scripts/build_circuit.py` and its pyarrow dependency are build-only; the app reads only the committed 1.1 MB JSON and needs nothing beyond the runtime lock (SciPy was already installed with FlyGym and is now declared).
 
-The connectome view in the browser lays cell types out by hop distance to DNa02 and laterality, never anatomy; it draws the 140 strongest type-to-type connections plus every connection of the selected type. In the atlas, the two female DNa02 skeletons are tinted with the live readout, labeled as model output.
+The connectome view in the browser lays cell types out by hop distance to DNa02 and laterality, never anatomy; it draws the 140 strongest type-to-type connections plus every connection of the selected type. The browser caches each circuit summary by circuit name, the SHA-256 of the loaded file (from the live snapshot) and the structural parameters (synapse threshold, sign of other transmitters, populations), never gains or time constants, and drops the cache when a build finishes. In the atlas, the two female DNa02 skeletons are tinted with the live readout, labeled as model output.
 
 ## v0.4 circuits, spiking dynamics and research tools
 
