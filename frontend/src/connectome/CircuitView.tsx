@@ -1,6 +1,6 @@
 import {memo, useEffect, useMemo, useRef, useState, type KeyboardEvent} from 'react';
 import {ArrowRight, Network, Route, Search} from 'lucide-react';
-import type {Command, Config, ConnectomeParameters, State} from '../types';
+import type {Command, Config, ConnectomeParameters, InterventionChange, State} from '../types';
 import {fmt} from '../format';
 import {dynamicsLabels, readoutPairs} from '../models';
 import {useCircuit} from './useCircuit';
@@ -300,11 +300,13 @@ function PathTrace({source, targets}: {source: string; targets: string[]}) {
 export function ConnectomeCircuitView({
   state,
   command,
+  intervene,
   reset,
   disabled,
 }: {
   state: State | null;
   command: Command;
+  intervene: (change: InterventionChange) => void;
   reset: (override?: Partial<Config>) => void;
   disabled: boolean;
 }) {
@@ -360,6 +362,7 @@ export function ConnectomeCircuitView({
       loading={loading}
       state={state}
       command={command}
+      intervene={intervene}
       reset={reset}
       controlsDisabled={controlsDisabled}
       selected={selected}
@@ -442,6 +445,7 @@ function CircuitDiagram({
   loading,
   state,
   command,
+  intervene,
   reset,
   controlsDisabled,
   selected,
@@ -456,6 +460,7 @@ function CircuitDiagram({
   loading: boolean;
   state: State | null;
   command: Command;
+  intervene: (change: InterventionChange) => void;
   reset: (override?: Partial<Config>) => void;
   controlsDisabled: boolean;
   selected: number | null;
@@ -533,8 +538,14 @@ function CircuitDiagram({
     (name === 'DNa02' && (dna02Silenced === side || dna02Silenced === 'both'));
   const selectedType = selected !== null ? (byIndex.get(selected) ?? null) : null;
   const name = (index: number) => byIndex.get(index)?.name ?? '?';
-  const silence = (types: string[]) =>
-    void command('interventions', {...state?.interventions, silence_types: types});
+  // Built on the newest interventions, so quick successive edits all apply.
+  const silence = (type: string, off: boolean) =>
+    intervene((current) => ({
+      silence_types: [
+        ...(current.silence_types ?? []).filter((t) => t !== type),
+        ...(off ? [type] : []),
+      ],
+    }));
   const matches = query
     ? circuit.types.filter((t) => t.name.toLowerCase().includes(query.toLowerCase())).slice(0, 8)
     : [];
@@ -845,12 +856,13 @@ function CircuitDiagram({
               </div>
             ))}
             <PathTrace source={selectedType.name} targets={readoutNames} />
+            {/* One toggle that stays enabled, so focus stays on it after the change. */}
             <button
               className="secondary-button"
-              disabled={controlsDisabled || silenced.has(selectedType.name)}
-              onClick={() => silence([...silenced, selectedType.name])}
+              disabled={controlsDisabled}
+              onClick={() => silence(selectedType.name, !silenced.has(selectedType.name))}
             >
-              Silence {selectedType.name}
+              {silenced.has(selectedType.name) ? 'Restore' : 'Silence'} {selectedType.name}
             </button>
           </>
         ) : (
@@ -885,7 +897,7 @@ function CircuitDiagram({
               <button
                 key={type}
                 disabled={controlsDisabled}
-                onClick={() => silence([...silenced].filter((t) => t !== type))}
+                onClick={() => silence(type, false)}
                 aria-label={`Restore ${type}`}
               >
                 {type} ×
@@ -897,7 +909,7 @@ function CircuitDiagram({
           className="text-button"
           disabled={controlsDisabled}
           onClick={() =>
-            void command('interventions', {
+            intervene({
               zero_left: false,
               zero_right: false,
               silence: 'none',

@@ -10,6 +10,10 @@ export type Intervention = {
   silence_dna02?: 'none' | 'left' | 'right' | 'both';
   silence_types?: string[];
 };
+// A change to the live interventions: fields to set, or a function of the newest interventions
+// (including a change still in flight), for toggles and list edits.
+export type InterventionChange =
+  Partial<Intervention> | ((current: Intervention) => Partial<Intervention>);
 export type NeuralParameters = {
   sensory_gain: number;
   steering_gain: number;

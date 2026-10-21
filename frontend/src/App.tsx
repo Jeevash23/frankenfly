@@ -1,6 +1,6 @@
 import {useEffect, useRef, useState} from 'react';
 import {MoveUpRight} from 'lucide-react';
-import type {Config, Intervention, Stimulus} from './types';
+import type {Config, Intervention, InterventionChange, Stimulus} from './types';
 import {useServerVersion, useSimulation} from './useSimulation';
 import {fmt} from './format';
 import {tabKeys} from './keys';
@@ -95,9 +95,13 @@ export default function App() {
     const base = (inFlight('stimulus') as Stimulus | undefined) ?? stimulus;
     return base ? command('stimulus', {...base, ...values}) : Promise.resolve(null);
   };
-  const intervene = (value: Partial<Intervention>) => {
+  const intervene = (change: InterventionChange) => {
     const base = (inFlight('interventions') as Intervention | undefined) ?? interventions;
-    return base ? command('interventions', {...base, ...value}) : Promise.resolve(null);
+    if (!base) return Promise.resolve(null);
+    return command('interventions', {
+      ...base,
+      ...(typeof change === 'function' ? change(base) : change),
+    });
   };
   const reset = (override: Partial<Config> = {}) => {
     if (!state) return Promise.resolve(null);
@@ -231,6 +235,7 @@ export default function App() {
                       <ConnectomeCircuitView
                         state={state}
                         command={command}
+                        intervene={intervene}
                         reset={reset}
                         disabled={disabled}
                       />

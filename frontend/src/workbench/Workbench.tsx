@@ -8,7 +8,7 @@ import {
   LoaderCircle,
   X,
 } from 'lucide-react';
-import type {Command, Config, Intervention, State, Stimulus} from '../types';
+import type {Command, Config, InterventionChange, State, Stimulus} from '../types';
 import {fmt} from '../format';
 import {neuralStage} from '../models';
 import {BodyMeasurements, EyePanel} from '../ResearchPanels';
@@ -59,7 +59,7 @@ export function Workbench({
   draft: Draft;
   setDraft: (draft: Draft | ((previous: Draft) => Draft)) => void;
   moveTarget: (target: Partial<Stimulus>) => Promise<unknown>;
-  intervene: (value: Partial<Intervention>) => void;
+  intervene: (change: InterventionChange) => void;
   reset: (override?: Partial<Config>) => Promise<unknown>;
   exportRun: () => Promise<void>;
   openModelNotes: () => void;
