@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import get_args
+from typing import Literal, get_args
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import Field
 from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, StrictModel, NeuralParameters,
-    ConnectomeParameters, BatchRequest)
+    ConnectomeParameters, BatchRequest, state_schema)
 from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
 from digitalfly.neural.model import NAMES as ENGINEERED_UNITS, RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog, catalog_ready
@@ -23,6 +23,8 @@ from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION, RECORD_LIMIT
 from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
     run_detail, delete_run)
+from digitalfly.data.research import (BATCH_ID, BatchSummary, RunAnnotations, RunItem, RunPage, annotate_run,
+    batch_summary, batch_summary_csv, filter_runs)
 from digitalfly.simulation.engines import CONTROL_DT, NEURAL_DT, PHYSICS_DT, ROOT, select_gl
 from digitalfly.simulation.worker import PUBLISH_INTERVAL, Rejected, SimulationWorker, WorkerStopped
 
@@ -298,10 +300,14 @@ def create_app(config: RunConfig | None = None, render: bool = True):
     async def batch_cancel(body: StrictModel):
         return await command("batch_cancel")
 
-    @app.get("/api/runs")
+    @app.get("/api/runs", responses={200: {"model": RunPage}})
     def runs(response: Response, offset: int = Query(0, ge=0), limit: int = Query(100, ge=0, le=500),
-             include_empty: bool = True):
-        records = list_runs(include_empty=include_empty)
+             include_empty: bool = True, model: Literal["engineered", "connectome"] | None = None,
+             circuit: str | None = Query(None, pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$"),
+             batch: str | None = Query(None, pattern=BATCH_ID), tag: str | None = Query(None, pattern=r"^[A-Za-z0-9 _-]{1,24}$"),
+             q: str | None = Query(None, min_length=1, max_length=200)):
+        # Filters combine with AND; X-Total-Count counts the matching runs.
+        records = filter_runs(list_runs(include_empty=include_empty), model, circuit, batch, tag, q)
         response.headers["X-Total-Count"] = str(len(records))
         return {"runs": records[offset:offset + limit]}
 
@@ -327,6 +333,34 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             return run_detail(key)
         except (OSError, ValueError, KeyError) as exc:
             raise HTTPException(404, "Saved run not found or unreadable.") from exc
+
+    # Run library annotations, comparison summaries and the State schema.
+    @app.patch("/api/runs/{key}", responses={200: {"model": RunItem}})
+    def annotate_saved_run(key: str, body: RunAnnotations):
+        try:
+            return annotate_run(key, body)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(404, "Saved run not found or unreadable.") from exc
+        except OSError as exc:
+            raise HTTPException(500, f"The notes could not be saved: {exc.strerror or type(exc).__name__}.") from exc
+
+    @app.get("/api/batches/{batch_id}/summary", responses={200: {"model": BatchSummary, "content": {"text/csv": {}}}})
+    def comparison_summary(batch_id: str, format: Literal["json", "csv"] = "json"):
+        if not re.fullmatch(BATCH_ID, batch_id):
+            raise HTTPException(404, "No saved trials belong to this comparison.")
+        try:
+            summary = batch_summary(batch_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        if format == "csv":
+            return Response(batch_summary_csv(summary), media_type="text/csv",
+                            headers={"Content-Disposition": f'attachment; filename="comparison-{batch_id}.csv"'})
+        return summary
+
+    @app.get("/api/schema/state")
+    def state_json_schema():
+        """JSON Schema of the State that /api/ws and /api/status send."""
+        return state_schema()
 
     @app.get("/api/atlas")
     def atlas():

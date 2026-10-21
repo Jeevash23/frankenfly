@@ -1,7 +1,10 @@
-from typing import Annotated, Any, Literal, get_args
+from functools import lru_cache
+from types import UnionType
+from typing import Annotated, Any, Literal, TypedDict, Union, get_args, get_origin
 import asyncio
 from pydantic import (BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator,
-                      model_validator)
+                      model_validator, with_config)
+from pydantic.json_schema import GenerateJsonSchema
 
 
 class StrictModel(BaseModel):
@@ -288,6 +291,8 @@ class RunConfig(StrictModel):
     connectome_parameters: ConnectomeParameters = Field(default_factory=ConnectomeParameters)
     initial_interventions: Interventions = Field(default_factory=Interventions)
     protocol: Protocol | None = None
+    # "types": connectome runs also export activity_types.npz, every cell type's mean activity per control step.
+    record_activity: Literal["none", "types"] = "none"
 
     @field_validator("neural_model", mode="before")
     @classmethod
@@ -450,6 +455,19 @@ class SensorState(StrictModel):
     distance_mm: float = 0
 
 
+@with_config(ConfigDict(extra="forbid"))
+class BodySignals(TypedDict, total=False):
+    """FlyGym body measurements of one sample; the toy body has none. Display history leaves out joint angles."""
+    leg_order: list[str]  # LF LM LH RF RM RH
+    ground_contact_force: list[float]  # per leg, µN
+    contact: list[bool]  # per leg, force above contact_threshold
+    contact_threshold: float
+    cpg_phase_rad: list[float]
+    joint_position_rad: list[float]  # in metadata.body_joint_order
+    force_unit: str
+    source: str
+
+
 class Sample(StrictModel):
     step: int
     t: float
@@ -457,7 +475,7 @@ class Sample(StrictModel):
     sensors: SensorState
     rates: list[float]
     motor: list[float]
-    body_signals: dict = Field(default_factory=dict)
+    body_signals: BodySignals = Field(default_factory=dict)
 
 
 class Event(StrictModel):
@@ -467,6 +485,120 @@ class Event(StrictModel):
     kind: str
     message: str
     payload: dict = Field(default_factory=dict)
+
+
+# What the server publishes (State, over /api/ws and /api/status). The parts the worker assembles from its own data
+# are built with construct() at every publish, without validation; tests validate real snapshots against these
+# models, and GET /api/schema/state serves their JSON Schema (scripts/gen_types.py turns it into TypeScript).
+
+def absent(**kwargs):
+    """A field the server leaves out until it has a value; never sent as null."""
+    return Field(default=None, exclude_if=lambda value: value is None, **kwargs)
+
+
+class Provenance(StrictModel):
+    """Plain-language labels of what produced the run: which parts are data-derived, published or engineered."""
+    body_engine: str
+    sensor_model: str
+    neural_model: str
+    motor_controller: str
+    connectivity_source: str
+    input_mapping: str
+    controller_mode: str
+    viewport: str
+    body_sex: str
+    anatomy_atlas: str
+
+
+class RunMetrics(StrictModel):
+    """Behaviour since the reset; empty before the run's first sample, and in older saved runs some are missing."""
+    path_length_mm: float = absent()
+    displacement_mm: float = absent()
+    mean_speed_mm_s: float = absent()
+    net_turn_deg: float = absent()
+    target_distance_mm: float = absent()  # to the current target
+    min_target_distance_mm: float = absent()  # closest approach to the target of each recorded sample (v0.6)
+    contact_fraction: list[float] = absent()  # per leg, LF LM LH RF RM RH; empty for the toy body
+    duration_s: float = absent()
+    protocol_complete: bool = absent()
+
+
+class Vision(StrictModel):
+    """The latest eye reading, with compound-eye or FlyVis sensing; empty otherwise."""
+    ommatidia_per_eye: int = absent()
+    left: list[float] = absent()
+    right: list[float] = absent()
+    sample_interval_s: float = absent()
+    sample_time_s: float = absent()
+    encoder: str = absent()
+
+
+class TrialRecord(StrictModel):
+    """A comparison trial, as saved in its run's metadata.trial."""
+    batch_id: str
+    condition: str
+    seed: int
+    index: int
+    total: int
+    neural_model: Literal["engineered", "connectome"] = absent()
+    cell_type: str | None = None
+    partial: bool = absent()  # the trial was cut short (cancelled or failed) and saved unfinished
+
+
+class BatchTrial(TrialRecord):
+    """A saved comparison trial: where its export is and its metrics."""
+    run_id: str
+    samples: int
+    path: str
+    download_url: str
+    metrics: RunMetrics
+
+
+class Batch(StrictModel):
+    """The active or last comparison."""
+    id: str
+    status: Literal["running", "paused", "completed", "cancelled", "failed"]
+    total: int
+    current: int
+    results: list[BatchTrial]
+    protocol: str
+    cell_type: str | None
+    max_speed: bool
+    condition: str = absent()
+    seed: int = absent()
+    error: str = absent()
+    partial: BatchTrial = absent()
+    partial_error: str = absent()
+    restore_error: str = absent()
+
+
+class TypeTrace(StrictModel):
+    index: int  # the cell type's index in type_rates
+    name: str
+    trace: list[float]
+
+
+class ManipulatedNeurons(StrictModel):
+    """Neurons each intervention mode reaches now."""
+    silence: int
+    scale: int
+    activate: int
+
+
+class ConnectomeLive(StrictModel):
+    """Display-only activity of the connectome model, at the publish rate; not recorded."""
+    circuit: str
+    circuit_sha256: str
+    dynamics: Literal["rate", "spiking"]
+    unit_names: list[str]
+    readout_types: list[str]
+    type_rates: list[float]  # mean activity of every cell type, in the circuit's type order
+    turn: float
+    motor_clipped_fraction: float
+    silenced_neurons: int
+    manipulated_neurons: ManipulatedNeurons
+    trace_t: list[float]
+    top_types: list[TypeTrace]  # the most active non-readout types, with traces aligned to trace_t
 
 
 class State(StrictModel):
@@ -491,8 +623,53 @@ class State(StrictModel):
     subscribers: int = 0
     recording_samples: int = 0
     recording_limit: int = 30000
-    provenance: dict[str, str] = Field(default_factory=dict)
-    metrics: dict = Field(default_factory=dict)
-    vision: dict = Field(default_factory=dict)
-    batch: dict | None = None
-    connectome: dict | None = None
+    provenance: Provenance | None = None  # None only before the worker's first publish
+    metrics: RunMetrics = Field(default_factory=RunMetrics)
+    vision: Vision = Field(default_factory=Vision)
+    batch: Batch | None = None
+    connectome: ConnectomeLive | None = None
+
+
+@lru_cache(maxsize=None)
+def _nested(model: type[BaseModel]) -> dict:
+    """Fields of `model` that hold models, X or X | None (False) or list[X] (True)."""
+    plan = {}
+    for name, field in model.model_fields.items():
+        annotation = field.annotation
+        options = [a for a in get_args(annotation) if a is not type(None)] \
+            if get_origin(annotation) in (Union, UnionType) else [annotation]
+        if len(options) != 1:
+            continue
+        inner, many = options[0], get_origin(options[0]) is list
+        inner = get_args(inner)[0] if many else inner
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            plan[name] = (many, inner)
+    return plan
+
+
+def construct(model: type[BaseModel], data: dict | None):
+    """model.model_construct(**data), nested models built the same way: no validation, for data the server built
+    itself. Keys the model does not declare are dropped, so tests validate each source against its model."""
+    if data is None:
+        return None
+    nested = _nested(model)
+    values = {}
+    for key, value in data.items():
+        if key in nested and value is not None:
+            many, inner = nested[key]
+            value = [construct(inner, v) for v in value] if many else construct(inner, value)
+        values[key] = value
+    return model.model_construct(**values)
+
+
+class SentSchema(GenerateJsonSchema):
+    """JSON Schema of what the server sends: every field is present except those it leaves out (see absent)."""
+    def field_is_required(self, field, total):
+        if field["type"] == "typed-dict-field":
+            return field.get("required", total)
+        return field.get("serialization_exclude_if") is None
+
+
+@lru_cache(maxsize=1)
+def state_schema() -> dict:
+    return State.model_json_schema(mode="serialization", schema_generator=SentSchema)

@@ -13,7 +13,7 @@ This is an experimental sensorimotor workbench with explicit modeling assumption
 | Connectivity | Build circuits around any FlyWire v783 cell types or neurons, in the app or with the builder; separately, import, validate, save, search and inspect a small directed graph | Builds need the prepared FlyWire archive (once, from the cached downloads). Imports: up to 300 neurons / 3,000 edges / 2 MB; imports never drive the body |
 | Experiments | Timed stimuli, finite protocols, matched-seed comparisons, pause/resume/cancel and automatic trial export | Sequential, one body at a time |
 | Analysis | Path length, displacement, mean speed, net turn, final target distance, contact occupancy, trajectory overlays; a research toolkit (Python and command line) for batch trials, parameter sweeps, bias curves, ablation scans, path tracing and fits of turning against readout activity; one recorded fly (paired DNa02 with ball tracking) to compare against | Descriptive outcomes from one fly and simulations; no significance or biological-effect claims |
-| Records | Local run library, configuration restoration, CSV/JSON/ZIP and replay | Same pinned software stack; no cross-device guarantee |
+| Records | Local run library with filters, tags, notes and per-condition comparison summaries; configuration restoration, CSV/JSON/ZIP, optional per-cell-type activity, and replay | Same pinned software stack; no cross-device guarantee |
 | Closing | Quit and Save current run & quit | Requests graceful shutdown of this launcher’s server and its worker |
 
 ## A first experiment
@@ -67,6 +67,27 @@ Positions are millimeters and joint angles are radians. `get_joint_angles()` fol
 - Final target distance refers to the **current** target, which may have moved during a protocol.
 
 Export metadata includes `body_joint_order` so each joint position can be identified. `body_signals.jsonl` retains joint positions, leg force/contact values and oscillator phases for every recorded sample. Display history omits the large joint-angle arrays while retaining current joint state and bounded gait history.
+
+## Exported signals
+
+An export (metadata schema 5) holds `metadata.json`, `telemetry.csv`, `body_signals.jsonl` and, when asked for, `activity_types.npz`. The app and its tools read runs of schemas 2–5; older runs lack the columns and fields added since.
+
+`telemetry.csv` has one row per recorded control step from the reset. `step`, `time_s`, `x_mm`, `y_mm`, `z_mm`, `yaw_rad` and `speed_mm_s` describe the body after the step; `sensor_l`, `sensor_r` (after sensor silencing) and `raw_sensor_l`, `raw_sensor_r` are the sensor values the step used; the `rate_*` columns are the model's readouts after the step, named after its units; `motor_l`, `motor_r` is the command applied during the step. Schema 5 appends:
+
+- `target_bearing_deg`: the direction of the target from the row's position, relative to its heading, in degrees within ±180, positive to the left (counterclockwise). The geometric sensor's own bearing was taken at the start of the step, from the previous pose.
+- `target_distance_mm`: the distance from the row's position to the target. Its minimum over the rows is `metrics.min_target_distance_mm`; comparison summaries count a trial as reaching the target when it came within 2 mm (the toolkit's `REACH_MM`).
+- `stimulus_x_mm`, `stimulus_y_mm`, `stimulus_intensity`: the target in effect for the row. A change at step k applies from row k + 1, as in the event schedule.
+- `intervention_code`: the interventions in effect, as `L` and `R` with 1 for a sensor input on and 0 for off, then `;`-separated entries: `units:GROUP` (the engineered model's silenced group), `DNa02:left|right|both`, `TYPE:silence` (a cell type silenced on both sides) and, for interventions on one side or with a mode, `TYPE[:L|:R]:MODE[VALUE]`, for example `L0R1;DNa02:left;DNp09:L:scale0.5`. Spaces, quotes, `;`, `:`, `,` and `#` in cell-type names become `_`.
+
+These columns are derived from each row's pose and the recorded schedule; replay checks the body, rate and motor columns, not them.
+
+With the connectome model, `RunConfig.record_activity = "types"` adds `activity_types.npz`, NumPy arrays that `np.load` reads without pickling:
+
+- `activity`: float32, samples × cell types: each cell type's mean activity over its neurons after each recorded control step, in the units of the rate columns (rate dynamics: the dimensionless rate; spiking: firing rate ÷ `rate_scale_hz`).
+- `step` and `time_s`: each sample's control step and simulated time, matching the telemetry rows.
+- `type_names` (the column order) and `neurons_per_type`.
+
+Every control step is kept until the activity reaches 128 MB; then every second one (earlier samples are thinned to match), and so on. `metadata.activity.every_steps` gives the final spacing: 128 MB holds about 26,700 steps of the 3,000-neuron DNa02 circuit (1,257 cell types), and fewer of larger circuits. The setting is ignored with the engineered model, recording does not change the simulation, and replay does not check the file.
 
 ## The connectome model
 
@@ -633,6 +654,8 @@ Statistics cover only the imported subset: total nodes, directed edges, synapses
 Events use integer control-step boundaries. Durations and target/intervention values are validated; event indices must be unique, ascending and before the protocol’s end. Manual workbench edits, timed events and parameter changes are distinguished in the event schedule. The replay tool applies manual edits and lets the saved protocol reproduce its own timed events.
 
 Comparison conditions are held for a whole trial, so comparison protocols accept scheduled stimulus changes only. Besides the v0.2 conditions, a comparison can switch the model for a trial (**Engineered model**, **Connectome model**) or, with the connectome model selected, silence the left, right or both DNa02 or one named cell type. `custom_conditions` (API) add labelled conditions with their own interventions (any of the above, including per-side scaling and activation of cell types) and, with the connectome model, changes to its live-editable parameters; trial records carry the label as their condition. Conditions that need a particular model are rejected with the other one, and **Engineered model** is rejected with FlyVis eyes, which drive only the connectome model. Every trial's configuration is validated in full before the first trial starts, so a combination that could not be replayed fails up front. The same distinct seeds are applied to every selected condition. Initial interventions are serialized in each trial’s initial configuration. The worker blocks parameter/stimulus/reset commands while a comparison is active, preventing accidental changes to its controlled conditions; speed is allowed, since it only paces the run. Finished trials are exported before the next trial resets the body.
+
+`GET /api/batches/COMPARISON_ID/summary` (or the run library's `batch` filter) gathers a comparison's saved trials. For each condition it gives the mean, the sample standard deviation and a 95% interval of final target distance, path length, net turn, mean speed and, for trials saved since v0.6, reaching within 2 mm; then, for every other condition, the mean difference from the first condition over trials with the same seed, with its interval. The statistics are the toolkit's (`toolkit.summarize`): percentile bootstrap intervals (2,000 resamples, generator seed 0) for means and differences, Wilson score intervals for the reached fraction, none below two trials. Trials saved unfinished are left out and counted. `?format=csv` gives the same as one table.
 
 Limits: 5 seeds, 4 built-in conditions and 6 conditions in all with custom ones, 30,000 total control intervals. UI durations are 0.1–15 simulated seconds per trial. The API supports longer individual protocols within the existing 30,000-sample recording bound. Runs are CPU-limited; requested speed is a pacing ceiling, not a performance promise. `POST /api/batch/start` with `"max_speed": true` runs the trials unpaced, as fast as the computer allows; the results are the same, since speed never changes the computation.
 

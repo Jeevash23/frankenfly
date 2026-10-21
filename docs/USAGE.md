@@ -130,6 +130,17 @@ curl -X POST -H 'Content-Type: application/json' -d '{"share_safe": true}' http:
 
 The API also lists saved runs page by page (`GET /api/runs?offset=0&limit=100&include_empty=true`; the `X-Total-Count` header gives the total) and deletes one with `DELETE /api/runs/FOLDER_NAME`, which removes its folder and ZIP. The run being recorded cannot be deleted until you Reset.
 
+The list takes filters, all optional and combined: `model=engineered` or `connectome`, `circuit=NAME` (connectome runs on that circuit), `batch=COMPARISON_ID`, `tag=TAG` and `q=TEXT` (found, ignoring case, in the run's folder name, notes or comparison condition); `X-Total-Count` then counts the matching runs. Each run lists its `tags`, `notes`, `batch_id` and `condition`. To tag a run or write notes on it:
+
+```sh
+curl -X PATCH -H 'Content-Type: application/json' -d '{"tags": ["pilot"], "notes": "Target hidden at 2 s"}' \
+  http://127.0.0.1:8000/api/runs/YOUR_RUN_FOLDER
+```
+
+Up to 10 tags of up to 24 letters, digits, spaces, `_` or `-` each, and up to 2,000 characters of notes; a field you leave out keeps its value. They are saved in the run's `annotations.json`; its `metadata.json` never changes. `GET /api/batches/COMPARISON_ID/summary` summarizes a comparison's saved trials: for each condition, the mean, standard deviation and 95% interval of final target distance, path length, net turn and mean speed and, for runs saved since v0.6, the fraction that came within 2 mm of the target; then the differences from the first condition over trials with the same seed. Add `?format=csv` for a table. Trials saved unfinished are left out and counted.
+
+Exporting runs beside the simulation, so the fly, the display and other commands keep going while a long run is written; the export answers once its files are complete. With the connectome model, `"record_activity": "types"` in the configuration you reset with (`POST /api/reset`) also saves `activity_types.npz`, every cell type's mean activity at each control step ([signal definitions](RESEARCH.md#exported-signals)).
+
 ```sh
 backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER
 ```
@@ -197,7 +208,7 @@ The app runs a single experiment, so the browser shows what the script does, and
 
 **Linux rendering:** unless you set `MUJOCO_GL`, DigitalFly tries MuJoCo's default GLFW when there is a display, then EGL, then OSMesa, each in a short test process, and uses the first that renders. A `MUJOCO_GL` you set is never overridden. When none works (a server or container without graphics libraries), physics still runs without the 3D view, compound-eye vision is unavailable, and the message says what to do: start with `--toy`; run under a virtual display with `MUJOCO_GL=glfw xvfb-run -a ./scripts/start.sh`; or install EGL or OSMesa (Debian/Ubuntu: `sudo apt install libegl1`, or `libosmesa6`; recent Mesa releases no longer ship OSMesa). Setup never installs drivers or system packages.
 
-**Scripting the running app:** use the Python client ([Scripting the app from Python](#scripting-the-app-from-python)). The REST schema is at http://127.0.0.1:8000/api/openapi.json (OpenAPI 3.1). Open it in the browser, or save it with `curl -o openapi.json http://127.0.0.1:8000/api/openapi.json` and load the file in any OpenAPI viewer or client generator. The app serves no interactive documentation page: one would need scripts from a CDN, which its security policy blocks.
+**Scripting the running app:** use the Python client ([Scripting the app from Python](#scripting-the-app-from-python)). The REST schema is at http://127.0.0.1:8000/api/openapi.json (OpenAPI 3.1). Open it in the browser, or save it with `curl -o openapi.json http://127.0.0.1:8000/api/openapi.json` and load the file in any OpenAPI viewer or client generator. The app serves no interactive documentation page: one would need scripts from a CDN, which its security policy blocks. The state that `/api/ws` and `/api/status` send is described by `GET /api/schema/state` (JSON Schema); `backend/.venv/bin/python scripts/gen_types.py` turns both schemas into the frontend's TypeScript types (`frontend/src/api.gen.ts`), and `--check` fails when they are out of date.
 
 **Connectome circuit unavailable:** the committed circuits are `data/circuits/fafb783-dna02.json` and `fafb783-steering.json`, and their side-balanced versions `fafb783-dna02-balanced.json` and `fafb783-steering-balanced.json`. If one is missing or edited, restore it from version control or rebuild it with `scripts/build_circuit.py` (see the [research guide](RESEARCH.md#building-the-subcircuit)). A local circuit that no longer loads appears in the circuit list with its error; delete or rebuild it. The app refuses to rebuild the circuit the running experiment uses; if `build_circuit.py` rewrites it anyway, the run keeps its loaded wiring and asks you to Reset before parameter edits.
 

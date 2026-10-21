@@ -54,6 +54,10 @@ jobs:
       - name: Backend tests without FlyGym physics
         run: backend/.venv/bin/python -m pytest backend/tests -m 'not flygym' -q
 
+      # frontend/src/api.gen.ts must match the API models; regenerate it without --check.
+      - name: Generated TypeScript API types are up to date
+        run: backend/.venv/bin/python scripts/gen_types.py --check
+
   frontend:
     name: Frontend checks (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
