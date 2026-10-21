@@ -319,3 +319,58 @@ def test_custom_conditions_validate_without_the_api(toy_brain):
     with pytest.raises(ValidationError, match="30,000"):
         BatchRequest(config=config.model_copy(update={"protocol": Protocol(duration_steps=6000)}), seeds=[1, 2],
                      conditions=["control"], custom_conditions=[{"label": "a"}, {"label": "b"}])
+
+
+def test_ablation_scan_modes_and_sides(toy_brain, monkeypatch):
+    silenced = toolkit.ablation_scan(TOY, left=.8, right=.2, ms=100)
+    blocked = toolkit.ablation_scan(TOY, left=.8, right=.2, ms=100, mode="scale", value=0)
+    # A type that sends nothing turns the fly as a silenced one does; scaling by 1 changes nothing.
+    assert [(r["cell_type"], r["turn"]) for r in silenced["rows"]] == [(r["cell_type"], r["turn"]) for r in blocked["rows"]]
+    assert all(r["change"] == 0 for r in toolkit.ablation_scan(TOY, ms=50, mode="scale", value=1)["rows"])
+    assert silenced["mode"] == "silence" and silenced["value"] is None and "pushed the fly to the left" in silenced["note"]
+    left = toolkit.ablation_scan(TOY, left=.5, right=.5, ms=100, mode="activate", value=.7, side="left")
+    assert left["skipped"] == ["Spd"] and left["types_scanned"] == 4 and left["side"] == "left"
+    assert {r["cell_type"] for r in left["rows"]} == {"DNy", "Inh", "LCa", "Solo"} and "rightward" in left["note"]
+    # Solo excites DNx left only, so activating it turns the fly to the left: a negative change.
+    assert {r["cell_type"]: r["change"] for r in left["rows"]}["Solo"] < 0
+    assert toolkit.ablation_scan(TOY, ms=20, side="right")["skipped"] == ["Solo", "Spd"]
+    with pytest.raises(ValueError, match="No right neurons.*Solo"):
+        toolkit.ablation_scan(TOY, ms=20, side="right", cell_types=["Solo"])
+    for bad in [{"mode": "activate", "value": 2}, {"mode": "scale", "value": 3}, {"mode": "boost"}, {"side": "up"}]:
+        with pytest.raises(ValueError):
+            toolkit.ablation_scan(TOY, ms=20, **bad)
+    spiking = toolkit.ablation_scan(TOY.model_copy(update={"dynamics": "spiking"}), ms=50, mode="activate", value=300,
+                                    cell_types=["Solo"])
+    assert spiking["rows"][0]["error"] is None and spiking["value"] == 300
+    # One failing type becomes an error row, listed last; the scan goes on.
+    real = toolkit.hold
+
+    def flaky(parameters, left, right, ms, interventions, *args):
+        if interventions.silence_types == ["Inh"]:
+            raise FloatingPointError("nonfinite")
+        return real(parameters, left, right, ms, interventions, *args)
+    monkeypatch.setattr(toolkit, "hold", flaky)
+    scan = toolkit.ablation_scan(TOY, left=.8, right=.2, ms=100)
+    assert scan["errors"] == 1 and scan["rows"][-1] == {"cell_type": "Inh", "neurons": 2, "left": 1, "right": 1, "turn": None,
+                                                        "change": None, "error": "FloatingPointError: nonfinite"}
+    assert [r for r in scan["rows"] if r["cell_type"] != "Inh"] == [r for r in silenced["rows"] if r["cell_type"] != "Inh"]
+
+
+def run_cli(*args):
+    return subprocess.run([sys.executable, str(ROOT / "scripts/toolkit.py"), *args], capture_output=True, text=True,
+                          timeout=300, cwd=ROOT)
+
+
+def test_ablation_command_modes(tmp_path):
+    assert "need --value" in run_cli("ablation", "--mode", "scale").stderr
+    assert "need --value" in run_cli("ablation", "--value", ".5").stderr
+    out = tmp_path / "ablation"
+    done = run_cli("ablation", "--mode", "activate", "--value", ".5", "--side", "left", "--type", "DNa03", "--type",
+                   "AOTU018,AOTU031", "--ms", "5", "--out", str(out))
+    assert done.returncode == 0, done.stderr
+    assert "| Cell type, clamped at rate 0.5 on the left |" in done.stdout and "| DNa03 |" in done.stdout
+    saved = json.loads(out.with_suffix(".json").read_text())
+    assert saved["mode"] == "activate" and saved["side"] == "left" and saved["value"] == .5
+    assert {r["cell_type"] for r in saved["rows"]} == {"DNa03", "AOTU018,AOTU031"} and not saved["errors"]
+    refused = run_cli("ablation", "--mode", "activate", "--value", "50", "--type", "DNa03", "--ms", "5")
+    assert refused.returncode == 1 and "from 0 to 1" in refused.stderr

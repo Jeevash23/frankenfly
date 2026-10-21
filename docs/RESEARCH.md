@@ -357,6 +357,10 @@ backend/.venv/bin/python scripts/toolkit.py trials --set neural_model=connectome
     --vary connectome_parameters.circuit=fafb783-dna02,fafb783-steering --workers 8
 backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
 backend/.venv/bin/python scripts/toolkit.py ablation --set circuit=fafb783-dna02 --workers 8 --top 20
+backend/.venv/bin/python scripts/toolkit.py ablation --side left --workers 8               # left neurons only
+backend/.venv/bin/python scripts/toolkit.py ablation --mode scale --value .5 --workers 8   # halve each type's output
+backend/.venv/bin/python scripts/toolkit.py ablation --mode activate --value 80 --side right \
+    --set dynamics=spiking --average-ms 200 --workers 8                                  # 80 Hz Poisson drive
 backend/.venv/bin/python scripts/toolkit.py paths --source LC10a --target DNa02
 backend/.venv/bin/python scripts/toolkit.py jump --set neural_model=connectome --set seed=3 --duration 60 --jump-seed 11
 backend/.venv/bin/python scripts/toolkit.py circuits
@@ -370,10 +374,11 @@ configs = toolkit.grid(base, seed=[1, 2, 3], stimulus=[toolkit.target(45, 12), t
 rows = toolkit.run_trials(configs, workers=4, duration_s=10)     # same results for any number of workers
 summary = toolkit.summarize(rows, ["output_gain"])               # intervals and paired differences
 toolkit.ablation_scan(toolkit.ConnectomeParameters(circuit="fafb783-steering"), left=.5, right=.5)
+toolkit.ablation_scan(toolkit.ConnectomeParameters(), mode="activate", value=.6, side="left")   # rate clamped at 0.6
 ```
 
 - **trials** runs closed-loop trials over target bearings, distances and seeds, with `--set` for fixed settings and `--vary` for grid axes (dotted names reach nested settings). It reports reaching, the first turn, final distance, the target's final bearing (about −90° while circling clockwise), net turn and speed. `seed` and the target position (`stimulus`, `stimulus.x`, `stimulus.y`) can come from `--set`/`--vary` instead of `--seeds`, `--bearings` and `--distances`, but not from both (the command stops and says which to drop); `stimulus.intensity` is kept for every target.
-- **bias** clamps the sensors and reports turn commands and the mirror test. **ablation** silences each cell type in turn; `--types A,B` or a repeated `--type` (for names with commas, such as `--type "AOTU018,AOTU031"`) limits the scan, and unknown names are refused before it starts. Both accept `--average-ms` to average spiking output.
+- **bias** clamps the sensors and reports turn commands and the mirror test. **ablation** silences each cell type in turn; `--types A,B` or a repeated `--type` (for names with commas, such as `--type "AOTU018,AOTU031"`) limits the scan, and unknown names are refused before it starts. `--mode scale --value S` multiplies each type's output by S (0–2) instead, and `--mode activate --value V` drives it: V Hz of Poisson input per neuron in spiking dynamics, a rate clamped at V (0–1) in rate dynamics (see [Interventions](#interventions)). `--side left` or `right` manipulates one side only and skips types with no neurons there (a named type without them is refused). For these modes the change is reported as a shift of the turn command (positive = rightward); the default scan's numbers are unchanged. A type whose run fails becomes a row with an `error` text, the rest of the scan goes on, and the command exits with an error after saving. Both accept `--average-ms` to average spiking output.
 - **paths** lists the strongest cell-type paths between two types. A step's strength is the share of the target type's input synapses that comes from the source type; a path multiplies its steps, and its sign multiplies the assumed signs. The same tracing is in the live circuit view.
 - **jump** records and exports a run whose target jumps to a random side every `--every` seconds (`toolkit.jumping_target_run`), for **compare**, which fits turning to readout activity in a recording or a run; see below.
 
