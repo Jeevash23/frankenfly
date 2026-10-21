@@ -33,7 +33,7 @@ Everything runs on your own computer, in your browser.</p>
 
 ## Quick start
 
-You need **Python 3.12**, **Node.js 22.12 or newer** (up to 26) with npm, and OpenGL for the 3D views. DigitalFly is tested on Apple-silicon macOS and on x86-64 Linux with EGL rendering.
+You need **Python 3.12**, **Node.js 22.12 or newer** (up to 26) with npm, and OpenGL for the 3D views. v0.5 was validated on x86-64 Linux with EGL and GLFW rendering, including the optional FlyVis install. Apple-silicon macOS was last validated at v0.2; later versions and the FlyVis install have not been run there. See [STATUS](STATUS.md#validation-summary).
 
 ```sh
 git clone https://github.com/Jeevash23/frankenfly.git
@@ -42,7 +42,7 @@ cd frankenfly
 ./scripts/start.sh --open
 ```
 
-Setup builds a local Python environment and installs pinned dependencies, which takes a few minutes the first time. The app opens paused at http://127.0.0.1:8000. Add `--vision` to start with compound-eye input. To stop it, click **Quit** in the app or press Ctrl+C in the terminal.
+Setup builds a local Python environment and installs pinned dependencies, which takes a few minutes the first time. The app opens paused at http://127.0.0.1:8000. Add `--vision` to start with rendered compound-eye input, read by an engineered green-object detector; FlyVis eyes are a separate, optional sensor you pick in the app (see [FlyVis eyes](docs/USAGE.md#flyvis-eyes)). To stop it, click **Quit** in the app or press Ctrl+C in the terminal.
 
 **No Python 3.12?** If [uv](https://docs.astral.sh/uv/) is installed, setup uses a uv-managed Python 3.12, installing one first if needed (about 30 MB). Otherwise install Python 3.12 from [python.org](https://www.python.org/downloads/) or with Homebrew (`brew install python@3.12`), then point setup at it:
 
@@ -71,6 +71,8 @@ All simulation runs in Python; the browser only displays it. Physics advances ev
 - [Architecture](docs/ARCHITECTURE.md): the closed loop, equations, timing and safety boundaries
 - [Dependencies](docs/DEPENDENCIES.md): pinned versions and how to reproduce validation
 - [Status](STATUS.md): what's implemented and how it was validated
+- [Changelog](CHANGELOG.md): what changed in each version
+- [Contributing](CONTRIBUTING.md), [security](SECURITY.md) and [how to cite](CITATION.cff)
 
 ## Development
 
@@ -81,7 +83,7 @@ All simulation runs in Python; the browser only displays it. Physics advances ev
 npm --prefix frontend run format   # format the frontend with Prettier
 ```
 
-GitHub Actions runs the fast checks and the frontend checks on Ubuntu for every pull request. To rebuild the connectome circuits or build your own from FlyWire data (about 61 MB of downloads plus a 50 MB build-only dependency, once), see the [research guide](docs/RESEARCH.md#building-your-own-circuits). The research toolkit is `scripts/toolkit.py` ([examples](docs/RESEARCH.md#the-research-toolkit)).
+The physics tests need an OpenGL context: EGL or OSMesa, or on a headless machine `xvfb-run -a env MUJOCO_GL=glfw ./scripts/check.sh` ([details](CONTRIBUTING.md#running-the-tests)). GitHub Actions runs the fast checks and the frontend checks on Ubuntu for every pull request. To rebuild the connectome circuits or build your own from FlyWire data (about 61 MB of downloads plus a 50 MB build-only dependency, once), see the [research guide](docs/RESEARCH.md#building-your-own-circuits). The research toolkit is `scripts/toolkit.py` ([examples](docs/RESEARCH.md#the-research-toolkit)).
 
 The backend is FastAPI with FlyGym and MuJoCo (`backend/`); the interface is React with Vite (`frontend/`). Restart `dev.sh` after Python changes. To regenerate the demo animation above, run `backend/.venv/bin/python scripts/make_demo_gif.py`.
 
@@ -91,6 +93,6 @@ DigitalFly does not simulate the nerve cord, flight, learning, courtship or a ma
 
 ## License and credits
 
-Code and documentation are licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE). The scientific data in `data/atlas/` and `data/circuits/` is **not** covered by that license and keeps its original licenses, including CC BY-NC 4.0 (non-commercial) for all FlyWire-derived data, the connectome circuit included. See [data/atlas/LICENSE.md](data/atlas/LICENSE.md) and [data/circuits/LICENSE.md](data/circuits/LICENSE.md).
+Code and documentation are licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE). The scientific data in `data/atlas/` and `data/circuits/`, like the recordings listed in `data/recordings/`, is **not** covered by that license and keeps its original licenses, including CC BY-NC 4.0 (non-commercial) for all FlyWire-derived data: the connectome circuits, their FlyVis bridges and the female neuron skeletons. See [data/atlas/LICENSE.md](data/atlas/LICENSE.md), [data/circuits/LICENSE.md](data/circuits/LICENSE.md) and [data/recordings/LICENSE.md](data/recordings/LICENSE.md).
 
-Built on [FlyGym / NeuroMechFly](https://github.com/NeLy-EPFL/flygym) (Apache-2.0) and [MuJoCo](https://github.com/google-deepmind/mujoco). Anatomy comes from [FlyWire](https://flywire.ai/), [MaleCNS](https://male-cns.janelia.org/) and [navis-flybrains](https://github.com/navis-org/navis-flybrains). The connectome circuit comes from FlyWire v783 through the [Bates/Lee lab compilation](https://github.com/sjcabs/fly_connectome_data_tutorial) and the data of [Shiu et al. 2024](https://github.com/philshiu/Drosophila_brain_model). Details are in [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md).
+Built on [FlyGym / NeuroMechFly](https://github.com/NeLy-EPFL/flygym) (Apache-2.0) and [MuJoCo](https://github.com/google-deepmind/mujoco). Anatomy comes from [FlyWire](https://flywire.ai/), [MaleCNS](https://male-cns.janelia.org/) and [navis-flybrains](https://github.com/navis-org/navis-flybrains). The connectome circuit comes from FlyWire v783 through the [Bates/Lee lab compilation](https://github.com/sjcabs/fly_connectome_data_tutorial) and the data of [Shiu et al. 2024](https://github.com/philshiu/Drosophila_brain_model). The optional FlyVis eyes use [FlyVis](https://github.com/TuragaLab/flyvis) (Lappalainen et al. 2024, MIT), and the recorded fly comes from [Rayshubskiy et al. 2025](https://doi.org/10.7554/eLife.102230) (CC0). Details are in [docs/ATTRIBUTION.md](docs/ATTRIBUTION.md).
