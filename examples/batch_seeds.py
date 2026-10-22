@@ -34,22 +34,24 @@ def main():
                            stimulus=[toolkit.target(45, 12), toolkit.target(-45, 12)],
                            **{"connectome_parameters.dynamics": ["rate", "spiking"]})
     log = toolkit.TrialLog(args.out, resume=args.resume)  # every finished trial goes to .jsonl and .csv at once
-    todo = [c for c in configs if toolkit.config_hash(c, duration_s=args.duration) not in log.saved]
+    hashes = [toolkit.config_hash(c, duration_s=args.duration) for c in configs]
+    todo = [c for c, h in zip(configs, hashes) if h not in log.saved]
     print(f"Running {len(todo)} of {len(configs)} trials; rows go to {log.jsonl}", flush=True)
     toolkit.run_trials(todo, workers=args.workers, on_result=lambda index, row: log.add(row), duration_s=args.duration)
-    summary = toolkit.summarize(log.rows, ["dynamics"])
+    rows = log.rows_for(hashes)  # this batch only: the log can also hold earlier batches' seeds and durations
+    summary = toolkit.summarize(rows, ["dynamics"])
     print("\n| Dynamics | Trials | Reached ≤2 mm (95% CI) | First turn toward (95% CI) | Final distance, mean (95% CI) "
           "| Motor clipped |\n| --- | --- | --- | --- | --- | --- |")
     for c in summary["conditions"]:
         dynamics = c["condition"]["dynamics"]
         final = c["final_distance_mm"]
-        clipped = [r["motor_clipped_fraction"] for r in log.rows if r.get("dynamics") == dynamics and not r["error"]]
+        clipped = [r["motor_clipped_fraction"] for r in rows if r.get("dynamics") == dynamics and not r["error"]]
         ci = "n/a" if final["ci95"] is None else f"{final['ci95'][0]:.1f} to {final['ci95'][1]:.1f}"
         print(f"| {dynamics} | {c['trials']} | {c['reached']}/{c['trials'] - c['errors']} ({percent(c['reached_ci95'])}) | "
               f"{c['first_turn_toward']}/{c['lateral_trials']} ({percent(c['first_turn_toward_ci95'])}) | "
               + (f"{final['mean']:.1f} mm ({ci})" if final["mean"] is not None else "—")
               + f" | {sum(clipped) / max(len(clipped), 1):.0%} of steps |")
-    errors = [r for r in log.rows if r["error"]]
+    errors = [r for r in rows if r["error"]]
     if errors:
         sys.exit(f"{len(errors)} trials failed (see the error column); rerun with --resume to retry them.")
 

@@ -13,6 +13,6 @@ backend/.venv/bin/python examples/batch_seeds.py --seeds 1-10 --workers 4
 backend/.venv/bin/python examples/batch_seeds.py --seeds 1-10 --workers 4 --resume  # runs only what is missing
 ```
 
-`drive_app.py` changes the app's one experiment, so the browser shows it while it runs. `batch_seeds.py` writes `runs/toolkit/batch-seeds.jsonl` and `.csv` (ignored by git; `--out` chooses another stem). Run it as a script: its parallel workers are new processes that import the file, which an interactive prompt cannot provide.
+`drive_app.py` changes the app's one experiment, so the browser shows it while it runs. `batch_seeds.py` writes `runs/toolkit/batch-seeds.jsonl` and `.csv` (ignored by git; `--out` chooses another stem) and summarizes this batch's trials only, even when the log holds earlier ones. Run it as a script: its parallel workers are new processes that import the file, which an interactive prompt cannot provide.
 
 See [Scripting the app from Python](../docs/USAGE.md#scripting-the-app-from-python) for the client and [the research toolkit](../docs/RESEARCH.md#the-research-toolkit) for the toolkit, its command-line version (`scripts/toolkit.py`) and its statistics. Both scripts are run by the test suite (`backend/tests/test_client.py`), so they stay in step with the code.

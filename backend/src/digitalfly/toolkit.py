@@ -13,14 +13,16 @@ Every run is built from a validated RunConfig, so a result is reproduced by its 
 seed. The model's labels still apply: wiring data-derived, signs assumed, dynamics and the sensor
 and motor mappings engineered. Results describe this simulation, not flies.
 
-A trial that raises becomes a row with an `error` text instead of ending the sweep; `TrialLog` saves rows
-as they finish and finds the ones a resumed sweep can skip. Trials keep no per-sample recording, so they
-have no length limit. `summarize`
+A trial that raises becomes a row with an `error` text instead of ending the sweep, and the trials a dying worker
+process takes down run again on their own; `TrialLog` saves rows as they finish and finds the ones a resumed sweep
+can skip. Trials keep no per-sample recording, so they have no length limit. `summarize`
 adds 95% intervals: Wilson score intervals for fractions, percentile bootstrap intervals for means
 (2,000 resamples from a fixed seed, so a report repeats) and paired differences between conditions
 over trials with the same seed and target.
 """
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 import csv
 import hashlib
@@ -46,6 +48,7 @@ TURN_DEG = 10.0  # a turn counts once the heading has changed this much from the
 THREAD_VARIABLES = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")
 BOOTSTRAP = {"resamples": 2000, "seed": 0, "level": .95}
 PACKAGES = ["flygym", "mujoco", "numpy", "scipy", "numba", "pydantic", "torch", "flyvis"]
+ENDINGS = (".csv", ".json", ".jsonl")  # what an output stem may end with; other dots belong to the name
 
 
 def wrap(angle: float) -> float:
@@ -64,12 +67,20 @@ def configure(base: RunConfig | dict | None = None, **settings) -> RunConfig:
     for example configure(engine="toy", **{"connectome_parameters.dynamics": "spiking"})."""
     data = base.model_dump() if isinstance(base, RunConfig) else dict(base or {})
     for key, value in settings.items():
-        node = data
-        *parents, last = key.split(".")
-        for part in parents:
-            node = node.setdefault(part, {})
-        node[last] = value.model_dump() if hasattr(value, "model_dump") else value
+        set_setting(data, key, value.model_dump() if hasattr(value, "model_dump") else value)
     return RunConfig.model_validate(data)
+
+
+def set_setting(data: dict, key: str, value):
+    """Set a dotted name in nested settings; a group that is unset (None, such as readout_weights) starts empty."""
+    *parents, last = key.split(".")
+    for part in parents:
+        if data.get(part) is None:
+            data[part] = {}
+        data = data[part]
+        if not isinstance(data, dict):
+            raise ValueError(f"Cannot set {key}: {part} is a single setting, not a group.")
+    data[last] = value
 
 
 def grid(base: RunConfig | dict | None = None, **axes) -> list[RunConfig]:
@@ -119,32 +130,40 @@ def config_hash(config: RunConfig | dict, **kwargs) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
+def _git(*args):
+    try:
+        done = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def code_version() -> dict:
+    """digitalfly's version, the git commit and whether the tracked files had changes (None outside git)."""
+    from digitalfly import __version__
+    commit, status = _git("rev-parse", "HEAD"), _git("status", "--porcelain", "--untracked-files=no")
+    return {"digitalfly": __version__, "git_commit": commit, "git_dirty": None if status is None else bool(status)}
+
+
 def provenance(circuits=(), command: list[str] | None = None) -> dict:
     """What produced a report: the code's git commit (and whether the tree had changes), the command line,
     each circuit's name and SHA-256, and the versions of the packages that shape the numbers."""
     from importlib.metadata import PackageNotFoundError, version
     from digitalfly import __version__
-
-    def git(*args):
-        try:
-            done = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True, timeout=10)
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return done.stdout.strip() if done.returncode == 0 else None
     packages = {"digitalfly": __version__}
     for name in PACKAGES:
         try:
             packages[name] = version(name)
         except PackageNotFoundError:
             pass
-    commit, status = git("rev-parse", "HEAD"), git("status", "--porcelain", "--untracked-files=no")
+    code = code_version()
     named = []
     for name in dict.fromkeys(circuits):
         try:
             named.append({"name": name, "sha256": circuit_sha256(name)})
         except (OSError, ValueError) as exc:
             named.append({"name": name, "sha256": None, "error": str(exc)})
-    return {"git_commit": commit, "git_dirty": None if status is None else bool(status),
+    return {"git_commit": code["git_commit"], "git_dirty": code["git_dirty"],
             "command": list(sys.argv if command is None else command), "circuits": named,
             "python": platform.python_version(), "platform": platform.platform(), "packages": packages}
 
@@ -309,13 +328,65 @@ def _pool(workers: int) -> ProcessPoolExecutor:
     return ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("spawn"))
 
 
+def _log(message):
+    print(message, file=sys.stderr, flush=True)
+
+
+WORKER_DIED = ("BrokenProcessPool: its worker process died while running it, and again when it ran on its own "
+               "(killed, or out of memory?)")
+
+
+def _parallel(function, tasks, workers: int, finished, failed):
+    """Run function(task) -> (index, result) for every task (index first) in `workers` spawned processes, calling
+    finished(index, result) as each ends. A process holds one task at a time, so when one dies (killed, out of
+    memory) and takes the pool down, the tasks that were running are known: each runs again on its own in a fresh
+    process, the rest go on in a new pool, and only a task whose process dies again ends as failed(task, error
+    text). A task whose process raises anything else ends as failed(task, error text) at once."""
+    waiting, retry = deque(tasks), deque()
+    while waiting or retry:
+        alone = bool(retry)
+        queue, size = (retry, 1) if alone else (waiting, workers)
+        pool, running, broken = _pool(size), {}, False
+        try:
+            while running or (queue and not broken):
+                while queue and not broken and len(running) < size:
+                    task = queue.popleft()
+                    try:
+                        running[pool.submit(function, task)] = task
+                    except BrokenProcessPool:
+                        queue.appendleft(task)
+                        broken = True
+                done, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in done:
+                    task = running.pop(future)
+                    try:
+                        result = future.result()
+                    except BrokenProcessPool:
+                        broken = True
+                        if not alone:
+                            retry.append(task)
+                            continue
+                        result = task[0], failed(task, WORKER_DIED)
+                    except Exception as exc:
+                        result = task[0], failed(task, f"{type(exc).__name__}: {exc}")
+                    finished(*result)
+            if broken and not alone:
+                _log("A worker process died (killed, or out of memory?); " + (
+                    f"rerunning the {len(retry)} task{'s' * (len(retry) > 1)} it took down, one at a time." if retry
+                    else "carrying on in a new pool."))
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+
+
 def run_trials(configs: list[RunConfig | dict], workers: int = 1, on_result=None, **kwargs) -> list[dict]:
     """Many trials; the list follows the order of `configs`. With workers > 1 they run in separate processes;
     every trial starts from its own reset, so the results do not depend on the number of workers.
 
     A trial that raises gives a row with its settings, `config` and an `error` text (None on success) and
-    the rest still run. `on_result(index, row)` is called as each trial finishes, in completion order, so
-    callers can save results while a sweep runs. Every row carries `config_hash` (see `config_hash`)."""
+    the rest still run. A worker process that dies (killed, out of memory) costs no trials: the ones it took down
+    run again, each on its own, and only a trial whose process dies again becomes an error row. `on_result(index,
+    row)` is called as each trial finishes, in completion order, so callers can save results while a sweep runs.
+    Every row carries `config_hash` (see `config_hash`)."""
     tasks = [(k, (c if isinstance(c, RunConfig) else RunConfig.model_validate(c)).model_dump(mode="json"), kwargs)
              for k, c in enumerate(configs)]
     rows = [None] * len(tasks)
@@ -334,18 +405,7 @@ def run_trials(configs: list[RunConfig | dict], workers: int = 1, on_result=None
             _experiments.clear()
         return rows
     with thread_limit(workers):
-        pool = _pool(workers)
-        try:
-            futures = {pool.submit(_run_in_worker, task): task for task in tasks}
-            for future in as_completed(futures):
-                try:
-                    index, row = future.result()
-                except Exception as exc:  # the worker process itself died (killed, out of memory)
-                    index, data, _ = futures[future]
-                    row = _error_row(data, kwargs, f"{type(exc).__name__}: {exc}")
-                finished(index, row)
-        finally:
-            pool.shutdown(wait=True, cancel_futures=True)
+        _parallel(_run_in_worker, tasks, workers, finished, lambda task, error: _error_row(task[1], kwargs, error))
     return rows
 
 
@@ -360,20 +420,57 @@ def write_csv(path, rows) -> list[str]:
     return fields
 
 
+def with_ending(stem, ending: str) -> Path:
+    """`stem` + `ending`, replacing only a .csv, .json or .jsonl ending: other dots belong to the name, so gain-1.5
+    gives gain-1.5.json (Path.with_suffix would give gain-1.json)."""
+    stem = Path(stem)
+    stem = stem.with_suffix("") if stem.suffix in ENDINGS else stem
+    return stem.with_name(stem.name + ending)
+
+
+def _describe_code(code: dict | None) -> str:
+    if not code:
+        return "not recorded"
+    return (f"digitalfly {code.get('digitalfly')}" + (f" at commit {code['git_commit'][:8]}" if code.get("git_commit") else "")
+            + (" with uncommitted changes" if code.get("git_dirty") else ""))
+
+
 class TrialLog:
     """Trial rows appended to <stem>.jsonl and <stem>.csv as they finish (pass `add` to run_trials' on_result), so
-    a failing or interrupted sweep keeps every finished trial. With resume, rows already in the JSONL without an
-    error are kept in `saved` by config hash, for the caller to skip; without it both files start empty."""
+    a failing or interrupted sweep keeps every finished trial. The folder is made if needed; a .csv, .json or .jsonl
+    ending of `stem` is dropped. With resume, rows already in the JSONL without an error are kept in `saved` by
+    config hash, for the caller to skip; without it both files start empty. A line cut short by an interrupted write
+    is skipped. Each JSONL line also records the code that computed it (`code`: digitalfly's version, the git commit
+    and whether the tracked files had changes), and resuming reports, through `log`, saved rows from other code: the
+    config hash covers the settings and the circuit, not the code, so those rows are reused all the same."""
 
-    def __init__(self, stem, resume=False):
-        stem = Path(stem)
-        self.jsonl, self.csv = stem.with_suffix(".jsonl"), stem.with_suffix(".csv")
+    def __init__(self, stem, resume=False, log=_log):
+        self.jsonl, self.csv = with_ending(stem, ".jsonl"), with_ending(stem, ".csv")
+        self.jsonl.parent.mkdir(parents=True, exist_ok=True)
+        self.code = code_version()
         self.saved, self.rows, self.fields = {}, [], []
         if resume and self.jsonl.is_file():
-            for line in self.jsonl.read_text().splitlines():
-                row = json.loads(line) if line.strip() else {}
+            text, torn, codes = self.jsonl.read_text(), 0, {}
+            for line in filter(str.strip, text.splitlines()):
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    torn += 1
+                    continue
+                code = row.pop("code", None)
                 if row.get("config_hash") and not row.get("error"):
                     self.saved[row["config_hash"]] = row
+                    codes[row["config_hash"]] = code
+            if text and not text.endswith("\n"):  # rows added from now on start on a line of their own
+                with self.jsonl.open("a") as handle:
+                    handle.write("\n")
+            other = [code for code in codes.values() if code != self.code]
+            if torn and log:
+                log(f"Skipped {torn} unreadable line{'s' * (torn > 1)} in {self.jsonl} (an interrupted write?).")
+            if other and log:
+                log(f"{len(other)} of {len(codes)} saved rows were computed by other code "
+                    f"({'; '.join(dict.fromkeys(map(_describe_code, other)))}) and are reused because their settings "
+                    f"match; this is {_describe_code(self.code)}. Run without --resume (resume=False) to compute them again.")
         elif not resume:
             self.jsonl.unlink(missing_ok=True)
         self.rows = list(self.saved.values())
@@ -384,7 +481,7 @@ class TrialLog:
 
     def add(self, row):
         with self.jsonl.open("a") as handle:
-            handle.write(json.dumps(row, default=str) + "\n")
+            handle.write(json.dumps({**row, "code": self.code}, default=str) + "\n")
         self.rows.append(row)
         flat = {k: v for k, v in row.items() if not isinstance(v, (list, dict))}
         if not self.fields or set(flat) - set(self.fields):  # a new column: rewrite with the wider header
@@ -392,6 +489,12 @@ class TrialLog:
             return
         with self.csv.open("a", newline="") as handle:
             csv.DictWriter(handle, fieldnames=self.fields).writerow(flat)
+
+    def rows_for(self, hashes) -> list[dict]:
+        """The latest row, saved or added, for each config hash in `hashes`, in their order (hashes without a row are
+        left out): the rows of one sweep, when the log also holds other seeds, durations or settings."""
+        latest = {row.get("config_hash"): row for row in self.rows}
+        return [latest[h] for h in hashes if h in latest]
 
 
 def hold(parameters: ConnectomeParameters, left: float, right: float, ms: int = 500,
@@ -455,19 +558,25 @@ def ablation_scan(parameters: ConnectomeParameters, left: float = .5, right: flo
     output by `value` (0–2) and "activate" drives them at `value` (Hz in spiking dynamics, a clamped rate of 0–1
     in rate dynamics); `side` "left" or "right" manipulates one side only, and skips types with no neurons there.
     With equal input on both sides, silencing finds the types that create a side bias: a positive change means
-    the type was pushing the fly to the left. A type whose run fails gets a row with an `error` text."""
+    the type was pushing the fly to the left. A type whose run fails gets a row with an `error` text. The readout
+    types are never scanned, and naming one in `cell_types` is refused."""
     if mode not in ("silence", "scale", "activate") or side not in ("both", "left", "right"):
         raise ValueError("Choose mode silence, scale or activate and side both, left or right.")
-    Interventions(cell_types=[CellTypeIntervention(name="probe", side=side, mode=mode, value=value)]).for_dynamics(
-        parameters.dynamics)  # a value the mode or dynamics cannot take fails here, before the scan
+    # A value the mode or dynamics cannot take fails before the scan, naming the types it would manipulate.
+    check = CellTypeIntervention(name="probe", side=side, mode=mode, value=value)
+    named = [check.model_copy(update={"name": n}) for n in cell_types or ["every cell type"]]
+    Interventions.model_construct(cell_types=named).for_dynamics(parameters.dynamics)
     data = load_circuit(parameters.circuit)
     unknown = [n for n in cell_types or [] if n not in data.type_members]
     if unknown:
         raise ValueError(f"Not a cell type in the {data.key} circuit: {', '.join(unknown)}.")
+    readout = set(parameters.readout_types or data.defaults["readout_types"])
+    if readout & set(cell_types or []):
+        raise ValueError("Readout types are not scanned, since the turn is read from them: "
+                         f"{', '.join(n for n in cell_types if n in readout)}.")
     absent = [n for n in cell_types or [] if side != "both" and not len(data.members(n, side))]
     if absent:
         raise ValueError(f"No {side} neurons in the {data.key} circuit: {', '.join(absent)}.")
-    readout = set(parameters.readout_types or data.defaults["readout_types"])
     names = [n for n in (cell_types or data.type_names) if n not in readout]
     skipped = [n for n in names if side != "both" and not len(data.members(n, side))]
     names = [n for n in names if n not in skipped]
