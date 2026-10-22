@@ -1,5 +1,11 @@
 import {Play} from 'lucide-react';
-import type {Condition, CustomCondition, Dynamics, NeuralModel} from '../types';
+import type {
+  Condition,
+  ConnectomeParameters,
+  CustomCondition,
+  Dynamics,
+  NeuralModel,
+} from '../types';
 import {conditionNames, MAX_BUILT_IN, MAX_CONDITIONS, modelPhrases} from '../models';
 import type {CircuitSummary} from '../connectome/layout';
 import {CustomConditions} from './CustomConditions';
@@ -29,7 +35,7 @@ export function ComparisonBuilder({
 }: {
   model: NeuralModel;
   dynamics: Dynamics;
-  parameters: Partial<Record<string, unknown>> | undefined;
+  parameters: ConnectomeParameters | undefined;
   circuit: CircuitSummary | null;
   available: Condition[];
   seeds: string;

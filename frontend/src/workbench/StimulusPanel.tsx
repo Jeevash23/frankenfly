@@ -5,6 +5,7 @@ import {fmt} from '../format';
 import {throttled} from '../draft';
 import {useEffect, useRef, useState} from 'react';
 import {useCircuitList} from '../connectome/useCircuit';
+import {sideBalanced} from '../connectome/build';
 
 type FlyVisStatus = {
   available: boolean;
@@ -68,6 +69,7 @@ function CircuitSelect({
                 {c.name}
                 {c.neurons ? ` · ${c.neurons.toLocaleString()} neurons` : ''}
                 {c.committed === false ? ' · local' : ''}
+                {sideBalanced(c) ? ' · left/right balanced' : ''}
               </option>
             ))}
           </select>

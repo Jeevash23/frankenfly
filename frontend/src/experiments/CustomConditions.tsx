@@ -1,5 +1,11 @@
 import {ChevronDown, Plus, Trash2} from 'lucide-react';
-import type {CustomCondition, Dynamics, Intervention, NeuralModel} from '../types';
+import type {
+  ConnectomeParameters,
+  CustomCondition,
+  Dynamics,
+  Intervention,
+  NeuralModel,
+} from '../types';
 import {noInterventions} from '../models';
 import {CUSTOM_PARAMETERS, LABEL_LIMIT, customSummary, newCustomCondition} from '../comparison';
 import {withCellType, withoutManipulation} from '../interventions';
@@ -23,7 +29,7 @@ export function CustomConditions({
   model: NeuralModel;
   dynamics: Dynamics;
   // The configuration's values, shown for parameters a condition leaves unchanged.
-  parameters: Partial<Record<string, unknown>> | undefined;
+  parameters: ConnectomeParameters | undefined;
   circuit: CircuitSummary | null;
   disabled: boolean;
   canAdd: boolean;

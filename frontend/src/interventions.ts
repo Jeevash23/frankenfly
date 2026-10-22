@@ -146,10 +146,11 @@ export function valueRange(
   dynamics: Dynamics,
 ): {min: number; max: number; step: number; initial: number; unit: string} | null {
   if (mode === 'scale') return {min: 0, max: 2, step: 0.05, initial: 0.5, unit: '×'};
+  // Activation needs a value above 0 (the server refuses 0); silencing holds a type at rest.
   if (mode === 'activate')
     return dynamics === 'spiking'
-      ? {min: 0, max: 500, step: 5, initial: 80, unit: 'Hz'}
-      : {min: 0, max: 1, step: 0.05, initial: 0.6, unit: 'rate'};
+      ? {min: 1, max: 500, step: 1, initial: 80, unit: 'Hz'}
+      : {min: 0.01, max: 1, step: 0.01, initial: 0.6, unit: 'rate'};
   return null;
 }
 
@@ -161,12 +162,14 @@ export function valueProblem(
 ): string | null {
   const range = valueRange(mode, dynamics);
   if (!range) return null;
-  if (!Number.isFinite(value) || value < range.min || value > range.max)
+  // Any activation above 0 is valid; the range's minimum is where the controls start.
+  const low = mode === 'activate' ? !(value > 0) : value < range.min;
+  if (!Number.isFinite(value) || low || value > range.max)
     return mode === 'scale'
       ? 'Scaling multiplies the output by 0 to 2.'
       : dynamics === 'spiking'
-        ? 'Activation with spiking dynamics takes 0 to 500 Hz.'
-        : 'Activation with rate dynamics clamps the rate to 0 to 1.';
+        ? 'Activation with spiking dynamics takes Poisson input above 0, up to 500 Hz. To hold a cell type at rest, silence it.'
+        : 'Activation with rate dynamics clamps the rate above 0, up to 1. To hold a cell type at rest, silence it.';
   return null;
 }
 

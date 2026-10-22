@@ -59,7 +59,11 @@ test('drafts round-trip under versioned keys and survive blocked storage', () =>
   assert.match(DRAFT_KEYS.experiments, /\.v\d+$/);
   saveDraft(DRAFT_KEYS.experiments, draft, store);
   const back = loadDraft(DRAFT_KEYS.experiments, readExperimentsDraft, store);
-  assert.deepEqual(back.protocol, draft.protocol);
+  // Events come back as the server writes them, with interventions: null.
+  assert.deepEqual(back.protocol, {
+    ...draft.protocol,
+    events: [{step: 50, stimulus: {x: 1, y: 2, intensity: 1}, interventions: null}],
+  });
   assert.equal(back.seeds, '1, 2');
   assert.deepEqual(back.conditions, ['control', 'dna02_both_off']);
   assert.equal(back.maxSpeed, true);
@@ -112,9 +116,20 @@ test('build and connectivity drafts', () => {
     seedDraft: 'DNa',
   };
   assert.deepEqual(readBuildDraft(build), {
-    request: {name: 'lc10', seeds: ['LC10'], hops: 2, threshold: 5, cap: 3000, whole_brain: false},
+    request: {
+      name: 'lc10',
+      seeds: ['LC10'],
+      hops: 2,
+      threshold: 5,
+      cap: 3000,
+      whole_brain: false,
+      balance_sides: false,
+    },
     seedDraft: 'DNa',
   });
+  // Drafts from before v0.6 have no balance_sides; a saved true is kept.
+  const balanced = {...build, request: {...build.request, whole_brain: false, balance_sides: true}};
+  assert.equal(readBuildDraft(balanced).request.balance_sides, true);
   assert.equal(readBuildDraft({request: {name: 'x'}}), null);
   assert.deepEqual(readConnectivityDraft({key: 'abc', threshold: 0, search: 'DN'}), {
     key: 'abc',

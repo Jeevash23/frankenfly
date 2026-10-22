@@ -1,15 +1,10 @@
 // Pure helpers for the circuit builder form. The server validates again.
+import type {BuildRequest as BuildRequestInput} from '../api.gen';
 
 export const CIRCUIT_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
-export type BuildRequest = {
-  name: string;
-  seeds: string[];
-  hops: number;
-  threshold: number;
-  cap: number;
-  whole_brain: boolean;
-};
+// The form's request: every field of POST /api/connectome/build, defaults filled in.
+export type BuildRequest = Required<BuildRequestInput>;
 
 export const defaultBuild: BuildRequest = {
   name: '',
@@ -18,7 +13,16 @@ export const defaultBuild: BuildRequest = {
   threshold: 5,
   cap: 3000,
   whole_brain: false,
+  balance_sides: false,
 };
+
+// What "Balance left and right" does, in one line.
+export const BALANCE_NOTE =
+  'The cap keeps equal left and right counts per cell type where the data allow. It is a sampling assumption, not a correction.';
+
+// Whether a listed circuit was built with the cap applied per cell type and side.
+export const sideBalanced = (info: {build?: {balance_sides?: boolean}} | undefined) =>
+  info?.build?.balance_sides === true;
 
 // Plain-language problems with a build request, or null when it can be sent.
 export function buildProblem(
@@ -43,6 +47,8 @@ export function buildProblem(
     return 'Choose a synapse threshold of 1 to 1000.';
   if (!Number.isInteger(request.cap) || request.cap < 10 || request.cap > 200000)
     return 'Choose a cap of 10 to 200,000 neurons.';
+  if (request.balance_sides && request.whole_brain)
+    return 'Balancing left and right applies the cap per cell type and side; a whole-brain build has no cap. Choose one.';
   return null;
 }
 

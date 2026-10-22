@@ -12,7 +12,13 @@ import {
   topPartners,
   VIEW,
 } from '../src/connectome/layout.ts';
-import {buildProblem, defaultBuild, parseTypes, suggestTypes} from '../src/connectome/build.ts';
+import {
+  buildProblem,
+  defaultBuild,
+  parseTypes,
+  sideBalanced,
+  suggestTypes,
+} from '../src/connectome/build.ts';
 
 const type = (index, name, layer, left, right, count = left + right) => ({
   index,
@@ -89,6 +95,17 @@ test('the builder form explains problems in plain words', () => {
   assert.match(buildProblem({...ok, hops: 0}, [], known), /1 to 6 hops/);
   assert.match(buildProblem({...ok, cap: 5}, [], known), /10 to 200,000/);
   assert.equal(buildProblem({...ok, seeds: ['anything']}, [], null), null); // catalog not loaded
+  // Side balance is sent as balance_sides; it needs the cap a whole-brain build does not have.
+  assert.equal(defaultBuild.balance_sides, false);
+  assert.equal(buildProblem({...ok, balance_sides: true}, [], known), null);
+  assert.match(buildProblem({...ok, balance_sides: true, whole_brain: true}, [], known), /no cap/);
+});
+
+test('circuits built with balanced sides are recognised from the circuit list', () => {
+  assert.equal(sideBalanced({name: 'a', build: {balance_sides: true}}), true);
+  assert.equal(sideBalanced({name: 'b', build: {balance_sides: false}}), false);
+  assert.equal(sideBalanced({name: 'c'}), false); // servers before v0.6
+  assert.equal(sideBalanced(undefined), false);
 });
 
 test('seed suggestions rank prefix matches first and population lists split on semicolons', () => {

@@ -1,7 +1,15 @@
 import {ArrowRight, ChevronDown, FlaskConical, Plus, Trash2} from 'lucide-react';
 import type {Protocol} from '../types';
 import {fmt} from '../format';
-import {edited, freeStep, preset, presets, scheduleProblem, withDuration} from '../protocol';
+import {
+  edited,
+  freeStep,
+  preset,
+  presets,
+  scheduleProblem,
+  stimulusChange,
+  withDuration,
+} from '../protocol';
 
 // The stimulus protocol: a preset or custom sequence of timed target changes, loaded into the
 // Workbench as a fresh run or used by every trial of a comparison.
@@ -180,7 +188,7 @@ export function ProtocolEditor({
           disabled={disabled || protocol.events.length >= 8}
           onClick={() =>
             setProtocol((p) =>
-              edited(p, [...p.events, {step: freeStep(p), stimulus: {x: 12, y: -8, intensity: 1}}]),
+              edited(p, [...p.events, stimulusChange(freeStep(p), {x: 12, y: -8, intensity: 1})]),
             )
           }
         >

@@ -38,6 +38,7 @@ Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL renderi
 | Vite / React plugin | 7.3.7 / 5.2.0 |
 | TypeScript | 5.9.3 |
 | Prettier (formatting) | 3.9.10 |
+| Playwright test runner (`@playwright/test`, end-to-end tests only) | 1.56.1, with its Chromium 141 (browser revision 1194): install it once with `cd frontend && npx playwright install chromium`, then `npm --prefix frontend run build` and `npm --prefix frontend run e2e` |
 
 v0.4 adds no dependencies: spiking dynamics, the general circuit builder, the research toolkit and the fly comparison use NumPy and SciPy, which were already installed. Only `scripts/build_circuit.py prepare` (and the default rebuild of the DNa02 circuit) needs pyarrow from the build-only data lock; `build` reads the prepared NumPy archive.
 
@@ -99,6 +100,7 @@ A weekly workflow (`.github/workflows/links.yml`, which can also be started by h
 | Backend tests | Python 3.12, 3.13 and 3.14: the tools and runtime locks with `--require-hashes`, `pip check`, then every test except the FlyGym physics tests |
 | Frontend checks | Node 24 and Node 22.12.0 (the lower bound): format check, typecheck, unit tests and build |
 | FlyGym physics tests | Python 3.12 under Xvfb with Mesa and `MUJOCO_GL=glfw`, including the bitwise check of the fast controller path |
+| End-to-end tests | Python 3.12 (hashed locks) and Node 24: Playwright's Chromium, the frontend build, then `npm --prefix frontend run e2e` in headless Chromium against `./scripts/start.sh --toy`; the Playwright report is uploaded when it fails |
 | Dependency audit | pip-audit over the four locks and `npm audit --audit-level=high` |
 
 CI installs neither the vision nor the data lock, and has no prepared FlyWire archive or recording, so the FlyVis, circuit-rebuild and recorded-fly tests skip there. Run `./scripts/check.sh` locally with those installed before changing that code.

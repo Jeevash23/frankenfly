@@ -1,6 +1,13 @@
-import type {Protocol, ProtocolEvent} from './types';
+import type {Protocol, ProtocolEvent, Stimulus} from './types';
 
 export const presets = ['Target reversal', 'Steady target', 'Stimulus pulse'];
+
+// A timed target change, as the server echoes it (interventions: null).
+export const stimulusChange = (step: number, stimulus: Stimulus): ProtocolEvent => ({
+  step,
+  stimulus,
+  interventions: null,
+});
 
 export function preset(name: string, seconds: number): Protocol {
   const steps = Math.round(seconds * 100),
@@ -11,11 +18,11 @@ export function preset(name: string, seconds: number): Protocol {
     duration_steps: steps,
     events:
       name === 'Target reversal'
-        ? [{step: half, stimulus: {...stimulus, y: -8}}]
+        ? [stimulusChange(half, {...stimulus, y: -8})]
         : name === 'Stimulus pulse'
           ? [
-              {step: Math.floor(steps / 3), stimulus: {...stimulus, intensity: 0}},
-              {step: Math.floor((steps * 2) / 3), stimulus},
+              stimulusChange(Math.floor(steps / 3), {...stimulus, intensity: 0}),
+              stimulusChange(Math.floor((steps * 2) / 3), stimulus),
             ]
           : [],
   };

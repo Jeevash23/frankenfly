@@ -55,3 +55,56 @@ export function targetFromPoint(
       ) / 10,
   };
 }
+
+// "Nice" axis ticks, 1, 2 or 5 × 10^k apart, from at or below `low` to at or above `high`.
+export function niceTicks(low: number, high: number, count = 4): number[] {
+  if (!(high > low)) return [low];
+  const raw = (high - low) / count;
+  const power = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map((m) => m * power).find((s) => s >= raw * (1 - 1e-9)) ?? raw;
+  const first = Math.floor(low / step + 1e-9),
+    last = Math.ceil(high / step - 1e-9);
+  const digits = Math.max(0, -Math.floor(Math.log10(step)));
+  return Array.from({length: last - first + 1}, (_, i) =>
+    Number(((first + i) * step).toFixed(digits)),
+  );
+}
+
+// A dot-and-interval chart on one horizontal axis from `left` to `right` (SVG units): each row's
+// estimate and 95% interval. The axis always includes zero, so sizes and signs compare honestly.
+// Rows without an estimate are null; rows without an interval have low = high = the estimate.
+export function intervalChart(
+  rows: {estimate: number | null; ci: [number, number] | null}[],
+  left: number,
+  right: number,
+): {
+  ticks: {value: number; x: number}[];
+  zero: number;
+  rows: ({x: number; low: number; high: number} | null)[];
+} {
+  const values = [0];
+  for (const row of rows)
+    if (row.estimate !== null && Number.isFinite(row.estimate))
+      values.push(row.estimate, ...(row.ci ?? []).filter(Number.isFinite));
+  const lowest = Math.min(...values),
+    highest = Math.max(...values);
+  // Every value zero: a unit axis.
+  const ticks = niceTicks(lowest, highest > lowest ? highest : lowest + 1);
+  const low = ticks[0],
+    high = ticks[ticks.length - 1];
+  const x = (value: number) =>
+    Number((left + ((value - low) / (high - low)) * (right - left)).toFixed(2));
+  return {
+    ticks: ticks.map((value) => ({value, x: x(value)})),
+    zero: x(0),
+    rows: rows.map((row) =>
+      row.estimate === null || !Number.isFinite(row.estimate)
+        ? null
+        : {
+            x: x(row.estimate),
+            low: x(row.ci?.[0] ?? row.estimate),
+            high: x(row.ci?.[1] ?? row.estimate),
+          },
+    ),
+  };
+}

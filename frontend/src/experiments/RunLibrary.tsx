@@ -1,18 +1,38 @@
 import {useEffect, useRef, useState} from 'react';
-import {ArrowDownToLine, RotateCcw, Square, Trash2} from 'lucide-react';
-import type {Command, Job, SavedRun, State} from '../types';
+import {ArrowDownToLine, BarChart3, RotateCcw, Square, Trash2} from 'lucide-react';
+import type {Command, Job, RunAnnotations, SavedRun, State} from '../types';
 import {fmt} from '../format';
 import {request} from '../api';
 import {describeError} from '../errors';
-import {deleteBlock, libraryCaption, mergeRuns, PAGE, readRunPage, runsQuery} from '../library';
+import {
+  activeFilters,
+  deleteBlock,
+  filterProblem,
+  libraryCaption,
+  mergeRuns,
+  noFilters,
+  PAGE,
+  readRunPage,
+  replaceRun,
+  runsQuery,
+  type RunFilters,
+} from '../library';
 import {jobActive, replayJob, verificationBadge} from '../jobs';
 import {normalizeModel} from '../models';
+import {useCircuitList} from '../connectome/useCircuit';
+import {ComparisonSummary} from './ComparisonSummary';
+import {LibraryFilters} from './LibraryFilters';
+import {RunNotes} from './RunNotes';
 import {runTitle, SavedComparison} from './SavedComparison';
 
 const MAX_SELECTED = 4;
+const COLUMNS = 10;
+// Typed filters apply once typing pauses this long.
+const FILTER_DELAY_MS = 350;
 
-// The run library: saved runs, newest first, page by page, with replay checks, deletion and an
-// overlay of up to four selected runs. Each row is a RunRow; columns are added there.
+// The run library: saved runs, newest first, page by page and filtered on the server, with tags
+// and notes, replay checks, deletion, comparison statistics and an overlay of up to four selected
+// runs. Each row is a RunRow; columns are added there.
 export function RunLibrary({
   state,
   command,
@@ -22,6 +42,7 @@ export function RunLibrary({
   refreshJobs,
   cancelJob,
   reload,
+  showBatch,
   onLoaded,
 }: {
   state: State | null;
@@ -33,6 +54,8 @@ export function RunLibrary({
   cancelJob: (id: string) => Promise<string | null>;
   // Changes when the runs on disk changed elsewhere (a replay check finished).
   reload: number;
+  // A comparison whose trials to list (its statistics' "Show these trials"); `at` repeats a request.
+  showBatch: {id: string; at: number} | null;
   onLoaded: () => void;
 }) {
   const [runs, setRuns] = useState<SavedRun[]>([]);
@@ -57,11 +80,21 @@ export function RunLibrary({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [includeEmpty, setIncludeEmpty] = useState(false);
+  // The filters as typed, and as last sent to the server.
+  const [filters, setFilters] = useState<RunFilters>(noFilters);
+  const [applied, setApplied] = useState<RunFilters>(noFilters);
+  const problem = filterProblem(filters);
+  const filtered = Object.keys(activeFilters(applied)).length > 0;
+  const {circuits} = useCircuitList();
+  // The run whose tags and notes are being edited, and the comparison whose statistics are open.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [summaryBatch, setSummaryBatch] = useState<string | null>(null);
+  const library = useRef<HTMLElement>(null);
   // Loads runs from `offset` after `keep`; only the newest request's answer is used.
   const list = (offset: number, limit: number, keep: SavedRun[]) => {
     const id = ++listRequest.current;
     setListing(true);
-    return fetch(runsQuery(offset, includeEmpty, limit))
+    return fetch(runsQuery(offset, includeEmpty, limit, applied))
       .then(async (r) => {
         if (!r.ok)
           throw Error(
@@ -86,9 +119,27 @@ export function RunLibrary({
     void refresh();
     // Trials are saved as they finish, and an unfinished one when a comparison ends early.
   }, [state?.batch?.results.length, state?.batch?.status, reload]);
+  const appliedKey = JSON.stringify(activeFilters(applied));
   useEffect(() => {
     void list(0, PAGE, []);
-  }, [includeEmpty]);
+  }, [includeEmpty, appliedKey]);
+  // Typed filters apply once typing pauses, and only when the server would take them.
+  const filtersKey = JSON.stringify(filters);
+  useEffect(() => {
+    if (problem) return;
+    const timer = setTimeout(() => setApplied(filters), FILTER_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [filtersKey, problem]);
+  const changeFilters = (change: Partial<RunFilters>, now = false) => {
+    const next = {...filters, ...change};
+    setFilters(next);
+    if (now && !filterProblem(next)) setApplied(next);
+  };
+  useEffect(() => {
+    if (!showBatch) return;
+    changeFilters({...noFilters, batch: showBatch.id}, true);
+    library.current?.scrollIntoView({behavior: 'smooth', block: 'start'});
+  }, [showBatch?.id, showBatch?.at]);
   useEffect(() => {
     let cancelled = false;
     Promise.all(
@@ -158,11 +209,27 @@ export function RunLibrary({
     const problem = await cancelJob(job.id);
     if (problem) setError(problem);
   };
+  // Saves a run's tags and notes; answers the server's refusal as a sentence, or null.
+  const annotate = async (key: string, tags: string[], notes: string) => {
+    const body: RunAnnotations = {tags, notes};
+    const r = await request<SavedRun>('PATCH', `/api/runs/${encodeURIComponent(key)}`, body);
+    if (!r.ok)
+      return r.status === 405 ? 'This version of the server cannot keep tags and notes.' : r.error;
+    setRuns((previous) => replaceRun(previous, r.data));
+    setNotice(`Saved the tags and notes of ${key}.`);
+    return null;
+  };
+  const closeEditor = (key: string) => {
+    setEditing(null);
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[data-edit="${CSS.escape(key)}"]`)?.focus(),
+    );
+  };
 
   // Servers before v0.6 ignore include_empty, so zero-step runs are also filtered here.
   const shownRuns = runs.filter((run) => includeEmpty || run.samples > 1);
   return (
-    <section className="run-library">
+    <section className="run-library" ref={library}>
       <div className="session-heading">
         <div>
           <span className="eyebrow">LOCAL EXPERIMENT RECORDS</span>
@@ -191,7 +258,8 @@ export function RunLibrary({
       <div className="library-filter">
         <p className="library-hint">
           Select up to four saved runs to overlay their paths and compare measured outcomes.
-          {runs.length > 0 && ` ${libraryCaption(shownRuns.length, total)}.`}
+          {(runs.length > 0 || filtered) &&
+            ` ${libraryCaption(shownRuns.length, total, filtered)}.`}
         </p>
         <label>
           <input
@@ -202,7 +270,31 @@ export function RunLibrary({
           Include zero-step runs
         </label>
       </div>
-      {!shownRuns.length ? (
+      <LibraryFilters
+        filters={filters}
+        change={changeFilters}
+        circuits={circuits}
+        problem={problem}
+        clear={
+          Object.keys(activeFilters(filters)).length ? () => changeFilters(noFilters, true) : null
+        }
+      />
+      {summaryBatch && (
+        <ComparisonSummary
+          batchId={summaryBatch}
+          reload={reload}
+          showTrials={() => changeFilters({...noFilters, batch: summaryBatch}, true)}
+          close={() => setSummaryBatch(null)}
+        />
+      )}
+      {!shownRuns.length && filtered ? (
+        <section className="panel empty-research">
+          <h3>No saved runs match these filters.</h3>
+          <button className="secondary-button" onClick={() => changeFilters(noFilters, true)}>
+            Clear filters
+          </button>
+        </section>
+      ) : !shownRuns.length ? (
         <section className="panel empty-research">
           <ArrowDownToLine size={26} />
           <h3>Your first record starts here.</h3>
@@ -221,6 +313,7 @@ export function RunLibrary({
                 <th>Seed</th>
                 <th>Time</th>
                 <th>Mean speed</th>
+                <th>Tags & notes</th>
                 <th>Replay</th>
                 <th>Files</th>
                 <th>
@@ -242,6 +335,13 @@ export function RunLibrary({
                   }
                   blocked={deleteBlock(run, state?.run_id, batchActive ? state!.batch!.id : null)}
                   job={replayJob(jobs, run.key)}
+                  activeTag={applied.tag.trim()}
+                  filterTag={(tag) => changeFilters({tag}, true)}
+                  editing={editing === run.key}
+                  edit={() => setEditing(run.key)}
+                  annotate={(tags, notes) => annotate(run.key, tags, notes)}
+                  closeEditor={() => closeEditor(run.key)}
+                  showSummary={(batch) => setSummaryBatch(batch)}
                   verify={() => void verify(run.key)}
                   cancel={(job) => void cancel(job)}
                   confirming={confirming === run.key}
@@ -289,6 +389,13 @@ function RunRow({
   toggle,
   blocked,
   job,
+  activeTag,
+  filterTag,
+  editing,
+  edit,
+  annotate,
+  closeEditor,
+  showSummary,
   verify,
   cancel,
   confirming,
@@ -305,6 +412,14 @@ function RunRow({
   blocked: string | null;
   // The newest replay check of this run, or null.
   job: Job | null;
+  // The tag the library is filtered by ('' for none); a tag chip filters by its tag.
+  activeTag: string;
+  filterTag: (tag: string) => void;
+  editing: boolean;
+  edit: () => void;
+  annotate: (tags: string[], notes: string) => Promise<string | null>;
+  closeEditor: () => void;
+  showSummary: (batchId: string) => void;
   verify: () => void;
   cancel: (job: Job) => void;
   confirming: boolean;
@@ -313,74 +428,126 @@ function RunRow({
   remove: () => void;
   keep: () => void;
 }) {
+  const tags = run.tags ?? [];
   return (
-    <tr className={selected ? 'selected' : ''}>
-      <td>
-        <input
-          type="checkbox"
-          aria-label={`Compare run ${run.key}`}
-          checked={selected}
-          disabled={!selected && !canSelect}
-          onChange={(e) => toggle(e.target.checked)}
-        />
-      </td>
-      <td>
-        <strong>
-          {runTitle(run)}
-          {run.trial?.partial && <span className="run-tag">partial</span>}
-        </strong>
-        <small>
-          {new Date(run.created_utc).toLocaleString()} · {run.samples} samples
-          {run.error ? ' · interrupted' : ''}
-        </small>
-      </td>
-      <td>
-        {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
-        <small>
-          {{vision: 'Compound eye', flyvis: 'FlyVis eyes', geometric: 'Geometric'}[
-            run.config.sensor_model
-          ] ?? 'Geometric'}{' '}
-          ·{' '}
-          {normalizeModel(run.config.neural_model) === 'connectome'
-            ? `connectome · ${run.config.connectome_parameters?.circuit ?? 'fafb783-dna02'}${run.config.connectome_parameters?.dynamics === 'spiking' ? ' · spiking' : ''}`
-            : 'engineered'}
-        </small>
-      </td>
-      <td>{run.config.seed}</td>
-      <td>{fmt(run.metrics.duration_s ?? (run.samples - 1) * 0.01)} s</td>
-      <td>{fmt(run.metrics.mean_speed_mm_s)} mm/s</td>
-      <td className="run-replay">
-        <ReplayCell run={run} job={job} verify={verify} cancel={cancel} />
-      </td>
-      <td>
-        <a href={run.download_url} download aria-label={`Download run ${run.key}`}>
-          <ArrowDownToLine size={15} />
-        </a>
-      </td>
-      <td className="run-delete">
-        {confirming ? (
-          <span role="group" aria-label={`Delete run ${run.key}?`}>
-            <button className="text-button" aria-busy={deleting} onClick={remove}>
-              {deleting ? 'Deleting…' : 'Delete'}
+    <>
+      <tr className={selected ? 'selected' : ''}>
+        <td>
+          <input
+            type="checkbox"
+            aria-label={`Compare run ${run.key}`}
+            checked={selected}
+            disabled={!selected && !canSelect}
+            onChange={(e) => toggle(e.target.checked)}
+          />
+        </td>
+        <td>
+          <strong>
+            {runTitle(run)}
+            {run.trial?.partial && <span className="run-tag">partial</span>}
+          </strong>
+          <small>
+            {new Date(run.created_utc).toLocaleString()} · {run.samples} samples
+            {run.error ? ' · interrupted' : ''}
+          </small>
+          {run.batch_id && (
+            <button
+              className="text-button run-statistics"
+              aria-label={`Statistics of comparison ${run.batch_id}`}
+              onClick={() => showSummary(run.batch_id!)}
+            >
+              <BarChart3 size={11} />
+              Comparison statistics
             </button>
-            <button className="text-button" autoFocus onClick={keep}>
-              Keep
-            </button>
-          </span>
-        ) : (
+          )}
+        </td>
+        <td>
+          {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
+          <small>
+            {{vision: 'Compound eye', flyvis: 'FlyVis eyes', geometric: 'Geometric'}[
+              run.config.sensor_model ?? 'geometric'
+            ] ?? 'Geometric'}{' '}
+            ·{' '}
+            {normalizeModel(run.config.neural_model) === 'connectome'
+              ? `connectome · ${run.config.connectome_parameters?.circuit ?? 'fafb783-dna02'}${run.config.connectome_parameters?.dynamics === 'spiking' ? ' · spiking' : ''}`
+              : 'engineered'}
+          </small>
+        </td>
+        <td>{run.config.seed}</td>
+        <td>{fmt(run.metrics.duration_s ?? (run.samples - 1) * 0.01)} s</td>
+        <td>{fmt(run.metrics.mean_speed_mm_s)} mm/s</td>
+        <td className="run-annotations">
+          {tags.length > 0 && (
+            <span className="tag-chips">
+              {tags.map((tag) => (
+                <button
+                  key={tag}
+                  className="tag-chip"
+                  aria-label={`Show runs tagged ${tag}`}
+                  aria-pressed={activeTag.toLowerCase() === tag.toLowerCase()}
+                  title="Show only runs with this tag"
+                  onClick={() => filterTag(tag)}
+                >
+                  {tag}
+                </button>
+              ))}
+            </span>
+          )}
+          {run.notes && (
+            <small className="run-notes-preview" title={run.notes}>
+              {run.notes}
+            </small>
+          )}
           <button
-            className="icon-button"
-            aria-label={blocked ? `Delete run ${run.key}: ${blocked}` : `Delete run ${run.key}`}
-            title={blocked ?? 'Delete this run and its ZIP from runs/'}
-            disabled={!!blocked}
-            data-delete={run.key}
-            onClick={askDelete}
+            className="text-button"
+            data-edit={run.key}
+            aria-expanded={editing}
+            aria-label={`Edit the tags and notes of run ${run.key}`}
+            onClick={editing ? closeEditor : edit}
           >
-            <Trash2 size={14} />
+            {tags.length || run.notes ? 'Edit' : 'Add tags or notes'}
           </button>
-        )}
-      </td>
-    </tr>
+        </td>
+        <td className="run-replay">
+          <ReplayCell run={run} job={job} verify={verify} cancel={cancel} />
+        </td>
+        <td>
+          <a href={run.download_url} download aria-label={`Download run ${run.key}`}>
+            <ArrowDownToLine size={15} />
+          </a>
+        </td>
+        <td className="run-delete">
+          {confirming ? (
+            <span role="group" aria-label={`Delete run ${run.key}?`}>
+              <button className="text-button" aria-busy={deleting} onClick={remove}>
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+              <button className="text-button" autoFocus onClick={keep}>
+                Keep
+              </button>
+            </span>
+          ) : (
+            <button
+              className="icon-button"
+              aria-label={blocked ? `Delete run ${run.key}: ${blocked}` : `Delete run ${run.key}`}
+              title={blocked ?? 'Delete this run and its ZIP from runs/'}
+              disabled={!!blocked}
+              data-delete={run.key}
+              onClick={askDelete}
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </td>
+      </tr>
+      {editing && (
+        <tr className="run-notes-row">
+          <td colSpan={COLUMNS}>
+            <RunNotes run={run} save={annotate} close={closeEditor} />
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
