@@ -99,7 +99,7 @@ The builder needs the FlyWire data prepared once (see [the research guide](RESEA
 
 ## FlyVis eyes
 
-With the optional vision install (`./scripts/setup.sh --with flyvis`; see [dependencies](DEPENDENCIES.md#v05-optional-flyvis-vision-and-recorded-fly-data)), **Sensor model → FlyVis eyes** runs the rendered eye images through FlyVis, a connectome-constrained network of the fly's optic lobe, and lets its cell types drive the circuit's visual neurons through FlyWire wiring. It needs the FlyGym body and the connectome model, and the circuit needs a FlyVis bridge: the committed circuits have one; for a circuit you build, run `backend/.venv/bin/python scripts/build_circuit.py flyvis-bridge --circuit NAME`. The bridge reaches only visual projection neurons, so a sensor input of other cell types is refused with FlyVis eyes. The first start builds FlyVis's network cache (about 10 seconds). Runs are slow, about 0.1–0.15× real time, and replay exactly. **Through the eyes** then shows the luminance FlyVis receives.
+With the optional FlyVis install (`./scripts/setup.sh --with flyvis`; see [dependencies](DEPENDENCIES.md#v05-optional-flyvis-vision-and-recorded-fly-data)), **Sensor model → FlyVis eyes** runs the rendered eye images through FlyVis, a connectome-constrained network of the fly's optic lobe, and lets its cell types drive the circuit's visual neurons through FlyWire wiring. It needs the FlyGym body and the connectome model, and the circuit needs a FlyVis bridge: the committed circuits have one; for a circuit you build, run `backend/.venv/bin/python scripts/build_circuit.py flyvis-bridge --circuit NAME`. The bridge reaches only visual projection neurons, so a sensor input of other cell types is refused with FlyVis eyes. The first start builds FlyVis's network cache (about 10 seconds). Runs are slow, about 0.1–0.15× real time, and replay exactly. **Through the eyes** then shows the luminance FlyVis receives.
 
 ## Batch experiments and analysis
 
@@ -179,7 +179,7 @@ To measure throughput on your machine:
 backend/.venv/bin/python scripts/benchmark.py            # the app's worker: real-time factor and memory
 backend/.venv/bin/python scripts/benchmark.py --vision   # with rendered compound-eye input
 backend/.venv/bin/python scripts/benchmark.py --neural   # wall time per 1 ms neural step, per circuit and dynamics
-backend/.venv/bin/python scripts/benchmark.py --flyvis   # FlyVis eyes, when the vision install is present
+backend/.venv/bin/python scripts/benchmark.py --flyvis   # FlyVis eyes, when FlyVis is installed
 ```
 
 ## Scripting the app from Python

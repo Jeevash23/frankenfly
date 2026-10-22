@@ -6,7 +6,7 @@ The [status summary](../../STATUS.md) records the reference validation without p
 
 ## Before you start
 
-**Graphics.** FlyGym physics tests, the smoke test, the benchmarks, FlyGym evaluations and replay of eye-input runs need an OpenGL backend. On a desktop session the default works. On headless Linux, DigitalFly picks EGL; set `MUJOCO_GL` to choose:
+**Graphics.** FlyGym physics tests, the smoke test, the benchmarks, FlyGym evaluations and replay of eye-input runs need an OpenGL backend. On a desktop session the default works. Unless `MUJOCO_GL` is set, DigitalFly uses the first backend that renders: GLFW when there is a display, then EGL, then OSMesa (`python3 scripts/doctor.py` shows which work). On Linux without a display or a working EGL, `./scripts/check.sh` runs the tests under `xvfb-run` with `MUJOCO_GL=glfw` when it is installed, which is how the v0.6 reference ran. Set `MUJOCO_GL` to choose:
 
 ```sh
 MUJOCO_GL=egl ./scripts/check.sh                   # needs libEGL (for example Ubuntu's libegl1)
@@ -26,17 +26,27 @@ backend/.venv/bin/python scripts/build_circuit.py prepare                       
 backend/.venv/bin/python scripts/fetch_recording.py rayshubskiy2025-a2_d_13.mat               # one recorded fly, 71 MB
 ```
 
-The locks install into `backend/.venv`; downloads land in the ignored `.cache/`. The download commands retry network errors, resume an interrupted download when run again, and check every file against its recorded hashes. The FlyWire data, and every circuit and bridge built from it, is CC BY-NC 4.0, non-commercial; the recording is CC0.
+`./scripts/setup.sh --with builder,flyvis,recording` does all five in one step. The locks install into `backend/.venv`; downloads land in the ignored `.cache/`. The download commands retry network errors, resume an interrupted download when run again, and check every file against its recorded hashes. The FlyWire data, and every circuit and bridge built from it, is CC BY-NC 4.0, non-commercial; the recording is CC0.
 
 ## Tests and checks (STATUS validation table)
 
 ```sh
 ./scripts/check.sh                       # backend tests, formatting, frontend tests and production build
 backend/.venv/bin/python -m pip check
+backend/.venv/bin/python scripts/gen_types.py --check
 backend/.venv/bin/python scripts/smoke_flygym.py
 ```
 
-`./scripts/check.sh --fast` omits the FlyGym tests and does not establish graphics or body compatibility. The v0.5 count, **88 passed**, needs graphics and all of the optional assets above. Without graphics the FlyGym tests fail; without each asset its tests skip: FlyVis (2), the prepared archive (2), the recording (1). With graphics and no optional assets the result is 83 passed, 5 skipped. Run `pytest -rs` to see the reason for each skip:
+`./scripts/check.sh --fast` omits the FlyGym tests and does not establish graphics or body compatibility. The v0.6 backend suite has **355 tests**, 11 of them FlyGym physics tests. Without graphics the FlyGym tests fail; without each optional asset its tests skip: FlyVis 2 (one of them a physics test), the prepared archive 4 (the general builder's check against the DNa02 circuit, the steering circuit's rebuild and the two balanced circuits' rebuilds), the recording 1. One test checks what `benchmark.py --flyvis` reports without FlyVis, so it skips when FlyVis is installed. That gives:
+
+| Graphics and assets | Backend result |
+| --- | --- |
+| All optional assets | 354 passed, 1 skipped (expected; not run for v0.6, where FlyVis and the recording were unavailable) |
+| The prepared archive only (the v0.6 reference) | 352 passed, 3 skipped |
+| No optional assets | 348 passed, 7 skipped |
+| No optional assets, `./scripts/check.sh --fast` | 338 passed, 6 skipped (the 11 physics tests deselected) |
+
+Run `pytest -rs` to see the reason for each skip:
 
 ```sh
 backend/.venv/bin/python -m pytest backend/tests -q -rs
@@ -44,9 +54,12 @@ backend/.venv/bin/python -m pytest backend/tests -q -rs
 
 | STATUS row | Command |
 | --- | --- |
+| Python 3.13 and 3.14 | In a separate checkout: `PYTHON_BIN=/path/to/python3.13 ./scripts/setup.sh`, then `./scripts/check.sh` (the same with 3.14) |
 | Frontend unit tests, formatting, TypeScript and build | `./scripts/check.sh` (or `npm --prefix frontend test`, `run format:check`, `run typecheck`, `run build`) |
+| Browser end to end | Once: `cd frontend && npx playwright install chromium`. Then `npm --prefix frontend run build` and `npm --prefix frontend run e2e` (10 tests; the builder test skips without the prepared archive's catalog) |
 | Linux rendering | `scripts/smoke_flygym.py` and `./scripts/check.sh`, once with each `MUJOCO_GL` value above |
-| Replay | `backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER` on runs exported from the app or by `toolkit.jumping_target_run` (below) |
+| Replay | `backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER` on runs exported from the app or by `toolkit.jumping_target_run` (below); in the running app, **Verify replay** in the run library, or `POST /api/runs/YOUR_RUN_FOLDER/replay` |
+| Docker image | `docker build -t digitalfly .`, then the smoke steps of `.github/workflows/docker.yml` (the doctor in the image; a container on `-p 127.0.0.1:8001:8000`; a FlyGym reset with `"sensor_model": "vision"`; `/api/frame`; a preset; the Origin and Host checks; the health check and a clean stop), plus an export and `docker exec CONTAINER python scripts/replay.py runs/YOUR_RUN_FOLDER` |
 | Circuit build | With the prepared archive, `pytest backend/tests/test_build_circuit.py backend/tests/test_balance_sides.py` rebuilds both committed circuits and their two side-balanced versions in a temporary folder and compares them. For the default DNa02 rebuild in place: `backend/.venv/bin/python scripts/build_circuit.py --offline`, then `git diff --exit-code data/circuits/fafb783-dna02.json` |
 | Recorded fly | With the recording, `pytest backend/tests/test_compare.py` checks the conversion against the documented spike counts and fit |
 
@@ -87,7 +100,7 @@ The app's own real-time readout, under the controls, shows the same factor with 
 ### Matched-seed evaluation
 
 ```sh
-backend/.venv/bin/python scripts/evaluate_models.py --engine toy --workers 8           # 400 trials; writes evaluation-toy.json
+backend/.venv/bin/python scripts/evaluate_models.py --engine toy --workers 8           # 400 trials, 360 distinct (each run once); writes evaluation-toy.json
 backend/.venv/bin/python scripts/evaluate_models.py --engine flygym --quick --workers 4 # needs graphics; writes evaluation-flygym-quick.json
 ```
 
@@ -150,10 +163,11 @@ Prefix each with `backend/.venv/bin/python`. Positive turn commands are rightwar
 
 ### Fly and model fits
 
-The fly row of the fit table, after fetching the recording:
+The fly row of the fit table, after fetching the recording. The published row includes the stimulation epochs (`--include-stimulus`); without that option `compare` leaves them out, the default since v0.6, which gives the fit the research guide still lists as not yet re-run:
 
 ```sh
-backend/.venv/bin/python scripts/toolkit.py compare --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat --out runs/toolkit/compare-fly
+backend/.venv/bin/python scripts/toolkit.py compare --include-stimulus --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat --out runs/toolkit/compare-fly
+backend/.venv/bin/python scripts/toolkit.py compare --recording .cache/recordings/rayshubskiy2025-a2_d_13.mat --out runs/toolkit/compare-fly-masked
 ```
 
 The four model rows use runs whose target jumps to a random side every 2 s (target seed 11, model seed 3): 30 simulated seconds on FlyGym (needs graphics) and 60 on the toy body. Record them with `jump`, which prints each exported run's folder:
