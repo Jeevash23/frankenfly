@@ -11,8 +11,8 @@ import {
   withoutCellType,
   withoutManipulation,
 } from '../interventions';
-import {useCircuit} from './useCircuit';
-import {parseTypes} from './build';
+import {useCircuit, useCircuitList} from './useCircuit';
+import {parseTypes, sideBalanced} from './build';
 import {CircuitChanged} from './CircuitChanged';
 import {MANIPULATION_NOTE, ManipulationEditor, ManipulationList} from './Manipulations';
 import {
@@ -571,6 +571,8 @@ function CircuitDiagram({
   byIndex: Map<number, CircuitType>;
 }) {
   const rates = state?.connectome?.type_rates ?? [];
+  const {circuits} = useCircuitList();
+  const balanced = sideBalanced(circuits.find((c) => c.name === circuit.name));
   const parameters = state?.config.connectome_parameters;
   const dynamics = parameters?.dynamics ?? 'rate';
   const clipping = clippingNote(state?.connectome?.motor_clipped_fraction);
@@ -661,6 +663,7 @@ function CircuitDiagram({
           </div>
           <span className="mini-badge">
             LIVE / FLYWIRE V783 / {dynamics === 'spiking' ? 'SPIKING' : 'RATE'}
+            {balanced ? ' / LEFT-RIGHT BALANCED' : ''}
             {loading ? ' / UPDATING' : ''}
           </span>
         </div>

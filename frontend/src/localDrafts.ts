@@ -186,6 +186,7 @@ export function readBuildDraft(value: unknown): BuildDraft | null {
       threshold: r.threshold,
       cap: r.cap,
       whole_brain: r.whole_brain === true,
+      balance_sides: r.balance_sides === true,
     },
     seedDraft: text(value.seedDraft, 200) ?? '',
   };

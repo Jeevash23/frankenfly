@@ -116,9 +116,20 @@ test('build and connectivity drafts', () => {
     seedDraft: 'DNa',
   };
   assert.deepEqual(readBuildDraft(build), {
-    request: {name: 'lc10', seeds: ['LC10'], hops: 2, threshold: 5, cap: 3000, whole_brain: false},
+    request: {
+      name: 'lc10',
+      seeds: ['LC10'],
+      hops: 2,
+      threshold: 5,
+      cap: 3000,
+      whole_brain: false,
+      balance_sides: false,
+    },
     seedDraft: 'DNa',
   });
+  // Drafts from before v0.6 have no balance_sides; a saved true is kept.
+  const balanced = {...build, request: {...build.request, whole_brain: false, balance_sides: true}};
+  assert.equal(readBuildDraft(balanced).request.balance_sides, true);
   assert.equal(readBuildDraft({request: {name: 'x'}}), null);
   assert.deepEqual(readConnectivityDraft({key: 'abc', threshold: 0, search: 'DN'}), {
     key: 'abc',

@@ -69,6 +69,8 @@ export type CircuitInfo = {
     hops?: number | null;
     neuron_cap?: number | null;
     whole_brain?: boolean | null;
+    // The cap was applied per cell type and side (v0.6; absent from older servers).
+    balance_sides?: boolean;
   };
   coverage?: string;
   license?: string;

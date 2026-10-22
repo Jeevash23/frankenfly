@@ -3,7 +3,14 @@ import {Hammer, LoaderCircle, Plus, X} from 'lucide-react';
 import type {BuildStatus, Command, Config, State} from '../types';
 import type {Pending} from '../useSimulation';
 import {configForCircuit} from '../models';
-import {buildProblem, defaultBuild, suggestTypes, type BuildRequest} from './build';
+import {
+  BALANCE_NOTE,
+  buildProblem,
+  defaultBuild,
+  sideBalanced,
+  suggestTypes,
+  type BuildRequest,
+} from './build';
 import {invalidateCircuits, useCircuitList} from './useCircuit';
 import {clearDraft, DRAFT_KEYS, loadDraft, readBuildDraft} from '../localDrafts';
 import {useLocalDraft} from '../useLocalDraft';
@@ -278,6 +285,18 @@ export function BuildPanel({
               Whole brain: every neuron with a connection at the threshold (the seeds only set hop
               distances; about 134,000 neurons at 5 synapses, slow to simulate)
             </label>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={request.balance_sides}
+                disabled={disabled || running || (request.whole_brain && !request.balance_sides)}
+                onChange={(e) => setRequest({...request, balance_sides: e.target.checked})}
+              />
+              <span>
+                Balance left and right
+                <small>{BALANCE_NOTE}</small>
+              </span>
+            </label>
             {problem && request.name && (
               <p className="microcopy" role="status">
                 {problem}
@@ -343,6 +362,7 @@ export function BuildPanel({
                   {c.name}
                   <small>
                     {c.error ? `Unreadable: ${c.error}` : c.committed ? 'committed' : 'local'}
+                    {sideBalanced(c) && ' · left/right balanced'}
                   </small>
                 </td>
                 <td>
