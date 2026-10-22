@@ -92,3 +92,36 @@ def test_fast_flygym_path_matches_upstream_controller_bitwise():
     finally:
         fast.close()
         upstream.close()
+
+
+@pytest.mark.flygym
+@pytest.mark.render
+def test_closing_a_replaced_body_leaves_the_new_body_rendering():
+    # A reset builds the new body before closing the old one, so closing must not free the new body's GL objects.
+    from digitalfly.simulation.engines import FlyGymBody
+
+    def frame(body):
+        body.renderer.update_scene(body.sim.mj_data, camera=body.camera.name)
+        return body.renderer.render().astype(int)
+
+    old = FlyGymBody(42, render=True)
+    new = None
+    try:
+        old.advance(np.array([1., 1.]))
+        old.frame()
+        new = FlyGymBody(42, render=True)
+        old.close()
+        for _ in range(5):
+            new.advance(np.array([1., 1.]))
+        replaced = frame(new)
+    finally:
+        old.close()
+        if new is not None:
+            new.close()
+    fresh = FlyGymBody(42, render=True)
+    try:
+        for _ in range(5):
+            fresh.advance(np.array([1., 1.]))
+        assert np.abs(replaced - frame(fresh)).mean() < 1
+    finally:
+        fresh.close()

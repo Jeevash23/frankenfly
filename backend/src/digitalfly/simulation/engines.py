@@ -450,6 +450,12 @@ class FlyGymBody:
 
     def close(self):
         if self.renderer is not None:
+            # MuJoCo's Renderer.close() frees its GL context before its MjrContext, whose buffers are then deleted in
+            # whichever context is current. A reset builds the next body first, so under GLFW that is the next
+            # body's context and its frames turn to noise. Making ours current first keeps the deletion here.
+            context = getattr(self.renderer, "_gl_context", None)
+            if context is not None:
+                context.make_current()
             self.renderer.close()
             self.renderer = None
         if self.sim is not None:
