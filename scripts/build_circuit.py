@@ -22,8 +22,9 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import sys
-import urllib.request
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
@@ -85,16 +86,37 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def fetch(url, start=None, end=None):
-    """GET a URL, or the byte range [start, end), and return the body."""
-    headers = {"User-Agent": "digitalfly-build-circuit"}
-    if start is not None:
-        headers["Range"] = f"bytes={start}-{end - 1}"
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:
-        data = response.read()
-    if start is not None and len(data) != end - start:
-        raise IOError(f"Expected {end - start} bytes from {url}, received {len(data)}.")
-    return data
+def fetch(url, start=None, end=None, path=None, size=None, missing_ok=False):
+    """GET a URL and return the body, or its byte range [start, end), or stream it into `path` (resuming a partial
+    file there; `size` marks it complete) and return the path. Network errors are retried with backoff from where
+    the transfer stopped (digitalfly.data.downloads). A download that still fails ends the build with a one-line
+    message, except a 404 with missing_ok, which returns None."""
+    if str(ROOT / "backend/src") not in sys.path:
+        sys.path.insert(0, str(ROOT / "backend/src"))
+    from digitalfly.data.downloads import DownloadError, download, fetch_bytes
+    try:
+        if path is not None:
+            return download(url, path, size, agent="digitalfly-build-circuit")
+        return fetch_bytes(url, start, end, agent="digitalfly-build-circuit")
+    except DownloadError as exc:
+        if missing_ok and exc.status == 404:
+            return None
+        sys.exit(f"Download failed: {exc}. Run the command again to resume.")
+
+
+def write_atomic(path, write):
+    """Write through `write(handle)` to a temporary file next to `path`, then rename it into place, so a
+    crash or a terminated build never leaves a truncated file or loses the previous one. The temporary file is
+    new (created exclusively, its name unpredictable), so nothing placed there in advance is written through."""
+    # Hidden from the circuit list; the process id comes last, for the app's leftover cleanup.
+    part = path.with_name(f".{path.name}.{uuid.uuid4().hex[:12]}.{os.getpid()}.part")
+    try:
+        with part.open("xb") as handle:
+            write(handle)
+        os.replace(part, path)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
 
 
 def recorded(name):
@@ -112,11 +134,17 @@ def meta_file(offline):
     if not path.is_file():
         if offline:
             sys.exit(f"Missing {path}. Run once without --offline to download it ({source['url']}).")
-        print(f"Downloading {source['url']} …", flush=True)
+        # Ask for the recorded GCS generation, so an overwritten upstream object is not fetched by accident.
+        # If that generation is no longer served, the current object is fetched and must match the recorded hash.
+        pinned = f"{source['url']}?generation={source['gcs_generation']}"
+        print(f"Downloading {pinned} …", flush=True)
         CACHE.mkdir(parents=True, exist_ok=True)
-        data = fetch(source["url"])
-        path.with_suffix(".part").write_bytes(data)
-        path.with_suffix(".part").rename(path)
+        part, size = path.with_suffix(".part"), (recorded(source["name"]) or {}).get("bytes")
+        if fetch(pinned, path=part, size=size, missing_ok=True) is None:
+            print(f"Generation {source['gcs_generation']} is no longer served; trying {source['url']} …", flush=True)
+            part.unlink(missing_ok=True)  # never resume another object's bytes
+            fetch(source["url"], path=part, size=size)
+        part.rename(path)
     data = path.read_bytes()
     record = {**source, "bytes": len(data), "sha256": sha256(data)}
     previous = recorded(source["name"])
@@ -200,8 +228,7 @@ def connectivity_columns(offline):
         order = np.argsort([r[0] for r in ranges])
         blob = b"".join(chunks[i] for i in order)
         ranges = [ranges[i] for i in order]
-        blob_path.with_suffix(".part").write_bytes(blob)
-        blob_path.with_suffix(".part").rename(blob_path)
+        write_atomic(blob_path, lambda handle: handle.write(blob))
         index_path.write_text(json.dumps({"url": source["url"], "upstream_bytes": size, "ranges": ranges,
                                           "sha256": sha256(blob)}, indent=1))
     index = json.loads(index_path.read_text())
@@ -259,7 +286,49 @@ def soma_x(neuron_id):
     return float(rows[rows[:, 6] == -1][0, 2] / 1000)
 
 
-def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False):
+BALANCE_RULE = ("The cap is applied per cell type and side. In the hop the cap trims, each cell type's left and right "
+                "candidates are ranked by path strength. First, the strongest candidates on the type's short side that "
+                "even out its neurons already kept at earlier hops are single units; the rest are paired by rank, the "
+                "strongest left with the strongest right. A type's surplus on one side has no partner and is not kept. "
+                "Neurons on neither side (center, unknown) are single units. Units are kept in order of their weakest "
+                "member's path strength (ties: lower FlyWire ID) until the next unit would exceed the cap. Seeds, direct "
+                "partners and hops the cap does not trim are kept as they are, so their own imbalance remains.")
+
+
+def balanced_trim(layer, strength, earlier, group, side, budget):
+    """The cap applied per (cell type, side) to one hop, as BALANCE_RULE says. `group` is each neuron's cell-type
+    label code and `side` 0 (left), 1 (right) or -1 (neither); `earlier` holds the neurons kept at earlier hops.
+    Returns the kept neurons, the dropped ones (strongest first) and how many were dropped as unpaired surplus."""
+    before = {}
+    for g, s in zip(group[earlier].tolist(), side[earlier].tolist()):
+        if s >= 0:
+            before.setdefault(g, [0, 0])[s] += 1
+    members = {}
+    for i in layer[np.lexsort((layer, -strength[layer]))].tolist():  # strongest first
+        members.setdefault(int(group[i]), ([], [], []))[side[i] if side[i] >= 0 else 2].append(i)
+    units, unpaired = [], []
+    for g, (left, right, other) in members.items():
+        units += [[i] for i in other]
+        a, b = before.get(g, (0, 0))
+        short = right if a > b else left  # the side with fewer neurons kept so far evens the type out first
+        units += [[i] for i in short[:abs(a - b)]]
+        del short[:abs(a - b)]
+        m = min(len(left), len(right))
+        units += [[l, r] for l, r in zip(left[:m], right[:m])]
+        unpaired += left[m:] + right[m:]
+    units.sort(key=lambda unit: (-min(strength[i] for i in unit), min(unit)))
+    kept, used = [], 0
+    for unit in units:
+        if len(kept) + len(unit) > budget:
+            break
+        kept += unit
+        used += 1
+    dropped = np.array([i for unit in units[used:] for i in unit] + unpaired, dtype=np.int64)
+    dropped = dropped[np.lexsort((dropped, -strength[dropped]))]
+    return np.array(sorted(kept), dtype=np.int64), dropped, len(unpaired)
+
+
+def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False, balance=None):
     """Choose neurons and connections on integer neuron indices 0..n-1. Vectorised.
 
     Hop h holds the presynaptic partners (connections with at least `threshold` synapses) of
@@ -271,6 +340,9 @@ def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False
 
     With `whole`, hops run until no new neuron is reached, nothing is capped, and every other
     neuron with a strong connection is appended (hop -1: no path to a seed).
+
+    With `balance` = (cell-type code, side code) per neuron, the trimmed hop follows BALANCE_RULE
+    (`balanced_trim`) instead of keeping the strongest neurons whatever their side.
     """
     pre, post, seeds = (np.asarray(a, dtype=np.int64) for a in (pre, post, seeds))
     count = np.asarray(count, dtype=np.float64)
@@ -296,10 +368,16 @@ def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False
         layers.append(np.flatnonzero(frontier))
 
     kept_layers, dropped, budget = [seeds], np.array([], dtype=np.int64), (n if whole else cap) - len(seeds)
+    unpaired = 0
     for depth, layer in enumerate(layers[1:], start=1):
         if len(layer) <= budget or depth == 1:
             kept_layers.append(layer)
             budget -= len(layer)
+            continue
+        if balance is not None and budget > 0:
+            keep, rest, surplus = balanced_trim(layer, strength, np.concatenate(kept_layers), *balance, budget)
+            kept_layers.append(keep)
+            dropped, unpaired, budget = np.concatenate([dropped, rest]), unpaired + surplus, 0
             continue
         ranked = layer[np.lexsort((layer, -strength[layer]))]
         keep = max(budget, 0)
@@ -319,11 +397,13 @@ def select_indices(pre, post, count, seeds, n, threshold, hops, cap, whole=False
     mask = strong & (position[pre] >= 0) & (position[post] >= 0)
     e_pre, e_post, e_count = position[pre[mask]], position[post[mask]], count[mask].astype(np.int64)
     order = np.lexsort((e_pre, e_post))
-    weakest = float(strength[kept_layers[-1]].min()) if len(dropped) and len(kept_layers[-1]) else None
+    # Compared with the strongest dropped path: the weakest neuron of the deepest hop that kept any.
+    deepest = next((layer for layer in reversed(kept_layers[1:]) if len(layer)), None)
+    weakest = float(strength[deepest].min()) if len(dropped) and deepest is not None else None
     return {"kept": kept, "hop": hop, "strength": strength[kept],
             "by_hop": [int(len(l)) for l in kept_layers],
             "candidates": int(sum(len(l) for l in layers)), "dropped": dropped,
-            "dropped_strength": strength[dropped], "weakest_kept_strength": weakest,
+            "dropped_strength": strength[dropped], "weakest_kept_strength": weakest, "unpaired": unpaired,
             "edges": (e_pre[order], e_post[order], e_count[order])}
 
 
@@ -481,7 +561,7 @@ def build(threshold, hops, cap, offline):
         "edges": {"pre": e_pre.tolist(), "post": e_post.tolist(), "synapses": e_count.tolist()},
     }
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(json.dumps(circuit, separators=(",", ":")))
+    write_atomic(OUTPUT, lambda handle: handle.write(json.dumps(circuit, separators=(",", ":")).encode()))
     DOWNLOADS.write_text(json.dumps(records, indent=2) + "\n")
     print(json.dumps(circuit["provenance"]["counts"], indent=1))
     print("cap:", json.dumps({k: cap_report[k] for k in ["candidates", "kept", "dropped", "binding"]}))
@@ -600,11 +680,30 @@ def resolve_seeds(data, tokens):
     return np.array(seeds, dtype=np.int64), records
 
 
-def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
-    """Select a circuit around any seeds from the prepared archive (NumPy only) and write format 2."""
+def side_balance(types, sides, unpaired, applied):
+    """How evenly a balanced build's cell types are split between the sides, for its header."""
+    counts = {}
+    for t, s in zip(types.tolist(), sides.tolist()):
+        if s in ("left", "right"):
+            counts.setdefault(t, [0, 0])[s == "right"] += 1
+    uneven = sorted(((t, lr) for t, lr in counts.items() if lr[0] != lr[1]), key=lambda x: (-abs(x[1][0] - x[1][1]), x[0]))
+    return {"rule": BALANCE_RULE, "applied": applied, "unpaired_dropped": int(unpaired),
+            "cell_types_with_sides": len(counts), "even_cell_types": len(counts) - len(uneven),
+            "uneven_neurons": int(sum(abs(l - r) for _, (l, r) in uneven)),
+            "uneven_cell_types": {t: {"left": l, "right": r} for t, (l, r) in uneven[:25]},
+            "note": "applied: the cap bound, so the hop it trims was chosen per cell type and side; otherwise nothing changed"}
+
+
+def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed, balance=False):
+    """Select a circuit around any seeds from the prepared archive (NumPy only) and write format 2. With
+    `balance`, the cap is applied per cell type and side (BALANCE_RULE)."""
     import re
-    if not re.fullmatch(NAME_PATTERN, name) or name == "local":
+    if not re.fullmatch(NAME_PATTERN, name) or name in ("local", "downloads"):
         sys.exit("Use a circuit name of lower-case letters, digits, dots, dashes or underscores.")
+    if balance and whole:
+        sys.exit("--balance-sides applies the cap per cell type and side, and --whole-brain has no cap.")
+    if name.endswith(".flyvis"):
+        sys.exit("Circuit names cannot end in .flyvis: that suffix marks a circuit's FlyVis bridge.")
     if not committed and any((OUT_DIR / f"{name}{suffix}").exists() for suffix in (".json", ".npz")):
         sys.exit(f"{name} is a built-in circuit. Choose another name for a local build.")
     data = load_prepared()
@@ -615,7 +714,11 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
                for source in data["header"]["sources"]]
     seeds, records = resolve_seeds(data, tokens)
     n = len(data["neuron_id"])
-    chosen = select_indices(data["pre"], data["post"], data["synapses"], seeds, n, threshold, hops, cap, whole)
+    groups = None
+    if balance:
+        side_code = np.select([data["lookup_side"] == "left", data["lookup_side"] == "right"], [0, 1], -1)
+        groups = (data["cell_type"], side_code[data["side"]])
+    chosen = select_indices(data["pre"], data["post"], data["synapses"], seeds, n, threshold, hops, cap, whole, groups)
     kept = chosen["kept"]
     e_pre, e_post, e_count = chosen["edges"]
     position = np.full(n, -1, dtype=np.int64)
@@ -657,12 +760,14 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
             "dataset": "FlyWire FAFB", "release": "v783", "specimen": "FAFB, one adult female brain", "sex": "female",
             "coverage": (f"Every neuron with a connection of at least {threshold} synapses; hop distances from {seed_text}"
                          if whole else f"{seed_text} and their presynaptic partners up to {hops} hops back, connections "
-                         f"with at least {threshold} synapses, at most {cap} neurons"),
+                         f"with at least {threshold} synapses, at most {cap} neurons"
+                         + (", the cap applied per cell type and side" if balance else "")),
             "license": FLYWIRE_LICENSE, "non_commercial": True, "attribution": ATTRIBUTION, "citations": CITATIONS,
             "sources": sources,
             "build": {"script": "scripts/build_circuit.py", "command": "build", "seeds": [r["seed"] for r in records],
                       "synapse_threshold": threshold, "hops": None if whole else hops,
                       "neuron_cap": None if whole else cap, "whole_brain": whole,
+                      **({"balance_sides": True} if balance else {}),  # absent in unbalanced builds: they rebuild unchanged
                       "connections": "induced subgraph: every kept pair with at least the threshold",
                       "numpy": np.__version__},
             "seeds": records,
@@ -685,12 +790,12 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
         "defaults": {"readout_types": readout, "input": "visual_projection"},
         "lookups": lookups,
     }
+    if balance:
+        header["provenance"]["side_balance"] = side_balance(np.array(lookups["cell_type"])[columns["cell_type"]], sides,
+                                                            chosen["unpaired"], bool(len(dropped)))
     folder = OUT_DIR if committed else LOCAL_DIR
     folder.mkdir(parents=True, exist_ok=True)
     fmt = fmt if fmt != "auto" else ("json" if len(e_count) <= JSON_EDGE_LIMIT else "npz")
-    for old in folder.glob(f"{name}.*"):
-        if old.suffix in {".json", ".npz"}:
-            old.unlink()
     path = folder / f"{name}.{fmt}"
     score = data["transmitter_score"][kept]
     if fmt == "json":
@@ -700,14 +805,17 @@ def build_custom(name, tokens, hops, threshold, cap, whole, fmt, committed):
             "hop": chosen["hop"].tolist(), "path_strength": [float(f"{v:.6g}") for v in chosen["strength"]],
             "shiu_sign": shiu.tolist()},
             "edges": {"pre": e_pre.tolist(), "post": e_post.tolist(), "synapses": e_count.tolist()}}
-        path.write_text(json.dumps(payload, separators=(",", ":")))
+        write_atomic(path, lambda handle: handle.write(json.dumps(payload, separators=(",", ":")).encode()))
     else:
-        np.savez_compressed(path, header=np.array(json.dumps(header)), neuron_id=data["neuron_id"][kept],
-                            **{f"neuron_{k}": v for k, v in columns.items()},
-                            neuron_transmitter_score=score, neuron_hop=chosen["hop"].astype(np.int32),
-                            neuron_path_strength=chosen["strength"].astype(np.float64),
-                            neuron_shiu_sign=shiu.astype(np.int8), edge_pre=e_pre.astype(np.int32),
-                            edge_post=e_post.astype(np.int32), edge_synapses=e_count.astype(np.int32))
+        write_atomic(path, lambda handle: np.savez_compressed(
+            handle, header=np.array(json.dumps(header)), neuron_id=data["neuron_id"][kept],
+            **{f"neuron_{k}": v for k, v in columns.items()},
+            neuron_transmitter_score=score, neuron_hop=chosen["hop"].astype(np.int32),
+            neuron_path_strength=chosen["strength"].astype(np.float64),
+            neuron_shiu_sign=shiu.astype(np.int8), edge_pre=e_pre.astype(np.int32),
+            edge_post=e_post.astype(np.int32), edge_synapses=e_count.astype(np.int32)))
+    # Only once the new file is in place: drop this name's other format, never other circuits or bridges.
+    (folder / f"{name}.{'npz' if fmt == 'json' else 'json'}").unlink(missing_ok=True)
     counts = header["provenance"]["counts"]
     print(json.dumps({"name": name, "path": str(shown(path)), **{k: counts[k] for k in ["neurons", "connections", "cell_types", "by_hop"]},
                       "readout_types": readout, "bytes": path.stat().st_size, "sha256": sha256(path.read_bytes())}))
@@ -775,14 +883,16 @@ def flyvis_bridge(circuit_name):
                     "eye": eyes.astype(int).tolist(), "weight": [round(float(w), 6) for w in weight]},
     }
     out = path.with_name(f"{path.stem}.flyvis.json")
-    out.write_text(json.dumps(bridge, separators=(",", ":")))
+    write_atomic(out, lambda handle: handle.write(json.dumps(bridge, separators=(",", ":")).encode()))
     print(json.dumps({"bridge": str(shown(out)), "input_neurons": len(targets),
                       "with_flyvis_input": int((covered > 0).sum()), "entries": len(weight),
                       "median_coverage": float(np.median(covered / np.maximum(total, 1))),
                       "mapped_types": len(mapping), "bytes": out.stat().st_size}))
 
 
-if __name__ == "__main__":
+def arguments(argv=None):
+    """Parse the command line. The shared options work before or after the subcommand: the subcommands'
+    copies default to SUPPRESS, so they never overwrite a value given before the subcommand."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--threshold", type=int, default=5, help="Minimum synapses per connection (default 5)")
     parser.add_argument("--hops", type=int, default=2, help="Presynaptic hops back from DNa02 (default 2)")
@@ -790,20 +900,26 @@ if __name__ == "__main__":
     parser.add_argument("--offline", action="store_true", help="Use cached downloads only")
     commands = parser.add_subparsers(dest="command", help="Without a command: rebuild the committed DNa02 circuit")
     prep = commands.add_parser("prepare", help="Convert the cached downloads for `build` (needs pyarrow once)")
-    prep.add_argument("--offline", action="store_true", help="Use cached downloads only")
+    prep.add_argument("--offline", action="store_true", default=argparse.SUPPRESS, help="Use cached downloads only")
     custom = commands.add_parser("build", help="Build a circuit around any seeds from the prepared archive (NumPy only)")
     custom.add_argument("--name", required=True, help="Circuit name: lower-case letters, digits, '.', '-', '_'")
     custom.add_argument("--seeds", default="", help="Comma-separated cell types or FlyWire root IDs, e.g. DNa01,DNa02")
     custom.add_argument("--seed", action="append", default=[], help="One seed; repeat it, and use it for names with commas")
-    custom.add_argument("--hops", type=int, default=2, help="Presynaptic hops back from the seeds (default 2)")
-    custom.add_argument("--threshold", type=int, default=5, help="Minimum synapses per connection (default 5)")
-    custom.add_argument("--cap", type=int, default=3000, help="Maximum neurons, seeds included (default 3000)")
+    custom.add_argument("--hops", type=int, default=argparse.SUPPRESS, help="Presynaptic hops back from the seeds (default 2)")
+    custom.add_argument("--threshold", type=int, default=argparse.SUPPRESS, help="Minimum synapses per connection (default 5)")
+    custom.add_argument("--cap", type=int, default=argparse.SUPPRESS, help="Maximum neurons, seeds included (default 3000)")
     custom.add_argument("--whole-brain", action="store_true", help="Every connected neuron; seeds set hop distances")
     custom.add_argument("--format", choices=["auto", "json", "npz"], default="auto")
     custom.add_argument("--committed", action="store_true", help="Write to data/circuits/ (maintainers) instead of data/circuits/local/")
+    custom.add_argument("--balance-sides", action="store_true",
+                        help="Apply the cap per cell type and side, keeping left and right neurons of a type in pairs")
     bridge = commands.add_parser("flyvis-bridge", help="Wire FlyVis cell types to a circuit's visual projection neurons")
     bridge.add_argument("--circuit", required=True, help="Circuit name, committed or local")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    args = arguments()
     if args.command == "flyvis-bridge":
         flyvis_bridge(args.circuit)
         sys.exit(0)
@@ -813,7 +929,8 @@ if __name__ == "__main__":
         seeds = [t for t in args.seeds.split(",") if t.strip()] + args.seed
         if not seeds:
             sys.exit("Give at least one seed with --seeds or --seed.")
-        build_custom(args.name, seeds, args.hops, args.threshold, args.cap, args.whole_brain, args.format, args.committed)
+        build_custom(args.name, seeds, args.hops, args.threshold, args.cap, args.whole_brain, args.format, args.committed,
+                     args.balance_sides)
         sys.exit(0)
     try:
         import pyarrow  # noqa: F401

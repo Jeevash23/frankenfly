@@ -1,9 +1,11 @@
 import {ChevronDown, Crosshair} from 'lucide-react';
-import type {Config, Dynamics, NeuralModel, Sample, State, Stimulus} from '../types';
-import {configForCircuit, dynamicsNames, modelNames} from '../models';
+import type {Config, Dynamics, NeuralModel, Sample, State, StimulusChange} from '../types';
+import {configForCircuit, dynamicsNames, modelNames, modelSwitch} from '../models';
 import {fmt} from '../format';
-import {useEffect, useState} from 'react';
+import {throttled} from '../draft';
+import {useEffect, useRef, useState} from 'react';
 import {useCircuitList} from '../connectome/useCircuit';
+import {sideBalanced} from '../connectome/build';
 
 type FlyVisStatus = {
   available: boolean;
@@ -67,6 +69,7 @@ function CircuitSelect({
                 {c.name}
                 {c.neurons ? ` · ${c.neurons.toLocaleString()} neurons` : ''}
                 {c.committed === false ? ' · local' : ''}
+                {sideBalanced(c) ? ' · left/right balanced' : ''}
               </option>
             ))}
           </select>
@@ -95,6 +98,67 @@ function CircuitSelect({
   );
 }
 
+// The intensity slider keeps its own value while it is dragged or stepped with the keys: values go
+// to the server at most every 200 ms and once more on release, and the server's value shows again
+// once the last one is answered. It is never disabled by its own request, so a drag continues and
+// keyboard focus stays.
+function IntensitySlider({
+  value,
+  disabled,
+  commit,
+}: {
+  value: number | undefined;
+  disabled: boolean;
+  commit: (intensity: number) => Promise<unknown>;
+}) {
+  const [held, setHeld] = useState<number | null>(null);
+  const latest = useRef(commit);
+  latest.current = commit;
+  const answer = useRef<Promise<unknown> | null>(null);
+  const [sender] = useState(() =>
+    throttled((v: number) => {
+      answer.current = latest.current(v);
+    }, 200),
+  );
+  const release = () => {
+    sender.flush();
+    const waiting = answer.current;
+    if (!waiting) return setHeld(null);
+    void waiting.finally(() => {
+      if (answer.current !== waiting) return;
+      answer.current = null;
+      setHeld(null);
+    });
+  };
+  const shown = held ?? value;
+  return (
+    <label className="slider-label">
+      <span>Intensity</span>
+      <b>
+        {fmt(shown, 1)}
+        <small>a.u.</small>
+      </b>
+      <input
+        aria-label="Stimulus intensity"
+        type="range"
+        min="0"
+        max="2"
+        step=".1"
+        value={shown ?? 1}
+        disabled={disabled}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          setHeld(v);
+          sender.push(v);
+        }}
+        onPointerUp={release}
+        onKeyUp={release}
+        onBlur={release}
+      />
+    </label>
+  );
+}
+
 export type Draft = {x: string; y: string};
 
 export function StimulusPanel({
@@ -109,14 +173,24 @@ export function StimulusPanel({
   state: State | null;
   editDisabled: boolean;
   running: boolean;
-  reset: (override?: Partial<Config>) => void;
-  moveTarget: (target: Partial<Stimulus>) => void;
+  reset: (override?: Partial<Config>) => Promise<unknown>;
+  moveTarget: (change: StimulusChange) => Promise<unknown>;
   draft: Draft;
   setDraft: (draft: Draft | ((previous: Draft) => Draft)) => void;
 }) {
   const sample: Sample | undefined = state?.sample ?? undefined;
   const stimulus = state?.config.stimulus;
   const flyvis = useFlyVis(state?.config.connectome_parameters.circuit);
+  // With FlyVis eyes the circuit reads FlyVis cell types, not one value per side; these are summaries.
+  const flyvisActive = state?.config.sensor_model === 'flyvis';
+  // Why a model switch also changed the sensor; cleared by the next selection here.
+  const [note, setNote] = useState<string | null>(null);
+  const chooseModel = async (model: NeuralModel) => {
+    if (!state) return;
+    const change = modelSwitch(state.config, model);
+    setNote(null);
+    if (await reset(change.override)) setNote(change.note);
+  };
   const flyvisProblem =
     state?.config.engine !== 'flygym'
       ? 'needs the FlyGym body'
@@ -152,7 +226,10 @@ export function StimulusPanel({
               aria-label="Sensor model"
               disabled={editDisabled || running}
               value={state?.config.sensor_model ?? 'geometric'}
-              onChange={(e) => reset({sensor_model: e.target.value as Config['sensor_model']})}
+              onChange={(e) => {
+                setNote(null);
+                void reset({sensor_model: e.target.value as Config['sensor_model']});
+              }}
             >
               <option value="geometric">Geometric bearing</option>
               <option value="vision" disabled={state?.config.engine !== 'flygym'}>
@@ -172,7 +249,7 @@ export function StimulusPanel({
               aria-label="Neural model"
               disabled={editDisabled || running}
               value={state?.config.neural_model ?? 'engineered'}
-              onChange={(e) => reset({neural_model: e.target.value as NeuralModel})}
+              onChange={(e) => void chooseModel(e.target.value as NeuralModel)}
             >
               {(Object.keys(modelNames) as NeuralModel[]).map((model) => (
                 <option key={model} value={model}>
@@ -183,12 +260,17 @@ export function StimulusPanel({
             <ChevronDown size={14} />
           </div>
         </label>
+        {note && (
+          <p className="microcopy" role="status">
+            {note}
+          </p>
+        )}
         {state?.config.neural_model === 'connectome' && (
           <CircuitSelect state={state} disabled={editDisabled || running} reset={reset} />
         )}
         <div className="target-map">
           <Arena state={state} compact disabled={editDisabled} onTarget={moveTarget} />
-          <span className="map-hint">Click to reposition</span>
+          <span className="map-hint">Click or use arrow keys</span>
           <span className="map-legend">
             <i />
             Target
@@ -228,35 +310,23 @@ export function StimulusPanel({
             </label>
           ))}
         </div>
-        <label className="slider-label">
-          <span>Intensity</span>
-          <b>
-            {fmt(stimulus?.intensity, 1)}
-            <small>a.u.</small>
-          </b>
-          <input
-            aria-label="Stimulus intensity"
-            type="range"
-            min="0"
-            max="2"
-            step=".1"
-            value={stimulus?.intensity ?? 1}
-            disabled={editDisabled}
-            onChange={(e) => moveTarget({intensity: Number(e.target.value)})}
-          />
-        </label>
+        <IntensitySlider
+          value={stimulus?.intensity}
+          disabled={editDisabled}
+          commit={(intensity) => moveTarget({intensity})}
+        />
         <div className="sensor-readouts">
           <div>
             <span>
               <i className="legend-dot left" />
-              Left sensor
+              {flyvisActive ? 'Left eye · FlyVis mean' : 'Left sensor'}
             </span>
             <b>{fmt(sample?.sensors.left, 3)}</b>
           </div>
           <div>
             <span>
               <i className="legend-dot right" />
-              Right sensor
+              {flyvisActive ? 'Right eye · FlyVis mean' : 'Right sensor'}
             </span>
             <b>{fmt(sample?.sensors.right, 3)}</b>
           </div>

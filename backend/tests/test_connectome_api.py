@@ -56,12 +56,12 @@ def test_new_settings_are_validated(client):
     assert status("/api/connectome/parameters", {"tau_ms": "fast"}) == 422
     assert status("/api/interventions", {"silence_types": ["Not-a-type"]}) == 422
     assert status("/api/interventions", {"silence_dna02": "middle"}) == 422
-    # Each model only accepts its own interventions and parameters.
-    assert status("/api/interventions", {"silence": "descending"}) == 409
+    # Each model only accepts its own interventions (422, as in a configuration) and parameters (409: reset first).
+    assert status("/api/interventions", {"silence": "descending"}) == 422
     assert status("/api/parameters", {"tonic_drive": .4}) == 409
     engineered = {**CONNECTOME.model_dump(), "neural_model": "engineered"}
     assert status("/api/reset", engineered) == 200
-    assert status("/api/interventions", {"silence_dna02": "left"}) == 409
+    assert status("/api/interventions", {"silence_dna02": "left"}) == 422
     assert status("/api/connectome/parameters", {"global_gain": .002}) == 409
     assert status("/api/reset", {**engineered, "initial_interventions": {"silence_dna02": "both"}}) == 422
 

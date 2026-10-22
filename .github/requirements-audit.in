@@ -1,0 +1,2 @@
+# The CI security job installs pip-audit from the hashed requirements-audit.txt.
+pip-audit==2.10.1

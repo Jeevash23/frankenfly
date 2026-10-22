@@ -89,9 +89,10 @@ def test_steering_curve_bins_turning_by_target_bearing():
     assert sum(r["samples"] for r in rows) == len(t)
 
 
-def synthetic_dual_mat(path, seconds=60, fs=10000, lag_s=.15, gain=2.0, positive_yaw="right", seed=1):
+def synthetic_dual_mat(path, seconds=60, fs=10000, lag_s=.15, gain=2.0, positive_yaw="right", seed=1, stimulated=()):
     """A labeled fixture in the layout of the Rayshubskiy et al. dual recordings: two voltage traces with
-    2.5 mV spikes at known Poisson times, and yaw following gain × (R − L true rate) after lag_s."""
+    2.5 mV spikes at known Poisson times, and yaw following gain × (R − L true rate) after lag_s. During the
+    `stimulated` (start_s, end_s) epochs the stim channel is on and the fly turns hard left, whatever DNa02 does."""
     import scipy.io
     rng = np.random.default_rng(seed)
     t_ephys = np.arange(seconds * fs) / fs
@@ -108,11 +109,15 @@ def synthetic_dual_mat(path, seconds=60, fs=10000, lag_s=.15, gain=2.0, positive
         traces[key], truth[side] = v, spikes
     true_difference = np.interp(t_ball - lag_s, t_ephys, rate["right"] - rate["left"])
     rightward = gain * true_difference + rng.normal(0, 5, len(t_ball))
+    stim = np.zeros(len(t_ephys), dtype=np.uint8)
+    for start, end in stimulated:
+        stim[(t_ephys >= start) & (t_ephys < end)] = 1
+        rightward[(t_ball >= start) & (t_ball < end + .3)] = -300  # the response outlasts the light by 0.3 s
     yaw = (rightward if positive_yaw == "right" else -rightward) / compare.RAYSHUBSKIY_YAW_TO_DEG_S
     scipy.io.savemat(path, {"ephys_A": traces["ephys_A"][:, None], "ephys_B": traces["ephys_B"][:, None],
                             "ephys_SR": float(fs), "ball_SR": 100.0, "t_ephys": t_ephys[:, None], "t_ball": t_ball[:, None],
                             "yaw": yaw[:, None], "fwd": np.zeros((len(t_ball), 1)), "lat": np.zeros((len(t_ball), 1)),
-                            "stim": np.zeros((1, len(t_ephys)), dtype=np.uint8)})
+                            "stim": stim[None, :]})
     return truth
 
 
@@ -137,6 +142,58 @@ def test_dual_recordings_convert_to_rates_and_rightward_turning(tmp_path):
     assert compare.fit_turning(compare.load_recording(out))["lag_s"] == fit["lag_s"]
     with pytest.raises(ValueError):
         compare.rayshubskiy_recording(path, positive_yaw="up")
+
+
+def test_samples_marked_invalid_are_left_out_of_both_fits(tmp_path):
+    t, left, right, rotation = synthetic_fly()
+    clean = compare.Recording(t, left, right, rotation)
+    corrupted = rotation.copy()
+    epochs = (t % 15 >= 10) & (t % 15 < 12)  # 2 s of every 15 s driven by something else
+    corrupted[epochs] = -200
+    assert compare.fit_turning(compare.Recording(t, left, right, corrupted))["r2"] < .5
+    masked = compare.Recording(t, left, right, corrupted, valid=~epochs)
+    fit, filt = compare.fit_turning(masked), compare.fit_filter(masked, max_lag_s=.3)
+    assert fit["gain"] == pytest.approx(2.5, rel=.03) and fit["lag_s"] == pytest.approx(.12, abs=.011) and fit["r2"] > .9
+    assert fit["samples"] < compare.fit_turning(clean)["samples"] * .9 and filt["heldout_r2"] > .9
+    # All valid: exactly the unmasked fits.
+    assert compare.fit_turning(compare.Recording(t, left, right, rotation, valid=np.ones(len(t)))) == compare.fit_turning(clean)
+    out = tmp_path / "masked.csv"
+    compare.save_recording(masked, out)
+    assert out.read_text().splitlines()[0].endswith(",valid")
+    assert compare.fit_turning(compare.load_recording(out))["gain"] == pytest.approx(fit["gain"], rel=1e-3)
+    compare.save_recording(clean, out)
+    assert out.read_text().splitlines()[0] == ",".join(compare.COLUMNS)
+    with pytest.raises(ValueError, match="valid"):
+        compare.Recording(t, left, right, rotation, valid=[True])
+
+
+def test_stimulus_mask_covers_the_epoch_and_the_margin_after_it():
+    t_stim = np.arange(0, 10, .001)
+    stim = (t_stim >= 2) & (t_stim < 3)
+    t = np.arange(0, 10, .01) + .005
+    mask = compare.stimulus_mask(stim, t_stim, t, margin_s=.5)
+    assert not mask[t < 2].any() and mask[(t > 2) & (t < 3.5)].all() and not mask[t > 3.501].any()
+    assert not compare.stimulus_mask(np.zeros(len(t_stim)), t_stim, t).any()
+
+
+def test_stimulation_epochs_are_excluded_from_recorded_fly_fits_by_default(tmp_path):
+    path = tmp_path / "stimulated.mat"
+    synthetic_dual_mat(path, stimulated=[(10, 12), (30, 32), (50, 52)])
+    masked, summary = compare.rayshubskiy_recording(path)
+    kept, included = compare.rayshubskiy_recording(path, exclude_stimulus=False)
+    assert summary["stimulus_fraction"] == pytest.approx(.1, abs=.001)
+    assert summary["stimulus"]["excluded"] and summary["stimulus"]["margin_s"] == compare.STIMULUS_MARGIN_S
+    assert summary["stimulus"]["excluded_fraction"] == pytest.approx(3 * 2.5 / 60, abs=.01)
+    assert not included["stimulus"]["excluded"] and included["stimulus"]["excluded_fraction"] == 0
+    fit, unmasked = compare.fit_turning(masked), compare.fit_turning(kept)
+    assert fit["correlation_sign"] == 1 and .8 < fit["gain"] <= 2.1 and fit["r2"] > 2 * unmasked["r2"]
+    assert compare.fit_filter(masked)["heldout_r2"] > .5 > compare.fit_filter(kept)["heldout_r2"]
+    printed = subprocess.run([sys.executable, str(ROOT / "scripts/toolkit.py"), "compare", "--recording", str(path),
+                              "--out", str(tmp_path / "fit")], capture_output=True, text=True, timeout=120)
+    assert printed.returncode == 0, printed.stderr
+    assert "left out of the fits" in printed.stdout and "| fly | spikes/s |" in printed.stdout
+    saved = json.loads((tmp_path / "fit.json").read_text())
+    assert saved["fits"]["fly"]["r2"] == pytest.approx(fit["r2"]) and saved["rates"]["fly"]["left"]["p99"] > 0
 
 
 def test_the_linear_filter_predicts_held_out_turning():
@@ -176,7 +233,9 @@ def test_recorded_downloads_are_complete_and_verified(tmp_path):
 @pytest.mark.skipif(not (ROOT / ".cache/recordings/rayshubskiy2025-a2_d_13.mat").is_file(),
                     reason="needs the downloaded recording (scripts/fetch_recording.py)")
 def test_the_downloaded_recording_converts_as_documented():
-    recording, summary = compare.rayshubskiy_recording(ROOT / ".cache/recordings/rayshubskiy2025-a2_d_13.mat")
+    # The documented v0.5 numbers include the stimulus epochs (--include-stimulus).
+    recording, summary = compare.rayshubskiy_recording(ROOT / ".cache/recordings/rayshubskiy2025-a2_d_13.mat",
+                                                       exclude_stimulus=False)
     assert summary["duration_s"] == 575 and summary["spikes"] == {"left": 571, "right": 1888}
     fit = compare.fit_turning(recording)
     assert fit["lag_s"] == pytest.approx(.18) and fit["gain"] == pytest.approx(3.359, abs=.001)

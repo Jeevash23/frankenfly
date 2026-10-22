@@ -7,11 +7,18 @@ import {
   edgesToDraw,
   laterality,
   layoutTypes,
+  neighbour,
   readoutRows,
   topPartners,
   VIEW,
 } from '../src/connectome/layout.ts';
-import {buildProblem, defaultBuild, parseTypes, suggestTypes} from '../src/connectome/build.ts';
+import {
+  buildProblem,
+  defaultBuild,
+  parseTypes,
+  sideBalanced,
+  suggestTypes,
+} from '../src/connectome/build.ts';
 
 const type = (index, name, layer, left, right, count = left + right) => ({
   index,
@@ -88,6 +95,17 @@ test('the builder form explains problems in plain words', () => {
   assert.match(buildProblem({...ok, hops: 0}, [], known), /1 to 6 hops/);
   assert.match(buildProblem({...ok, cap: 5}, [], known), /10 to 200,000/);
   assert.equal(buildProblem({...ok, seeds: ['anything']}, [], null), null); // catalog not loaded
+  // Side balance is sent as balance_sides; it needs the cap a whole-brain build does not have.
+  assert.equal(defaultBuild.balance_sides, false);
+  assert.equal(buildProblem({...ok, balance_sides: true}, [], known), null);
+  assert.match(buildProblem({...ok, balance_sides: true, whole_brain: true}, [], known), /no cap/);
+});
+
+test('circuits built with balanced sides are recognised from the circuit list', () => {
+  assert.equal(sideBalanced({name: 'a', build: {balance_sides: true}}), true);
+  assert.equal(sideBalanced({name: 'b', build: {balance_sides: false}}), false);
+  assert.equal(sideBalanced({name: 'c'}), false); // servers before v0.6
+  assert.equal(sideBalanced(undefined), false);
 });
 
 test('seed suggestions rank prefix matches first and population lists split on semicolons', () => {
@@ -140,4 +158,28 @@ test('the anatomy tint brightens with activity on the dark canvas', () => {
   assert.equal(glowColor(0), 'rgb(70,92,76)');
   assert.equal(glowColor(1), 'rgb(236,255,181)');
   assert.equal(glowColor(2), glowColor(1));
+});
+
+test('arrow keys move between diagram nodes by column and row', () => {
+  // Two columns of a hop band and one readout column to their right.
+  const spots = [
+    {key: 'a', x: 100, y: 60},
+    {key: 'b', x: 100, y: 120},
+    {key: 'c', x: 100, y: 180},
+    {key: 'd', x: 200, y: 70},
+    {key: 'e', x: 200, y: 170},
+    {key: 'r', x: 912, y: 150},
+  ];
+  assert.equal(neighbour(spots, 'a', 'ArrowDown'), 'b');
+  assert.equal(neighbour(spots, 'b', 'ArrowUp'), 'a');
+  assert.equal(neighbour(spots, 'c', 'ArrowDown'), null); // bottom of its column
+  assert.equal(neighbour(spots, 'c', 'ArrowRight'), 'e'); // nearest row in the next column
+  assert.equal(neighbour(spots, 'a', 'ArrowRight'), 'd');
+  assert.equal(neighbour(spots, 'e', 'ArrowRight'), 'r');
+  assert.equal(neighbour(spots, 'r', 'ArrowLeft'), 'e');
+  assert.equal(neighbour(spots, 'a', 'ArrowLeft'), null);
+  assert.equal(neighbour(spots, 'e', 'Home'), 'a');
+  assert.equal(neighbour(spots, 'a', 'End'), 'r');
+  assert.equal(neighbour(spots, 'a', 'Enter'), null);
+  assert.equal(neighbour(spots, 'missing', 'ArrowDown'), null);
 });

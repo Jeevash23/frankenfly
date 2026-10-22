@@ -1,7 +1,7 @@
 {
   "name": "digitalfly-workbench",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "engines": {
     "node": ">=22.12 <27"
@@ -11,22 +11,24 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test tests/*.test.mjs",
-    "format": "prettier --write index.html src tests",
-    "format:check": "prettier --check index.html src tests"
+    "e2e": "playwright test --config e2e/playwright.config.ts",
+    "format": "prettier --write index.html src tests e2e",
+    "format:check": "prettier --check index.html src tests e2e"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.2.8",
     "@fontsource/instrument-serif": "^5.2.8",
     "lucide-react": "^0.577.0",
-    "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "5.2.0",
-    "prettier": "3.9.9",
+    "prettier": "3.9.10",
     "typescript": "5.9.3",
-    "vite": "7.3.6"
+    "vite": "7.3.7"
   }
 }

@@ -1,0 +1,3 @@
+# Playwright output from local end-to-end runs (also git-ignored in e2e/.gitignore).
+e2e/test-results/
+e2e/playwright-report/

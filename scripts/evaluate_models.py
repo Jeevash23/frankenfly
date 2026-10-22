@@ -10,8 +10,13 @@ DNa02 left, right or both in each connectome model and measures the change in tu
 
 Every run starts from the default configuration and changes only the target, seed, model,
 circuit, dynamics and silencing. Results describe this simulation, not fly behavior. A JSON
-report goes to the ignored docs/evidence/ folder; Markdown tables are printed. The trials run
-through the research toolkit (digitalfly.toolkit), so the worker count does not change them.
+report goes to the ignored docs/evidence/ folder; Markdown tables are printed. Only a run of every
+model at the default duration writes evaluation-<engine>[-quick].json; a partial run (--models or
+--duration) adds those to the name, so it never replaces the full report. The trials run through
+the research toolkit (digitalfly.toolkit), so the worker count does not change them; a trial that
+fails is listed in the report's "errors" and left out of the tables. Each finished trial is
+appended to the report's .jsonl and .csv while the evaluation runs, so an interrupted or failed
+evaluation keeps its work: rerun the same command with --resume to run only the missing trials.
 """
 import argparse
 import json
@@ -37,6 +42,17 @@ MODELS = {
 BEARINGS = [0, 45, -45, 90, -90, 180]
 DISTANCES = [12, 30]
 SEEDS = [1, 2, 3, 4, 5]
+DURATION_S = {"toy": 10., "flygym": 6.}
+
+
+def report_name(engine, quick, models, duration):
+    """The canonical file name for the full set of models at the default duration; a partial run names what it ran."""
+    name = f"evaluation-{engine}{'-quick' if quick else ''}"
+    if set(models) != set(MODELS):
+        name += "-" + "+".join(models)
+    if duration != DURATION_S[engine]:
+        name += f"-{duration:g}s"
+    return name + ".json"
 
 
 def config(engine, model, bearing, distance, seed, silence="none"):
@@ -92,15 +108,18 @@ def silencing_table(rows):
     return "\n".join(lines)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Matched-seed evaluation of the neural models.")
     parser.add_argument("--engine", choices=["toy", "flygym"], default="toy")
     parser.add_argument("--quick", action="store_true", help="Smaller set: 12 mm targets, 3 seeds")
     parser.add_argument("--duration", type=float, help="Simulated seconds per trial (default 10 toy, 6 FlyGym)")
     parser.add_argument("--models", default=",".join(MODELS), help=f"Comma-separated, from {', '.join(MODELS)}")
     parser.add_argument("--workers", type=int, default=1, help="Parallel processes (results do not depend on it)")
-    args = parser.parse_args()
-    duration = args.duration or (10. if args.engine == "toy" else 6.)
+    parser.add_argument("--resume", action="store_true",
+                        help="Reuse the trials already saved without an error in the report's .jsonl; run only the rest")
+    parser.add_argument("--out", help="Report file (default docs/evidence/<name>.json); trials stream to its .jsonl and .csv")
+    args = parser.parse_args(argv)
+    duration = args.duration or DURATION_S[args.engine]
     seeds = SEEDS[:3] if args.quick else SEEDS
     distances = [12] if args.quick else DISTANCES
     models = [m for m in args.models.split(",") if m]
@@ -114,24 +133,53 @@ def main():
     plan += [("silencing", model, bearing, 12, seed, silence) for model in models
              if model in ("connectome", "steering") for bearing in [45, -45, 90, -90]
              for silence in ["none", "left", "right", "both"] for seed in seeds]
-    results = toolkit.run_trials([config(args.engine, *item[1:]) for item in plan], workers=args.workers,
-                                 duration_s=duration)
-    rows, silencing = [], []
+    path = Path(args.out) if args.out else ROOT / "docs/evidence" / report_name(args.engine, args.quick, models, duration)
+    path = toolkit.with_ending(path, ".json")  # evaluation-toy-0.3s.json keeps its 0.3s; logs go next to it
+    log = toolkit.TrialLog(path, args.resume)
+    configs = [config(args.engine, *item[1:]) for item in plan]
+    hashes = [toolkit.config_hash(c, duration_s=duration) for c in configs]
+    # Identical trials (the unsilenced silencing rows repeat behavior rows) run once; results are deterministic.
+    first = {}
+    for k, key in enumerate(hashes):
+        first.setdefault(key, k)
+    todo = [key for key in first if key not in log.saved]
+    print(f"Running {len(todo)} trials on {args.workers} worker(s)"
+          + (f"; {len(first) - len(todo)} already saved" if len(todo) < len(first) else "")
+          + f"; finished trials go to {shown(log.jsonl)} …", flush=True)
+
+    def finished(index, row):
+        log.add(row)
+        if row["error"]:
+            print(f"Trial failed: {row['error']}", file=sys.stderr, flush=True)
+    new = dict(zip(todo, toolkit.run_trials([configs[first[key]] for key in todo], workers=args.workers,
+                                            on_result=finished, duration_s=duration)))
+    results = [new[key] if key in new else log.saved[key] for key in hashes]
+    rows, silencing, errors = [], [], []
     for (part, model, bearing, distance, seed, silence), result in zip(plan, results):
         row = {**result, "model": model, "bearing_deg": bearing, "distance_mm": distance, "silence_dna02": silence}
-        (rows if part == "behavior" else silencing).append(row)
+        (errors if row["error"] else rows if part == "behavior" else silencing).append(row)
+    circuits = [MODELS[m][1].get("connectome_parameters", {}).get("circuit", "fafb783-dna02")
+                for m in models if MODELS[m][1]["neural_model"] == "connectome"]
     report = {"engine": args.engine, "duration_s": duration, "seeds": seeds, "reach_threshold_mm": toolkit.REACH_MM,
               "turn_threshold_deg": toolkit.TURN_DEG, "models": {m: MODELS[m] for m in models},
               "wall_s": time.perf_counter() - started, "python": platform.python_version(),
-              "trials": rows, "silencing": silencing,
-              "scope": "Simulated behavior of engineered or connectome-constrained controllers; no biological validation."}
-    evidence = ROOT / "docs/evidence"
-    evidence.mkdir(parents=True, exist_ok=True)
-    (evidence / f"evaluation-{args.engine}{'-quick' if args.quick else ''}.json").write_text(json.dumps(report, indent=1))
-    print(f"## {args.engine} · {duration:g} simulated s per trial · seeds {', '.join(map(str, seeds))}\n")
+              "trials": rows, "silencing": silencing, "errors": errors,
+              "scope": "Simulated behavior of engineered or connectome-constrained controllers; no biological validation.",
+              "provenance": toolkit.provenance(circuits)}
+    path.write_text(json.dumps(report, indent=1))
+    print(f"\n## {args.engine} · {duration:g} simulated s per trial · seeds {', '.join(map(str, seeds))}\n")
     print(behavior_table(rows) + "\n")
     if silencing:
         print(silencing_table(silencing))
+    print(f"\nSaved {shown(path)}")
+    if errors:
+        sys.exit(f"{len(errors)} trials failed and are left out of the tables: "
+                 + "; ".join(sorted({e['error'] for e in errors})[:3])
+                 + ". Rerun the same command with --resume to retry only those.")
+
+
+def shown(path):
+    return path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
 
 
 if __name__ == "__main__":

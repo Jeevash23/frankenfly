@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 from digitalfly.api.models import ConnectomeParameters, Interventions, RunConfig, SensorState
-from digitalfly.neural.connectome import (ConnectomeCircuit, bridge_path, circuit_path, list_circuits, load_bridge,
-                                          load_circuit)
+from digitalfly.neural.connectome import (ConnectomeCircuit, bridge_path, check_flyvis_inputs, circuit_path, list_circuits,
+                                          load_bridge, load_circuit)
 from digitalfly.vision.flyvis_eyes import available, column_order
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +28,7 @@ def test_committed_bridges_match_their_circuits():
         assert np.allclose(weights[fed], 1, atol=1e-4) and fed.sum() >= .95 * len(raw["neurons"])
         assert raw["flyvis"]["flywire_names"]["CT1(Lo1)"] == "CT1" and "Mi9" in raw["flyvis"]["flywire_names"]
         assert 0 < np.median(raw["coverage"]) < 1
+        check_flyvis_inputs(data)  # the default input, every visual projection neuron, is reached on both sides
     assert not any(c["name"].endswith(".flyvis") for c in list_circuits())
     with pytest.raises(ValueError):
         circuit_path("fafb783-dna02.flyvis")
@@ -63,6 +64,52 @@ def test_visual_drive_reaches_the_input_neurons_of_the_seeing_eye(toy_brain):
     bridge_path(data).write_text(bridge_path(data).read_text().replace(data.sha256, "0" * 64))
     with pytest.raises(ValueError, match="rebuild"):
         ConnectomeCircuit(ConnectomeParameters(circuit="toy-brain")).set_visual(responses)
+
+
+def toy_bridge(data, neurons=(2, 3)):
+    """FlyVis type 5 of each eye onto the toy circuit's LCa neuron on that side (index 2 left, 3 right)."""
+    bridge_path(data).write_text(json.dumps({
+        "format": "digitalfly-flyvis-bridge", "version": 1, "circuit": data.key, "circuit_sha256": data.sha256,
+        "flyvis": {"release": "1.2.0", "types": TYPES}, "neurons": list(neurons),
+        "entries": {"neuron": list(range(len(neurons))), "type": [5] * len(neurons), "eye": [0, 1][:len(neurons)],
+                    "weight": [1.0] * len(neurons)}}))
+
+
+@pytest.mark.parametrize("dynamics", ["rate", "spiking"])
+def test_flyvis_runs_describe_their_unsigned_bridge_input(toy_brain, dynamics):
+    toy_bridge(load_circuit("toy-brain"))
+    model = ConnectomeCircuit(ConnectomeParameters(circuit="toy-brain", dynamics=dynamics))
+    sensor = model.description()
+    assert sensor["input_mapping"].startswith("Engineered: the left/right sensor value") and sensor["flyvis_bridge"] is None
+    model.set_visual(np.zeros((2, 65)))
+    info = model.description()
+    assert "FlyVis bridge" in info["input_mapping"] and "sensor value" not in info["input_mapping"]
+    assert "every optic-lobe input counts as excitatory" in info["input_mapping"]
+    assert ("Poisson" in info["input_mapping"]) == (dynamics == "spiking")
+    assert info["labels"]["input_mapping"] == "engineered, unsigned FlyVis bridge"
+    assert info["flyvis_bridge"]["file"].endswith("toy-brain.flyvis.json") and "unsigned" in info["flyvis_bridge"]["signs"]
+    model.set_visual(None)
+    assert model.description()["input_mapping"] == sensor["input_mapping"]
+
+
+def test_flyvis_needs_input_neurons_the_bridge_reaches(toy_brain):
+    data = load_circuit("toy-brain")
+    toy_bridge(data)
+    check_flyvis_inputs(data)
+    check_flyvis_inputs(data, ["LCa"])
+    with pytest.raises(ValueError, match="no sensor-input neuron on the left or right side"):
+        check_flyvis_inputs(data, ["Inh"])  # central neurons: the bridge feeds visual projection neurons only
+    model = ConnectomeCircuit(ConnectomeParameters(circuit="toy-brain", input_types=["Inh"]))
+    with pytest.raises(ValueError, match="Choose visual projection cell types"):
+        model.set_visual(np.zeros((2, 65)))
+    assert model.visual is None
+    seeing = ConnectomeCircuit(ConnectomeParameters(circuit="toy-brain"))
+    seeing.set_visual(np.zeros((2, 65)))
+    with pytest.raises(ValueError, match="FlyVis eyes reach no sensor-input neuron"):
+        seeing.configure(ConnectomeParameters(circuit="toy-brain", input_types=["Inh"]))
+    toy_bridge(data, neurons=(2,))  # the left eye only
+    with pytest.raises(ValueError, match="on the right side"):
+        check_flyvis_inputs(data)
 
 
 def test_flyvis_settings_are_validated():

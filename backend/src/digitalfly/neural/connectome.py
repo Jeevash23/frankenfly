@@ -6,22 +6,29 @@ What each part is:
   assumed       signs: acetylcholine excitatory; GABA and glutamate inhibitory (as in Shiu et al. 2024);
                 dopamine, serotonin, octopamine and unknown transmitters excluded unless switched on
   engineered    the dynamics' global gains; which populations receive the sensors, read out turning
-                and (optionally) set walking speed; forward drive as a tonic term
+                and (optionally) set walking speed; forward drive as a tonic term; the motor path
 
 Rate dynamics, an Euler update every 1 ms for every neuron i:
   r_i += dt/tau × (clip(sum_j W_ij r_j + input_i, 0, 1) − r_i),  W_ij = sign(j) × synapses(j → i) × global_gain
 Spiking dynamics: the leaky integrate-and-fire model and parameters of Shiu et al. 2024, stepped at 0.1 ms.
-Turning: turn = output gain × Σ_types (mean right − mean left) over the readout types. A more active
-right DNa02 turns the fly right (Rayshubskiy et al. 2025); FlyGym's HybridTurningController turns right
-when the left legs' amplitude exceeds the right's.
+Interventions (engineered manipulations, docs/ARCHITECTURE.md): silenced neurons are clamped to rest and send nothing;
+a scaled neuron sends s × its activity, to its targets and to the readout; an activated neuron's rate is clamped to the
+value (rate) or it gets independent Poisson input at the value in Hz, with no refractory period (spiking).
+Turning: turn = output gain × Σ_types w_type × (mean right − mean left) over the readout types (w = 1 unless
+set; "mean" pooling divides by the number of types). A more active right DNa02 turns the fly right
+(Rayshubskiy et al. 2025); FlyGym's HybridTurningController turns right when the left legs' amplitude exceeds
+the right's. Motor: the command [forward + turn, forward − turn] passes an optional delay line and first-order
+low-pass, updated every neural step (both off by default), then motor = 1.4 × clip(command, 0, 1).
 """
 import hashlib
 import io
 import json
 import math
 import re
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 import numpy as np
 from scipy import sparse
 from digitalfly.api.models import ConnectomeParameters, Interventions, SensorState
@@ -81,7 +88,8 @@ def _describe(path: Path, raw: bytes, header: dict) -> dict:
             "format": path.suffix[1:], "version": header["version"], "neurons": counts.get("neurons"),
             "connections": counts.get("connections"), "cell_types": counts.get("cell_types"),
             "seeds": seeds, "readout_types": readout,
-            "build": {k: build.get(k) for k in ["synapse_threshold", "hops", "neuron_cap", "whole_brain", "seeds"]},
+            "build": {**{k: build.get(k) for k in ["synapse_threshold", "hops", "neuron_cap", "whole_brain", "seeds"]},
+                      "balance_sides": bool(build.get("balance_sides"))},  # absent before v0.6 and in unbalanced builds
             "coverage": prov.get("coverage"), "license": prov.get("license"), "bytes": len(raw),
             "sha256": hashlib.sha256(raw).hexdigest()}
 
@@ -100,10 +108,27 @@ def _info(path: str, mtime_ns: int) -> dict:
     return _describe(path, raw, header)
 
 
+def _whole(values, field: str, size: int | None = None) -> np.ndarray:
+    """A list of whole numbers, each an index below `size` when given, or a ValueError naming the field."""
+    array = np.asarray(values)
+    if array.ndim != 1 or (array.size and array.dtype.kind not in "iu"):
+        raise ValueError(f"Circuit field {field} must be a list of whole numbers.")
+    if size is not None and array.size and (array.min() < 0 or array.max() >= size):
+        bad = int(array[(array < 0) | (array >= size)][0])
+        raise ValueError(f"Circuit field {field} has index {bad}, outside the {size} entries it refers to.")
+    return array.astype(np.int64)
+
+
 class CircuitData:
     """One circuit file (format 1 or 2, JSON or NumPy), validated once and shared by every model."""
 
     def __init__(self, path: Path):
+        try:
+            self._load(path)
+        except KeyError as exc:  # a hand-made or truncated file: a validation error, not a crash
+            raise ValueError(f"{path.name} lacks the circuit field {exc}.") from exc
+
+    def _load(self, path: Path):
         raw, header, neurons, edges = _read(path)
         if header.get("format") != "digitalfly-circuit" or header.get("version") not in (1, 2):
             raise ValueError(f"{path.name} is not a DigitalFly circuit file.")
@@ -118,24 +143,27 @@ class CircuitData:
         lookups = header["lookups"]
         self.ids = [str(i) for i in np.asarray(neurons["id"]).tolist()]
         n = len(self.ids)
+        if len(set(self.ids)) != n:
+            raise ValueError("Circuit neuron IDs must be unique.")
         for key in ["cell_type", "super_class", "cell_class", "transmitter", "side", "hop"]:
             if len(neurons[key]) != n:
                 raise ValueError(f"Circuit field {key} has {len(neurons[key])} entries for {n} neurons.")
+        # Every lookup column must index its table: an out-of-range or negative index would otherwise wrap or crash later.
+        column = {key: _whole(neurons[key], key, len(lookups[key]))
+                  for key in ["cell_type", "super_class", "cell_class", "transmitter", "side"]}
         self.type_names = list(lookups["cell_type"])
-        self.type_index = np.asarray(neurons["cell_type"], dtype=np.int64)
-        self.super_class = np.asarray(lookups["super_class"], dtype=object)[np.asarray(neurons["super_class"])]
-        self.cell_class = np.asarray(lookups["cell_class"], dtype=object)[np.asarray(neurons["cell_class"])]
-        self.transmitter = np.asarray(lookups["transmitter"], dtype=object)[np.asarray(neurons["transmitter"])]
-        self.side = np.asarray(lookups["side"], dtype=object)[np.asarray(neurons["side"])]
-        self.hop = np.asarray(neurons["hop"], dtype=np.int64)
-        self.pre = np.asarray(edges["pre"], dtype=np.int64)
-        self.post = np.asarray(edges["post"], dtype=np.int64)
+        self.type_index = column["cell_type"]
+        self.super_class = np.asarray(lookups["super_class"], dtype=object)[column["super_class"]]
+        self.cell_class = np.asarray(lookups["cell_class"], dtype=object)[column["cell_class"]]
+        self.transmitter = np.asarray(lookups["transmitter"], dtype=object)[column["transmitter"]]
+        self.side = np.asarray(lookups["side"], dtype=object)[column["side"]]
+        self.hop = _whole(neurons["hop"], "hop")
+        self.pre = _whole(edges["pre"], "edge pre", n)
+        self.post = _whole(edges["post"], "edge post", n)
         self.synapses = np.asarray(edges["synapses"], dtype=np.float64)
-        if not (len(self.pre) == len(self.post) == len(self.synapses)):
+        if self.synapses.ndim != 1 or not (len(self.pre) == len(self.post) == len(self.synapses)):
             raise ValueError("Circuit edge arrays differ in length.")
-        if len(self.pre) and (min(self.pre.min(), self.post.min()) < 0 or max(self.pre.max(), self.post.max()) >= n):
-            raise ValueError("Circuit edge refers to a missing neuron.")
-        if (self.synapses < 1).any():
+        if not np.isfinite(self.synapses).all() or (self.synapses < 1).any():
             raise ValueError("Circuit synapse counts must be positive.")
         if self.version == 1:  # v0.3 files describe one DNa02 pair
             dna02 = self.provenance["dna02"]
@@ -227,6 +255,35 @@ def transmitter_signs(data: CircuitData, other_transmitters: str) -> np.ndarray:
     return np.array([CLASSIC_SIGNS.get(nt, other) for nt in data.transmitter], dtype=np.float64)
 
 
+def input_population(data: CircuitData, input_types: list[str] | None) -> tuple[np.ndarray, np.ndarray]:
+    """Left and right sensor-input neurons: the named cell types, or every visual projection neuron."""
+    if input_types is None:
+        visual = data.super_class == INPUT_SUPER_CLASS
+        return np.flatnonzero(visual & (data.side == "left")), np.flatnonzero(visual & (data.side == "right"))
+    return tuple(np.unique(np.concatenate([data.members(t, side) for t in input_types])) for side in ("left", "right"))
+
+
+def check_flyvis_inputs(data: CircuitData, input_types: list[str] | None = None):
+    """Raise ValueError unless the circuit's FlyVis bridge reaches input neurons on both sides. Bridges feed visual
+    projection neurons only, so FlyVis eyes on other input types would leave the circuit without input."""
+    fed = load_bridge(data)[0].getnnz(axis=1) > 0
+    blind = [side for side, members in zip(("left", "right"), input_population(data, input_types)) if not fed[members].any()]
+    if blind:
+        raise ValueError(f"FlyVis eyes reach no sensor-input neuron on the {' or '.join(blind)} side of the {data.key} "
+                         "circuit: its FlyVis bridge feeds visual projection neurons only. Choose visual projection "
+                         "cell types as the sensor input, or another sensor model.")
+
+
+class Manipulation(NamedTuple):
+    """What one set of interventions does to a circuit's neurons (ConnectomeCircuit.manipulation)."""
+    silenced: np.ndarray  # neuron indices held at rest, sending nothing
+    scaled: np.ndarray  # neuron indices whose output is scaled
+    scale: np.ndarray | None  # output factor per neuron (1 elsewhere); None when nothing is scaled
+    activated: np.ndarray  # neuron indices activated
+    activation: np.ndarray  # per activated neuron: the clamped rate (rate dynamics) or a Poisson rate in Hz (spiking)
+    items: list  # each intervention, described for the run's provenance
+
+
 class SpikingState:
     """Leaky integrate-and-fire network after Shiu et al. 2024, stepped at 0.1 ms (forward Euler).
 
@@ -240,13 +297,8 @@ class SpikingState:
 
     def __init__(self, data: CircuitData, active: np.ndarray, signs: np.ndarray, parameters: ConnectomeParameters,
                  inputs: tuple[np.ndarray, np.ndarray]):
-        p = parameters.spiking
         n = len(data.ids)
-        weights = signs[data.pre[active]] * data.synapses[active] * p.synapse_weight_mv
-        matrix = sparse.csc_matrix((weights, (data.post[active], data.pre[active])), shape=(n, n))
-        matrix.sum_duplicates()
-        self.indptr, self.indices, self.weights = matrix.indptr, matrix.indices, matrix.data
-        self.n, self.inputs, self.parameters = n, inputs, parameters
+        self.data, self.n, self.inputs = data, n, inputs
         dt = LIF["dt_ms"]
         self.substeps = round(1 / dt)
         self.delay = round(LIF["delay_ms"] / dt)
@@ -254,11 +306,49 @@ class SpikingState:
         self.refractory = np.full(n, round(LIF["refractory_ms"] / dt), dtype=np.int64)
         for side in inputs:
             self.refractory[side] = 0  # as for Poisson targets in Shiu et al.'s code
+        self.base_refractory = self.refractory
         self.decay_membrane, self.decay_synapse = dt / LIF["tau_membrane_ms"], dt / LIF["tau_synapse_ms"]
-        self.kick = LIF["poisson_scale"] * p.synapse_weight_mv
-        self.rate_decay = math.exp(-dt / p.rate_window_ms)
-        self.rate_jump = 1000 / p.rate_window_ms  # Hz added per spike, so a steady f Hz train averages f
+        # Interventions (see manipulate): none until the circuit applies some.
+        self.manipulation, self.scale, self.scaled_weights = None, None, None
+        self.activated, self.activation_chance = np.array([], dtype=np.int64), np.array([])
+        self.configure(active, signs, parameters)
         self.reset(0)
+
+    def configure(self, active: np.ndarray, signs: np.ndarray, parameters: ConnectomeParameters):
+        """Weights and parameter-dependent constants. Keeps v, g, the delay queue, rates, the step count and the
+        random generator, so a live parameter edit continues the run; spikes already queued keep their weights."""
+        p, data, n = parameters.spiking, self.data, self.n
+        weights = signs[data.pre[active]] * data.synapses[active] * p.synapse_weight_mv
+        matrix = sparse.csc_matrix((weights, (data.post[active], data.pre[active])), shape=(n, n))
+        matrix.sum_duplicates()
+        self.indptr, self.indices, self.weights = matrix.indptr, matrix.indices, matrix.data
+        self.parameters = parameters
+        self.kick = LIF["poisson_scale"] * p.synapse_weight_mv
+        self.rate_decay = math.exp(-LIF["dt_ms"] / p.rate_window_ms)
+        self.rate_jump = 1000 / p.rate_window_ms  # Hz added per spike, so a steady f Hz train averages f
+        self._scale_weights()
+
+    def manipulate(self, manipulation: "Manipulation"):
+        """Interventions from the next substep: each neuron's spikes deliver scale × its weights, and activated
+        neurons receive independent Poisson input at their rate in Hz, each event adding the sensor input's kick
+        (250 × w_syn) to v, with no refractory period (as Poisson targets in Shiu et al.'s code). A neuron without
+        input (0 Hz, which validation refuses) keeps its refractory period."""
+        if manipulation is self.manipulation:
+            return
+        self.manipulation, self.scale, self.activated = manipulation, manipulation.scale, manipulation.activated
+        self.activation_chance = np.minimum(1., manipulation.activation * LIF["dt_ms"] / 1000)
+        self.refractory = self.base_refractory
+        driven = self.activated[manipulation.activation > 0]
+        if len(driven):
+            self.refractory = self.base_refractory.copy()
+            self.refractory[driven] = 0
+        self._scale_weights()
+
+    def _scale_weights(self):
+        if self.scale is None:
+            self.scaled_weights = None
+        else:  # CSC columns are presynaptic neurons
+            self.scaled_weights = self.weights * self.scale[np.repeat(np.arange(self.n), np.diff(self.indptr))]
 
     def reset(self, seed: int):
         self.v = np.full(self.n, LIF["v_rest_mv"])
@@ -269,9 +359,11 @@ class SpikingState:
         self.step_index = 0
         self.rng = np.random.default_rng([int(seed), 0x5B1])
 
-    def advance(self, left: float, right: float, silenced: np.ndarray, drive: np.ndarray | None = None):
-        """One 1 ms neural step: ten 0.1 ms substeps. Returns the number of spikes. With `drive` (one value per
-        neuron, from FlyVis), each neuron's Poisson rate follows its own drive instead of its side's sensor."""
+    def advance(self, left: float, right: float, silenced: np.ndarray, drive: np.ndarray | None = None,
+                substeps: int | None = None):
+        """One neural step of `substeps` 0.1 ms substeps (by default ten: 1 ms). Returns the number of spikes. With
+        `drive` (one value per neuron, from FlyVis), each neuron's Poisson rate follows its own drive instead of its
+        side's sensor."""
         p = self.parameters
         if drive is None:  # the v0.4 arithmetic, unchanged, so recorded spiking runs replay exactly
             chances = [min(1., p.input_gain * value * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000) for value in (left, right)]
@@ -281,8 +373,10 @@ class SpikingState:
             inputs = [targets]
             chances = [np.minimum(1., p.input_gain * drive[targets] * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000)]
         v, g, blocked = self.v, self.g, self.blocked
+        weights = self.weights if self.scaled_weights is None else self.scaled_weights
+        activated = self.activated
         total = 0
-        for _ in range(self.substeps):
+        for _ in range(self.substeps if substeps is None else substeps):
             np.subtract(blocked, 1, out=blocked, where=blocked > 0)
             free = blocked == 0
             # Masked arithmetic instead of boolean indexing: the same values, several times faster.
@@ -303,12 +397,14 @@ class SpikingState:
                 if lengths.sum():
                     offsets = np.repeat(starts - np.cumsum(lengths) + lengths, lengths) + np.arange(lengths.sum())
                     # The target slot was emptied when it was last delivered, one substep ago.
-                    np.add.at(self.queue[(slot + self.delay) % self.slots], self.indices[offsets], self.weights[offsets])
+                    np.add.at(self.queue[(slot + self.delay) % self.slots], self.indices[offsets], weights[offsets])
             g += self.queue[slot]
             self.queue[slot] = 0
             for population, chance in zip(inputs, chances):
                 if np.any(chance > 0):  # a scalar per side, or one value per neuron (FlyVis)
                     v[population[self.rng.random(len(population)) < chance]] += self.kick
+            if len(activated):  # activation interventions: independent Poisson input
+                v[activated[self.rng.random(len(activated)) < self.activation_chance]] += self.kick
             v[spikes], g[spikes] = LIF["v_reset_mv"], 0
             blocked[spikes] = self.refractory[spikes]
             self.rate_hz *= self.rate_decay
@@ -329,37 +425,46 @@ class ConnectomeCircuit:
         self.data = None
         self.spiking = None
         self._seed = 0
-        self._silence_key = None
-        self._silenced = np.array([], dtype=np.int64)
+        self._manipulation_key = self._manipulation = None
+        self._applied = None  # the Manipulation last applied: scaled output shows in the activity
         self.visual = None  # FlyVis responses (eyes × types) when the FlyVis sensor drives the circuit
+        self._history = self._lowpassed = None  # the motor path's delay line and low-passed command, when on
+        self._motor_steps = self._motor_clipped = 0
+        self._advanced = False
         self.configure(parameters or ConnectomeParameters())
 
     def configure(self, parameters: ConnectomeParameters):
-        data = load_circuit(self.path or parameters.circuit)
+        """Apply parameters. A live edit keeps the network state: the rates, or in spiking dynamics v, g, the delay
+        queue, rates, step count and random generator, as long as circuit and input population are unchanged. It
+        also keeps the loaded circuit, never reading the file again: the cache may have dropped it since."""
+        source, data = self.path or parameters.circuit, self.data
+        if data is None or (data.path != source if isinstance(source, Path) else data.key != source):
+            data = load_circuit(source)
+        if self.visual is not None:  # FlyVis drives the circuit: its input neurons must be reachable
+            check_flyvis_inputs(data, parameters.input_types)
+        self._visual_checked = self.visual is not None
         if data is not self.data:
             self.data = data
             self.rates = np.zeros(len(data.ids))
-            self._silence_key = None
+            self._manipulation_key = self._applied = None
+            self._history = self._lowpassed = None
         self.parameters = parameters.model_copy(deep=True)
         p = self.parameters
         readout_types = p.readout_types if p.readout_types is not None else data.defaults["readout_types"]
         if not readout_types:
             raise ValueError(f"Choose readout cell types: the {data.key} circuit has no default steering readout.")
+        unweighted = sorted(set(p.readout_weights or {}) - set(readout_types))
+        if unweighted:
+            raise ValueError(f"Readout weights name cell types that are not read out: {', '.join(unweighted)}.")
         self.readouts = []
         for name in readout_types:
             left, right = data.members(name, "left"), data.members(name, "right")
             if not len(left) or not len(right):
                 raise ValueError(f"{name} needs neurons on both sides to read out turning.")
             self.readouts.append((name, left, right))
-        if p.input_types is None:
-            visual = data.super_class == INPUT_SUPER_CLASS
-            self.input_left = np.flatnonzero(visual & (data.side == "left"))
-            self.input_right = np.flatnonzero(visual & (data.side == "right"))
-            input_label = "Visual input"
-        else:
-            self.input_left = np.unique(np.concatenate([data.members(t, "left") for t in p.input_types]))
-            self.input_right = np.unique(np.concatenate([data.members(t, "right") for t in p.input_types]))
-            input_label = "Input"
+        self._readout_weights = [float((p.readout_weights or {}).get(name, 1.)) for name in readout_types]
+        self.input_left, self.input_right = input_population(data, p.input_types)
+        input_label = "Visual input" if p.input_types is None else "Input"
         if not len(self.input_left) or not len(self.input_right):
             raise ValueError("The chosen input population has no neurons on one side.")
         self.speed = np.unique(np.concatenate([data.members(t) for t in p.speed_types])) if p.speed_types else None
@@ -369,8 +474,12 @@ class ConnectomeCircuit:
         active = (data.synapses >= p.synapse_threshold) & (signs[data.pre] != 0)
         n = len(data.ids)
         if p.dynamics == "spiking":
-            self.spiking = SpikingState(data, active, signs, p, (self.input_left, self.input_right))
-            self.spiking.reset(self._seed)
+            inputs, state = (self.input_left, self.input_right), self.spiking
+            if state is not None and state.data is data and all(map(np.array_equal, state.inputs, inputs)):
+                state.configure(active, signs, p)
+            else:
+                self.spiking = SpikingState(data, active, signs, p, inputs)
+                self.spiking.reset(self._seed)
             self.W = None
         else:
             self.spiking = None
@@ -387,35 +496,101 @@ class ConnectomeCircuit:
             "excitatory_connections": int((active & (signs[data.pre] > 0)).sum()),
             "inhibitory_connections": int((active & (signs[data.pre] < 0)).sum()),
         }
+        if not (p.motor_delay_ms or p.motor_tau_ms):
+            self._history = self._lowpassed = None
+        elif self._history is None:  # switched on: the delay line starts full of the current command
+            self._restart_motor_path()
+
+    def manipulation(self, interventions: Interventions) -> Manipulation:
+        """What the interventions do to this circuit's neurons. Raises ValueError when they do not fit it: a cell type
+        or side it lacks, or an activation its dynamics cannot take. Cached for the last interventions seen."""
+        key = (self.parameters.dynamics, interventions.silence_dna02, tuple(interventions.silence_types),
+               tuple((c.name, c.side, c.mode, c.value) for c in interventions.cell_types))
+        if key != self._manipulation_key:
+            self._manipulation, self._manipulation_key = self._compile(interventions), key
+        return self._manipulation
+
+    def _compile(self, interventions: Interventions) -> Manipulation:
+        data, spiking = self.data, self.parameters.dynamics == "spiking"
+        interventions.for_dynamics(self.parameters.dynamics)
+        chosen, items = [], []
+
+        def item(name, side, mode, value, neurons, field):
+            effect = {"silence": "no output: held at rest" + (", no spikes" if spiking else ", rate 0"),
+                      "scale": f"output × {value:g} to its targets and the readout",
+                      "activate": f"independent Poisson input at {value:g} Hz to each neuron, no refractory period"
+                                  if spiking else f"rate clamped to {value:g}"}[mode]
+            items.append({"cell_type": name, "side": side, "mode": mode, "value": None if mode == "silence" else value,
+                          "neurons": int(neurons), "effect": effect, "field": field})
+        if interventions.silence_dna02 != "none":
+            if "DNa02" not in data.type_members:
+                raise ValueError(f"The {data.key} circuit has no DNa02 neurons to silence.")
+            sides = ["left", "right"] if interventions.silence_dna02 == "both" else [interventions.silence_dna02]
+            chosen += [data.members("DNa02", side) for side in sides]
+            item("DNa02", interventions.silence_dna02, "silence", 0, sum(map(len, chosen)), "silence_dna02")
+        for name in interventions.silence_types:
+            chosen.append(data.members(name))
+            item(name, "both", "silence", 0, len(chosen[-1]), "silence_types")
+        scale, scaled, activated, activation = None, [], [], []
+        for c in interventions.cell_types:
+            members = data.members(c.name, None if c.side == "both" else c.side)
+            if not len(members):
+                raise ValueError(f"{c.name} has no {c.side} neurons in the {data.key} circuit.")
+            if c.mode == "silence":
+                chosen.append(members)
+            elif c.mode == "scale":
+                scale = np.ones(len(data.ids)) if scale is None else scale
+                scale[members] *= c.value
+                scaled.append(members)
+            else:
+                activated.append(members)
+                activation.append(np.full(len(members), float(c.value)))
+            item(c.name, c.side, c.mode, c.value, len(members), "cell_types")
+        silenced = np.unique(np.concatenate(chosen)).astype(np.int64) if chosen else np.array([], dtype=np.int64)
+        scaled = np.unique(np.concatenate(scaled)).astype(np.int64) if scaled else np.array([], dtype=np.int64)
+        activated, activation = (np.concatenate(activated).astype(np.int64), np.concatenate(activation)) if activated \
+            else (np.array([], dtype=np.int64), np.array([]))
+        free = ~np.isin(activated, silenced)  # silencing wins
+        return Manipulation(silenced, scaled, scale, activated[free], activation[free], items)
 
     def silenced(self, interventions: Interventions) -> np.ndarray:
-        key = (interventions.silence_dna02, tuple(interventions.silence_types))
-        if key != self._silence_key:
-            data = self.data
-            chosen = []
-            if interventions.silence_dna02 != "none":
-                if "DNa02" not in data.type_members:
-                    raise ValueError(f"The {data.key} circuit has no DNa02 neurons to silence.")
-                sides = ["left", "right"] if interventions.silence_dna02 == "both" else [interventions.silence_dna02]
-                chosen += [data.members("DNa02", side) for side in sides]
-            chosen += [data.members(name) for name in interventions.silence_types]
-            self._silenced = np.unique(np.concatenate(chosen)).astype(np.int64) if chosen else np.array([], dtype=np.int64)
-            self._silence_key = key
-        return self._silenced
+        return self.manipulation(interventions).silenced
+
+    @property
+    def _output_scale(self) -> np.ndarray | None:
+        return None if self._applied is None else self._applied.scale
 
     @property
     def activity(self) -> np.ndarray:
-        """Rates for the rate model; for the spiking model, firing rate ÷ the rate scale."""
+        """Rates for the rate model; for the spiking model, firing rate ÷ the rate scale. Scaled neurons show their
+        output, scale × that activity, which is what their targets and the readout receive."""
         if self.spiking is not None:
-            return self.spiking.rate_hz / self.parameters.spiking.rate_scale_hz
-        return self.rates
+            activity = self.spiking.rate_hz / self.parameters.spiking.rate_scale_hz
+        else:
+            activity = self.rates
+        scale = self._output_scale
+        return activity if scale is None else activity * scale
+
+    def _activity_of(self, neurons: np.ndarray) -> np.ndarray:
+        """activity[neurons], without computing it for every neuron."""
+        if self.spiking is not None:
+            activity = self.spiking.rate_hz[neurons] / self.parameters.spiking.rate_scale_hz
+        else:
+            activity = self.rates[neurons]
+        scale = self._output_scale
+        return activity if scale is None else activity * scale[neurons]
 
     def apply_silencing(self, interventions: Interventions):
-        silenced = self.silenced(interventions)
+        """Apply interventions at once, between steps: silenced neurons go to rest and, with rate dynamics, activated
+        ones to their clamped rate; scaled output shows in the activity from now on."""
+        m = self._applied = self.manipulation(interventions)
+        silenced = m.silenced
         if self.spiking is not None:
             self.spiking.v[silenced], self.spiking.g[silenced], self.spiking.rate_hz[silenced] = LIF["v_reset_mv"], 0, 0
         else:
             self.rates[silenced] = 0
+            if len(m.activated):
+                self.rates[m.activated] = m.activation
 
     def reset(self, seed: int | None = None):
         if seed is not None:
@@ -423,6 +598,17 @@ class ConnectomeCircuit:
         self.rates.fill(0)
         if self.spiking is not None:
             self.spiking.reset(self._seed)
+        self._motor_steps = self._motor_clipped = 0
+        self._advanced = False
+        if self._history is not None:
+            self._restart_motor_path()
+
+    def restart_spiking(self):
+        """Rebuild the spiking network at rest, its random generator seeded with the run's seed: what every live
+        parameter edit did up to v0.5 (export schema 3). scripts/replay.py uses it to replay those runs."""
+        if self.spiking is not None:
+            self.spiking = None
+            self.configure(self.parameters)
 
     def set_visual(self, responses: np.ndarray | None):
         """Drive the input neurons from FlyVis (an eyes × types array, left eye first) through the circuit's
@@ -430,6 +616,9 @@ class ConnectomeCircuit:
         if responses is None:
             self.visual = self._visual_drive = None
             return None
+        if not self._visual_checked:
+            check_flyvis_inputs(self.data, self.parameters.input_types)
+            self._visual_checked = True
         matrix, types = load_bridge(self.data)
         responses = np.asarray(responses, dtype=np.float64)
         if responses.shape != (2, len(types)):
@@ -441,42 +630,91 @@ class ConnectomeCircuit:
         return float(drive[self.input_left].mean()), float(drive[self.input_right].mean())
 
     def advance(self, sensors: SensorState, interventions: Interventions, dt: float = .001):
-        silenced = self.silenced(interventions)
+        m = self._applied = self.manipulation(interventions)
+        silenced = m.silenced
         visual = self._visual_drive if self.visual is not None else None
         if self.spiking is not None:
-            self.spiking.advance(sensors.left, sensors.right, silenced, visual)
+            substeps = dt * 1000 / LIF["dt_ms"]  # the spiking network follows dt in whole 0.1 ms substeps
+            if round(substeps) < 1 or not math.isclose(substeps, round(substeps)):
+                raise ValueError(f"Spiking dynamics step in multiples of {LIF['dt_ms']:g} ms, not {dt * 1000:g} ms.")
+            self.spiking.manipulate(m)
+            self.spiking.advance(sensors.left, sensors.right, silenced, visual, round(substeps))
             self.spiking.rate_hz[silenced] = 0
-            return
-        rates = self.rates
-        rates[silenced] = 0
-        drive = self.W @ rates
-        gain = self.parameters.input_gain
-        if visual is not None:
-            drive += gain * visual
         else:
-            drive[self.input_left] += gain * sensors.left
-            drive[self.input_right] += gain * sensors.right
-        np.clip(drive, 0, 1, out=drive)
-        rates += dt / self.tau * (drive - rates)
-        rates[silenced] = 0
-        if not np.isfinite(rates).all():
-            raise FloatingPointError("Nonfinite neural state; simulation paused.")
+            rates, clamped = self.rates, len(m.activated) > 0
+            rates[silenced] = 0
+            if clamped:
+                rates[m.activated] = m.activation
+            drive = self.W @ (rates if m.scale is None else rates * m.scale)
+            gain = self.parameters.input_gain
+            if visual is not None:
+                drive += gain * visual
+            else:
+                drive[self.input_left] += gain * sensors.left
+                drive[self.input_right] += gain * sensors.right
+            np.clip(drive, 0, 1, out=drive)
+            rates += dt / self.tau * (drive - rates)
+            rates[silenced] = 0
+            if clamped:
+                rates[m.activated] = m.activation
+            if not np.isfinite(rates).all():
+                raise FloatingPointError("Nonfinite neural state; simulation paused.")
+        self._advanced = True
+        if self._history is not None:
+            self._advance_motor_path(dt)
 
     def turn(self) -> float:
         """Positive when the readout's right side is more active: a rightward turn command."""
-        r = self.activity
-        return self.parameters.output_gain * float(sum(r[right].mean() - r[left].mean() for _, left, right in self.readouts))
+        p = self.parameters
+        total = sum(w * (self._activity_of(right).mean() - self._activity_of(left).mean())
+                    for w, (_, left, right) in zip(self._readout_weights, self.readouts))
+        if p.readout_pool == "mean":
+            total /= len(self.readouts)
+        return p.output_gain * float(total)
 
     def forward(self) -> float:
         p = self.parameters
-        return p.tonic_drive if self.speed is None else p.tonic_drive + p.speed_gain * float(self.activity[self.speed].mean())
+        return p.tonic_drive if self.speed is None else p.tonic_drive + p.speed_gain * float(self._activity_of(self.speed).mean())
+
+    def command(self) -> np.ndarray:
+        """The descending command [forward + turn, forward − turn] now, before the motor path and the clip."""
+        turn, forward = self.turn(), self.forward()
+        return np.array([forward + turn, forward - turn])
+
+    def _restart_motor_path(self):
+        command = self.command()
+        self._history, self._lowpassed = deque([command]), command
+
+    def _advance_motor_path(self, dt: float):
+        """One neural step of the engineered motor path: a delay line of whole neural steps, then a first-order
+        low-pass, on the descending command."""
+        p, history = self.parameters, self._history
+        slots = round(p.motor_delay_ms / (1000 * dt)) + 1
+        if history.maxlen != slots:  # the delay changed: keep the newest commands, repeat the oldest to fill
+            history = self._history = deque([history[0]] * (slots - len(history)) + list(history), maxlen=slots)
+        history.append(self.command())
+        delayed = history[0]
+        if p.motor_tau_ms:
+            self._lowpassed = self._lowpassed + (1 - math.exp(-1000 * dt / p.motor_tau_ms)) * (delayed - self._lowpassed)
+        else:
+            self._lowpassed = delayed
 
     def motor(self, baseline: bool = False) -> np.ndarray:
         if baseline:
             return np.ones(2)
-        turn, forward = self.turn(), self.forward()
+        command = self.command() if self._lowpassed is None else self._lowpassed
+        if self._advanced:  # count each command sent after the circuit advanced: one per control interval
+            self._advanced = False
+            self._motor_steps += 1
+            self._motor_clipped += bool((command < 0).any() or (command > 1).any())
         # Larger left-leg amplitude turns FlyGym's body (and the toy body) to the right.
-        return np.clip(np.array([forward + turn, forward - turn]), 0, 1) * MOTOR_SCALE
+        return np.clip(command, 0, 1) * MOTOR_SCALE
+
+    @property
+    def motor_clipped_fraction(self) -> float:
+        """Engineered diagnostic: the fraction of control intervals since the reset whose descending command left
+        [0, 1] on either side, so the clip, not the circuit, set that side's amplitude."""
+        return self._motor_clipped / self._motor_steps if self._motor_steps else 0.
 
     def readout(self) -> list[float]:
         r = self.activity
@@ -485,12 +723,32 @@ class ConnectomeCircuit:
         return values + ([float(r[self.speed].mean())] if self.speed is not None else [])
 
     def type_means(self) -> np.ndarray:
-        return np.bincount(self.data.type_index, weights=self.activity, minlength=len(self.data.type_names)) / self.data.type_counts
+        """Mean activity per cell type; 0 for a type the file lists without neurons (never NaN, which JSON lacks)."""
+        sums = np.bincount(self.data.type_index, weights=self.activity, minlength=len(self.data.type_names))
+        return sums / np.maximum(self.data.type_counts, 1)
 
     def description(self):
         data, p = self.data, self.parameters
         prov = data.provenance
         spiking = p.dynamics == "spiking"
+        flyvis = self.visual is not None
+        if flyvis:
+            bridge = bridge_path(data)
+            input_mapping = ("Engineered, unsigned FlyVis bridge: each sensor-input neuron's drive = input gain × Σ over eyes and "
+                             "FlyVis cell types of bridge weight (its FlyWire v783 synapse fraction from that type and eye) × "
+                             "pooled FlyVis response; every optic-lobe input counts as excitatory, unlike the circuit's sign rule"
+                             + ("; Poisson spikes at input rate × input gain × that drive" if spiking else ""))
+        else:
+            input_mapping = ((f"Engineered: the left/right sensor value × input gain drives every neuron of {', '.join(p.input_types)} on that side"
+                              if p.input_types else "Engineered: the left/right sensor value × input gain drives every visual projection neuron on that side")
+                             + (" as Poisson spikes (input rate × sensor)" if spiking else ""))
+        readout = ", ".join(name if p.readout_weights is None else f"{w:g} × {name}"
+                            for w, (name, _, _) in zip(self._readout_weights, self.readouts))
+        path = ([f"delayed by {p.motor_delay_ms:g} ms (in whole neural steps)"] if p.motor_delay_ms else []) + \
+            ([f"low-passed with tau {p.motor_tau_ms:g} ms (each neural step: c += (1 − exp(−dt/tau)) × (input − c))"]
+             if p.motor_tau_ms else [])
+        motor = ("command = [forward + turn, forward − turn], " + ", then ".join(path) + "; motor = 1.4 × clip(command, 0, 1)"
+                 if path else "motor = 1.4 × clip([forward + turn, forward − turn], 0, 1)")
         return {
             "kind": self.kind, "unit_names": self.unit_names, "parameters": p.model_dump(),
             "circuit": data.key, "circuit_file": str(data.path.relative_to(ROOT)) if data.path.is_relative_to(ROOT) else data.path.name,
@@ -511,16 +769,24 @@ class ConnectomeCircuit:
             "signs": {"acetylcholine": "+1 (assumed)", "gaba": "-1 (assumed)", "glutamate": "-1 (assumed)",
                       "dopamine, serotonin, octopamine, unknown": "excluded (assumed)" if p.other_transmitters == "excluded"
                       else "+1 (assumed, Shiu et al. 2024 convention)"},
-            "input_mapping": (f"Engineered: the left/right sensor value × input gain drives every neuron of {', '.join(p.input_types)} on that side"
-                              if p.input_types else "Engineered: the left/right sensor value × input gain drives every visual projection neuron on that side")
-                             + (" as Poisson spikes (input rate × sensor)" if spiking else ""),
-            "output_mapping": ("Engineered readout: turn = output gain × Σ (right − left) over "
-                               f"{', '.join(name for name, _, _ in self.readouts)}; forward = tonic"
+            "input_mapping": input_mapping,
+            "flyvis_bridge": {"file": str(bridge.relative_to(ROOT)) if bridge.is_relative_to(ROOT) else bridge.name,
+                              "signs": "unsigned: every FlyVis cell type's input counts as excitatory"} if flyvis else None,
+            "output_mapping": (f"Engineered readout: turn = output gain × {'mean' if p.readout_pool == 'mean' else 'Σ'} (right − left) over "
+                               f"{readout}; forward = tonic"
                                + (f" + speed gain × mean({', '.join(p.speed_types)})" if p.speed_types else "")
-                               + "; motor = 1.4 × clip([forward + turn, forward − turn], 0, 1). "
+                               + f"; {motor}. "
                                "Direction: higher right DNa02 → rightward turn (Rayshubskiy et al. 2025); larger left amplitude turns right (FlyGym HybridTurningController)."),
+            "motor_clipped_fraction": self.motor_clipped_fraction,
+            # The interventions in force when described (for an export: at its end; events hold the schedule).
+            "interventions": self._applied.items if self._applied is not None else [],
             "labels": {"structure": "data-derived", "signs": "assumed", "dynamics": "engineered" if not spiking else "published model (Shiu et al. 2024 parameters)",
-                       "input_mapping": "engineered", "output_mapping": "engineered, direction from literature"},
+                       "input_mapping": "engineered, unsigned FlyVis bridge" if flyvis else "engineered",
+                       "output_mapping": "engineered, direction from literature",
+                       "motor_path": "engineered (readout weights and pooling, delay, low-pass)",
+                       "motor_clipped_fraction": "engineered diagnostic",
+                       "interventions": "engineered manipulations; activation as Poisson drive (spiking) or a clamped "
+                                        "rate (rate) approximates optogenetic activation and is not calibrated"},
         }
 
 

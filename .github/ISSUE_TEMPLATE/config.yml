@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/Jeevash23/frankenfly/security/advisories/new
+    about: Please report security problems privately, not in a public issue.
+  - name: Research guide
+    url: https://github.com/Jeevash23/frankenfly/blob/main/docs/RESEARCH.md
+    about: Methods, assumptions, evaluations and known limits of the models.

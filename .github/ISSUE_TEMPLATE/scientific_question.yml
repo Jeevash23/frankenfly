@@ -1,0 +1,48 @@
+name: Scientific question
+description: Ask about the models, the data, the methods or a result.
+labels: [question]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        DigitalFly's results describe what these models compute, not established fly biology. The research guide (docs/RESEARCH.md) documents the methods, assumptions, evaluations and known limits; it may already answer your question.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Engineered six-unit model
+        - Connectome model, rate dynamics
+        - Connectome model, spiking dynamics (Shiu et al. 2024)
+        - Circuits and the circuit builder (FlyWire v783)
+        - Sensors (geometric, rendered compound eyes)
+        - FlyVis eyes
+        - Body, walking controller and physics (FlyGym / MuJoCo)
+        - Comparison with recorded flies
+        - Anatomy atlas
+        - Research toolkit or evaluation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: What you ran or read
+      description: The configuration, commands, circuit, dynamics and seeds involved, the numbers you got, and the parts of the docs you checked. An exported run (with personal paths removed) helps.
+      render: shell
+  - type: textarea
+    id: references
+    attributes:
+      label: Relevant literature or data
+      description: Papers or datasets that bear on the question, with DOIs where you have them.
+  - type: input
+    id: version
+    attributes:
+      label: DigitalFly version
+      placeholder: 0.6.0

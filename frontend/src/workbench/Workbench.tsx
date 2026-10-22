@@ -1,9 +1,19 @@
-import type {RefObject} from 'react';
-import {ArrowDownToLine, ArrowRight, ArrowUpRight, FlaskConical, Layers3} from 'lucide-react';
-import type {Command, Config, Intervention, State, Stimulus} from '../types';
+import {useEffect, useRef, useState, type RefObject} from 'react';
+import {
+  ArrowDownToLine,
+  ArrowRight,
+  ArrowUpRight,
+  FlaskConical,
+  Layers3,
+  LoaderCircle,
+  X,
+} from 'lucide-react';
+import type {Command, Config, InterventionChange, State, StimulusChange} from '../types';
 import {fmt} from '../format';
+import {neuralStage} from '../models';
 import {BodyMeasurements, EyePanel} from '../ResearchPanels';
 import {InterventionPanel} from './InterventionPanel';
+import {PresetPanel} from './PresetPanel';
 import {SessionLog} from './SessionLog';
 import {Signals} from './Signals';
 import {type Draft, StimulusPanel} from './StimulusPanel';
@@ -12,7 +22,8 @@ import {type WorldView, WorldPanel} from './WorldPanel';
 export function Workbench({
   state,
   command,
-  busy,
+  transportPending,
+  exportPending,
   disabled,
   editDisabled,
   valid,
@@ -34,7 +45,8 @@ export function Workbench({
 }: {
   state: State | null;
   command: Command;
-  busy: boolean;
+  transportPending: boolean;
+  exportPending: boolean;
   disabled: boolean;
   editDisabled: boolean;
   valid: boolean;
@@ -47,13 +59,26 @@ export function Workbench({
   setSeed: (seed: number) => void;
   draft: Draft;
   setDraft: (draft: Draft | ((previous: Draft) => Draft)) => void;
-  moveTarget: (target: Partial<Stimulus>) => void;
-  intervene: (value: Partial<Intervention>) => void;
-  reset: (override?: Partial<Config>) => void;
-  exportRun: () => Promise<void>;
+  moveTarget: (change: StimulusChange) => Promise<unknown>;
+  intervene: (change: InterventionChange) => void;
+  reset: (override?: Partial<Config>) => Promise<unknown>;
+  exportRun: (shareSafe: boolean) => Promise<void>;
   openModelNotes: () => void;
   openExperiments: () => void;
 }) {
+  const runButton = useRef<HTMLButtonElement>(null);
+  const [shareSafe, setShareSafe] = useState(false);
+  // The banner and its button disappear with the protocol, so focus moves on to Run.
+  const [focusRun, setFocusRun] = useState(false);
+  const protocol = state?.config.protocol;
+  useEffect(() => {
+    if (!focusRun || protocol) return;
+    runButton.current?.focus();
+    setFocusRun(false);
+  }, [focusRun, protocol]);
+  const freeRun = async () => {
+    if (await reset({protocol: null})) setFocusRun(true);
+  };
   return (
     <>
       {state?.config.protocol && (
@@ -62,13 +87,26 @@ export function Workbench({
             <FlaskConical size={15} />
             <strong>{state.config.protocol.name}</strong> · stops at{' '}
             {fmt(state.config.protocol.duration_steps / 100)} s
+            {state.metrics.protocol_complete ? ' · completed' : ''}
           </span>
-          <button onClick={openExperiments}>
-            {batchActive
-              ? `Comparison trial ${state.batch?.current}/${state.batch?.total}`
-              : 'Edit protocol'}{' '}
-            <ArrowRight size={13} />
-          </button>
+          <span>
+            <button onClick={openExperiments}>
+              {batchActive
+                ? `Comparison trial ${state.batch?.current}/${state.batch?.total}`
+                : 'Edit protocol'}{' '}
+              <ArrowRight size={13} />
+            </button>
+            {!batchActive && (
+              <button
+                disabled={editDisabled}
+                title="Start a fresh run without a protocol; it runs until you pause it"
+                onClick={() => void freeRun()}
+              >
+                <X size={13} />
+                Remove protocol (free run)
+              </button>
+            )}
+          </span>
         </div>
       )}
       <div className="workspace-grid">
@@ -76,7 +114,8 @@ export function Workbench({
           <WorldPanel
             state={state}
             command={command}
-            busy={busy}
+            transportPending={transportPending}
+            runButton={runButton}
             disabled={disabled}
             editDisabled={editDisabled}
             valid={valid}
@@ -85,7 +124,7 @@ export function Workbench({
             setView={setView}
             viewportRef={viewportRef}
             moveTarget={moveTarget}
-            reset={() => reset()}
+            reset={() => void reset()}
             seed={seed}
             setSeed={setSeed}
           />
@@ -107,7 +146,7 @@ export function Workbench({
               }
             </span>
             <ArrowRight size={13} />
-            <span>6 rate units</span>
+            <span>{neuralStage(state?.config ?? {neural_model: 'engineered'})}</span>
             <ArrowRight size={13} />
             <span>{state?.config.engine === 'toy' ? 'Kinematics' : 'FlyGym body'}</span>
             <button onClick={openModelNotes} aria-label="Inspect model provenance">
@@ -125,18 +164,48 @@ export function Workbench({
             draft={draft}
             setDraft={setDraft}
           />
-          <InterventionPanel state={state} editDisabled={editDisabled} intervene={intervene} />
-          <button
-            className="export-button"
-            disabled={disabled || !state?.sample}
-            onClick={() => void exportRun()}
-          >
-            <ArrowDownToLine size={16} />
-            <span>
-              Export this run<small>Telemetry, configuration & events</small>
-            </span>
-            <ArrowUpRight size={15} />
-          </button>
+          <InterventionPanel
+            state={state}
+            editDisabled={editDisabled}
+            intervene={intervene}
+            reset={() => void reset()}
+          />
+          <PresetPanel state={state} command={command} disabled={editDisabled} />
+          <div className="export-group">
+            <button
+              className="export-button"
+              disabled={disabled || !state?.sample}
+              aria-busy={exportPending}
+              onClick={() => {
+                if (!exportPending) void exportRun(shareSafe);
+              }}
+            >
+              {exportPending ? (
+                <LoaderCircle size={16} className="spin" />
+              ) : (
+                <ArrowDownToLine size={16} />
+              )}
+              <span>
+                Export this run
+                <small>Telemetry, configuration & events{shareSafe ? ' · share-safe' : ''}</small>
+              </span>
+              <ArrowUpRight size={15} />
+            </button>
+            <label className="check-label share-safe">
+              <input
+                type="checkbox"
+                checked={shareSafe}
+                onChange={(e) => setShareSafe(e.target.checked)}
+              />
+              <span>
+                Share-safe export
+                <small>
+                  Leaves out the operating system and replaces absolute paths and this computer's
+                  name, for runs you publish.
+                </small>
+              </span>
+            </label>
+          </div>
         </aside>
       </div>
       <SessionLog state={state} editDisabled={editDisabled} running={running} reset={reset} />

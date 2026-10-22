@@ -1,0 +1,72 @@
+# Weekly check that every pinned download is still served at its recorded size: the URLs in
+# data/*/downloads.json and the sources in scripts/build_circuit.py. Each URL gets a one-byte
+# range request, so nothing is downloaded in full. A failure means a fresh checkout can no
+# longer fetch that file (the fetch scripts reject a changed size or hash).
+name: Download links
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  links:
+    name: Pinned download URLs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check every pinned download URL
+        run: |
+          python3 - <<'EOF'
+          import ast, json, sys, time, urllib.error, urllib.request
+          from pathlib import Path
+
+          checks = {}  # url -> (where it is listed, recorded size or None)
+          for manifest in sorted(Path("data").glob("*/downloads.json")):
+              for entry in json.loads(manifest.read_text()):
+                  size = entry.get("upstream_bytes", entry.get("bytes"))
+                  checks[entry["url"]] = (f"{manifest}: {entry['name']}", size)
+                  if "documentation" in entry:
+                      checks.setdefault(entry["documentation"], (f"{manifest}: {entry['name']} documentation", None))
+          # The builder's SOURCES table, read without importing the script (it needs pyarrow).
+          tree = ast.parse(Path("scripts/build_circuit.py").read_text())
+          sources = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                         and any(getattr(target, "id", None) == "SOURCES" for target in node.targets))
+          for node in ast.walk(sources):
+              if isinstance(node, ast.Dict):
+                  for key, value in zip(node.keys, node.values):
+                      if (isinstance(key, ast.Constant) and key.value in ("url", "documentation")
+                              and isinstance(value, ast.Constant)):
+                          checks.setdefault(value.value, (f"scripts/build_circuit.py SOURCES {key.value}", None))
+
+          def probe(url):
+              request = urllib.request.Request(url, headers={"Range": "bytes=0-0", "User-Agent": "digitalfly-link-check"})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  response.read(1)  # a server that ignores Range still sends only what is read
+                  total = (response.headers.get("Content-Range") or "").rpartition("/")[2]
+                  if not total.isdigit() and response.status == 200:
+                      total = response.headers.get("Content-Length") or ""
+                  return response.status, int(total) if total.isdigit() else None
+
+          failures = 0
+          for url, (where, size) in checks.items():
+              for attempt in range(3):
+                  if attempt:
+                      time.sleep(10)
+                  try:
+                      status, total = probe(url)
+                  except (urllib.error.URLError, OSError) as error:
+                      status, problem = getattr(error, "code", "-"), str(error)
+                      continue
+                  problem = f"size {total}, recorded {size}" if size and total and total != size else ""
+                  break
+              failures += bool(problem)
+              print(f"{'FAIL' if problem else 'ok  '} {status} {url} ({where}){': ' + problem if problem else ''}")
+          print(f"{len(checks) - failures} of {len(checks)} URLs answered as recorded")
+          sys.exit(1 if failures else 0)
+          EOF

@@ -6,7 +6,9 @@ Physics, renderer creation, rendering and cleanup must use one owning thread.
 from io import BytesIO
 from pathlib import Path
 import os
+import subprocess
 import sys
+import threading
 import numpy as np
 from digitalfly.api.models import Pose, Stimulus, SensorState, Interventions
 
@@ -17,9 +19,52 @@ NEURAL_DT = .001
 LEGS = ["lf", "lm", "lh", "rf", "rm", "rh"]
 os.environ.setdefault("MPLCONFIGDIR", str(ROOT / ".cache/matplotlib"))
 os.environ.setdefault("FLYGYM_ASSET_CACHE_DIR", str(ROOT / "data/flygym-assets"))
-# Headless Linux has no display for MuJoCo's default GLFW context; EGL renders offscreen.
-if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-    os.environ.setdefault("MUJOCO_GL", "egl")
+
+GL_FIXES = ("start with --toy; or run under a virtual display: MUJOCO_GL=glfw xvfb-run -a ./scripts/start.sh; "
+            "or install EGL or OSMesa (Debian/Ubuntu: sudo apt install libegl1, or sudo apt install libosmesa6)")
+_GL_PROBE = ("import mujoco\n"
+             "m = mujoco.MjModel.from_xml_string('<mujoco><worldbody><light/></worldbody></mujoco>')\n"
+             "r = mujoco.Renderer(m, 8, 8)\nr.update_scene(mujoco.MjData(m))\nr.render()\nr.close()\n")
+_gl = {}  # this process's choice: {"backend": name, or None when none works, "tried": {backend: reason}}
+_gl_lock = threading.Lock()
+
+
+def probe_gl(backend: str, timeout: float = 60) -> str | None:
+    """None if MuJoCo renders offscreen with this MUJOCO_GL backend, else the reason it does not. Runs in a
+    child process, because MuJoCo and PyOpenGL fix their backend when first imported."""
+    try:
+        result = subprocess.run([sys.executable, "-c", _GL_PROBE], env={**os.environ, "MUJOCO_GL": backend},
+                                capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    errors = [line for line in result.stderr.strip().splitlines() if line.strip()]
+    return None if result.returncode == 0 else (errors[-1] if errors else f"exit code {result.returncode}")
+
+
+def select_gl() -> str | None:
+    """MuJoCo's OpenGL backend, chosen once per process before MuJoCo is imported. An explicit MUJOCO_GL is
+    always kept. Otherwise, on Linux, the first that renders: GLFW when there is a display (MuJoCo's default),
+    then EGL, then OSMesa. None when none does: physics still runs, without rendering (see gl_help).
+    Thread-safe: the simulation, /api/capabilities and replay jobs may ask at the same time."""
+    with _gl_lock:
+        if "backend" not in _gl:
+            explicit = os.environ.get("MUJOCO_GL")
+            _gl.update(backend=explicit or "default", explicit=explicit, tried={})
+            if not explicit and sys.platform.startswith("linux") and "mujoco" not in sys.modules:
+                display = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+                _gl["backend"] = None
+                for backend in ["glfw"] * bool(display) + ["egl", "osmesa"]:
+                    _gl["tried"][backend] = probe_gl(backend)
+                    if _gl["tried"][backend] is None:
+                        _gl["backend"] = os.environ["MUJOCO_GL"] = backend
+                        break
+        return _gl["backend"]
+
+
+def gl_help() -> str:
+    tried = ", ".join(name.upper() if name != "osmesa" else "OSMesa" for name in _gl.get("tried", {}))
+    return (f"No OpenGL backend works on this computer (tried {tried or 'none'}"
+            f"{'' if 'glfw' in _gl.get('tried', {}) else '; GLFW needs a display'}). To fix: {GL_FIXES}.")
 
 
 class ContactForces:
@@ -151,6 +196,16 @@ class FlyGymBody:
     name = "flygym"
 
     def __init__(self, seed: int, render: bool = True, sensor_model: str = "geometric", upstream: bool = False):
+        backend = select_gl()
+        if backend is None and sensor_model in ("vision", "flyvis"):
+            raise RuntimeError(f"Compound-eye vision renders the eyes with OpenGL. {gl_help()}")
+        try:
+            import mujoco  # noqa: F401
+        except Exception as exc:
+            if not _gl["explicit"]:
+                raise
+            raise RuntimeError(f"MuJoCo could not load MUJOCO_GL={_gl['explicit']}: {type(exc).__name__}: {exc}. Unset MUJOCO_GL "
+                               f"to let DigitalFly choose a working backend, or: {GL_FIXES}.") from exc
         from flygym import Simulation
         from flygym.anatomy import ContactBodiesPreset
         from flygym.compose import FlatGroundWorld
@@ -202,7 +257,9 @@ class FlyGymBody:
                 from digitalfly.vision.flyvis_eyes import FlyVisEyes
                 self.flyvis = FlyVisEyes(retina=self.sim.retina)
             self.reset(seed)
-            if render:
+            if render and backend is None:
+                self.render_error = f"Offscreen rendering unavailable. Arena uses actual backend poses. {gl_help()}"
+            elif render:
                 try:
                     import mujoco
                     self.renderer = mujoco.Renderer(self.sim.mj_model, height=288, width=640)
@@ -393,6 +450,12 @@ class FlyGymBody:
 
     def close(self):
         if self.renderer is not None:
+            # MuJoCo's Renderer.close() frees its GL context before its MjrContext, whose buffers are then deleted in
+            # whichever context is current. A reset builds the next body first, so under GLFW that is the next
+            # body's context and its frames turn to noise. Making ours current first keeps the deletion here.
+            context = getattr(self.renderer, "_gl_context", None)
+            if context is not None:
+                context.make_current()
             self.renderer.close()
             self.renderer = None
         if self.sim is not None:

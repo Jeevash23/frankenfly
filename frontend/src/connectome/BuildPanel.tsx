@@ -1,9 +1,19 @@
 import {useEffect, useMemo, useState} from 'react';
 import {Hammer, LoaderCircle, Plus, X} from 'lucide-react';
 import type {BuildStatus, Command, Config, State} from '../types';
+import type {Pending} from '../useSimulation';
 import {configForCircuit} from '../models';
-import {buildProblem, defaultBuild, suggestTypes, type BuildRequest} from './build';
-import {useCircuitList} from './useCircuit';
+import {
+  BALANCE_NOTE,
+  buildProblem,
+  defaultBuild,
+  sideBalanced,
+  suggestTypes,
+  type BuildRequest,
+} from './build';
+import {invalidateCircuits, useCircuitList} from './useCircuit';
+import {clearDraft, DRAFT_KEYS, loadDraft, readBuildDraft} from '../localDrafts';
+import {useLocalDraft} from '../useLocalDraft';
 import './connectome.css';
 
 type Catalog = {
@@ -18,6 +28,10 @@ type Catalog = {
 };
 
 const PREPARE = 'backend/.venv/bin/python scripts/build_circuit.py prepare';
+
+// The build last seen running, kept across visits to this tab: when it is seen finished, cached
+// circuit summaries are dropped, because it may have rewritten a circuit already in use.
+let followed: string | null = null;
 
 function useCatalog(): {catalog: Catalog | null; missing: boolean} {
   const [catalog, setCatalog] = useState<Catalog | null>(null);
@@ -48,18 +62,23 @@ function useCatalog(): {catalog: Catalog | null; missing: boolean} {
 export function BuildPanel({
   state,
   command,
+  pending,
   reset,
   disabled,
 }: {
   state: State | null;
   command: Command;
+  pending: Pending;
   reset: (override?: Partial<Config>) => void;
   disabled: boolean;
 }) {
   const {catalog, missing} = useCatalog();
   const {circuits, refresh} = useCircuitList();
-  const [request, setRequest] = useState<BuildRequest>(defaultBuild);
-  const [seedDraft, setSeedDraft] = useState('');
+  // The form survives page switches and reloads until the build starts.
+  const [draft] = useState(() => loadDraft(DRAFT_KEYS.build, readBuildDraft));
+  const [request, setRequest] = useState<BuildRequest>(draft?.request ?? defaultBuild);
+  const [seedDraft, setSeedDraft] = useState(draft?.seedDraft ?? '');
+  useLocalDraft(DRAFT_KEYS.build, {request, seedDraft});
   const [status, setStatus] = useState<BuildStatus>({status: 'idle', log: []});
   const names = useMemo(() => catalog?.cell_types.map((c) => c.cell_type) ?? [], [catalog]);
   const known = useMemo(() => (catalog ? new Set(names) : null), [catalog, names]);
@@ -78,9 +97,14 @@ export function BuildPanel({
     let timer: ReturnType<typeof setTimeout>;
     const poll = () =>
       fetch('/api/connectome/build')
-        .then((r) => r.json())
+        .then((r) => (r.ok ? r.json() : Promise.reject(Error(`HTTP ${r.status}`))))
         .then((next: BuildStatus) => {
           if (cancelled) return;
+          if (next.status === 'running') followed = next.name ?? '';
+          else if (followed !== null) {
+            followed = null;
+            invalidateCircuits();
+          }
           setStatus((previous) => {
             if (previous.status === 'running' && next.status !== 'running') refresh();
             return next;
@@ -102,8 +126,13 @@ export function BuildPanel({
     setSeedDraft('');
   };
   const start = async () => {
+    if (pending['connectome/build']) return;
     const result = await command('connectome/build', request);
-    if (result) setStatus(result);
+    if (result) {
+      clearDraft(DRAFT_KEYS.build);
+      if (result.status === 'running') followed = result.name ?? request.name;
+      setStatus(result);
+    }
   };
   const use = (name: string) => {
     if (!state) return;
@@ -256,6 +285,18 @@ export function BuildPanel({
               Whole brain: every neuron with a connection at the threshold (the seeds only set hop
               distances; about 134,000 neurons at 5 synapses, slow to simulate)
             </label>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={request.balance_sides}
+                disabled={disabled || running || (request.whole_brain && !request.balance_sides)}
+                onChange={(e) => setRequest({...request, balance_sides: e.target.checked})}
+              />
+              <span>
+                Balance left and right
+                <small>{BALANCE_NOTE}</small>
+              </span>
+            </label>
             {problem && request.name && (
               <p className="microcopy" role="status">
                 {problem}
@@ -272,8 +313,8 @@ export function BuildPanel({
           </form>
         )}
         {status.status !== 'idle' && (
-          <div className="build-status" aria-live="polite">
-            <span className="eyebrow">
+          <div className="build-status">
+            <span className="eyebrow" role="status">
               {status.status === 'running'
                 ? `BUILDING ${status.name?.toUpperCase()}`
                 : status.status === 'done'
@@ -294,7 +335,7 @@ export function BuildPanel({
                 </button>
               </p>
             )}
-            <pre className="build-log">{status.log.slice(-12).join('\n')}</pre>
+            <pre className="build-log">{(status.log ?? []).slice(-12).join('\n')}</pre>
           </div>
         )}
       </section>
@@ -321,6 +362,7 @@ export function BuildPanel({
                   {c.name}
                   <small>
                     {c.error ? `Unreadable: ${c.error}` : c.committed ? 'committed' : 'local'}
+                    {sideBalanced(c) && ' · left/right balanced'}
                   </small>
                 </td>
                 <td>

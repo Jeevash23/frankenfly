@@ -1,7 +1,7 @@
 import {ArrowDownToLine, Check, CircleHelp, FlaskConical, Layers3, Unplug, X} from 'lucide-react';
 import type {State} from '../types';
 
-export type Exported = {samples: number; download_url: string; path: string};
+export type Exported = {samples: number; download_url: string; path: string; share_safe?: boolean};
 
 export function Alerts({
   state,
@@ -71,7 +71,8 @@ export function Alerts({
         <div className="alert export-alert" role="status">
           <Check size={17} />
           <span>
-            Run saved locally · {exported.samples} samples, configuration, and input schedule.
+            Run saved locally · {exported.samples} samples, configuration, and input schedule
+            {exported.share_safe ? ' · share-safe (no platform, paths or host name)' : ''}.
           </span>
           <a href={exported.download_url} download>
             Download ZIP <ArrowDownToLine size={14} />

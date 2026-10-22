@@ -4,10 +4,13 @@ Copyright 2026 Jeevash23
 This project's source code and documentation are licensed under the Apache
 License, Version 2.0 (see LICENSE).
 
-That license does not cover the third-party scientific data in data/atlas/
-and data/circuits/. Those files keep their original licenses, including
-CC BY-NC 4.0 (non-commercial) for all FlyWire-derived files. See
-data/atlas/LICENSE.md and data/circuits/LICENSE.md.
+That license does not cover the third-party scientific data in data/atlas/,
+data/circuits/ and data/recordings/. Those files keep their original
+licenses: CC BY-NC 4.0 (non-commercial) for all FlyWire-derived files,
+including the circuits, their FlyVis bridges (*.flyvis.json) and
+data/atlas/female.json; CC BY 4.0 for the MaleCNS skeletons; GPL-3.0 for the
+navis-flybrains surfaces. See data/atlas/LICENSE.md, data/circuits/LICENSE.md
+and data/recordings/LICENSE.md.
 
 This project includes code adapted from:
 
@@ -21,7 +24,53 @@ This project includes code adapted from:
   ground colors and camera placement and adds a visual target. The fast
   controller path in engines.py re-implements HybridController.step,
   HybridTurningController.step and get_bodysegment_contact_forces with
-  precomputed lookups and unchanged arithmetic.
+  precomputed lookups and unchanged arithmetic. The FlyVis column mapping in
+  backend/src/digitalfly/vision/flyvis_eyes.py anchors the two eye lattices
+  as FlyGym 1.x's RetinaMapper does.
+
+  Drosophila_brain_model (https://github.com/philshiu/Drosophila_brain_model)
+  Copyright (c) 2023 Philip Shiu and Nico Spiller
+  Licensed under the MIT License (text below)
+
+  The spiking dynamics in backend/src/digitalfly/neural/connectome.py
+  re-implement the leaky integrate-and-fire model, constants and Brian2
+  update order of Shiu et al. 2024's model.py in NumPy.
+
+  rayshubskiy_elife_102230_secondary_analysis_code
+  (https://github.com/wilson-lab/rayshubskiy_elife_102230_secondary_analysis_code)
+  Copyright (c) 2025 Wilson Lab
+  Licensed under the MIT License (text below)
+
+  detect_spikes, firing_rate and rayshubskiy_recording in
+  backend/src/digitalfly/compare.py port the authors' spike detection,
+  firing-rate estimation, channel assignment and yaw calibration
+  (process_voltage_spike_detection, detect_spikes, bin_spikes, estimate_fr).
+
+MIT License text, for the two MIT-licensed works above:
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+Optional components are installed separately and are not included in this
+repository: FlyVis 1.2.0 (MIT, Copyright (c) 2023 Janne K. Lappalainen,
+Fabian D. Tschopp, Mason McGill, Jakob H. Macke, Srinivas C. Turaga) and the
+pretrained networks its authors publish, PyTorch, pyarrow and the
+recorded-fly data. See docs/ATTRIBUTION.md.
 
 The web interface uses the Instrument Serif and DM Sans typefaces (SIL Open
 Font License 1.1, docs/INSTRUMENT-SERIF-LICENSE.txt and

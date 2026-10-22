@@ -1,5 +1,11 @@
-from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from contextvars import ContextVar
+from functools import lru_cache
+from types import UnionType
+from typing import Annotated, Any, Literal, TypedDict, Union, get_args, get_origin
+import asyncio
+from pydantic import (BaseModel, ConfigDict, Field, StringConstraints, ValidationError, field_validator,
+                      model_validator, with_config)
+from pydantic.json_schema import GenerateJsonSchema
 
 
 class StrictModel(BaseModel):
@@ -17,26 +23,109 @@ CircuitName = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 DEFAULT_CIRCUIT = "fafb783-dna02"
 
 
+# Bytes of a request body or preset file that holds a RunConfig (POST /api/reset, /api/batch/start, /api/configs).
+# The largest valid configuration, 64 protocol events and the initial interventions each addressing 64 cell types
+# with names at their full 120 characters, is about 0.7 MB as JSON and 0.9 MB as an indented preset file.
+CONFIG_SIZE_LIMIT = 1 << 20
+# True while the API serves a request on its event loop (set by main.py), where FastAPI validates request bodies.
+SERVING_REQUEST = ContextVar("digitalfly_serving_request", default=False)
+
+
+def reads_files_later() -> bool:
+    """True while the API validates a request body on its event loop. Checks that read circuit files are skipped
+    there, so a large circuit never stalls the API and its telemetry; the simulation worker validates every
+    configuration again, in full and in its own thread, before using it. Anywhere else, in a thread a request hands
+    its work to or in other code on an event loop such as a Jupyter cell, configurations are validated in full."""
+    if not SERVING_REQUEST.get():
+        return False
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
 def silenced_types(interventions: "Interventions") -> list[str]:
     """Every cell type an intervention silences in the connectome model, DNa02 included."""
     return list(dict.fromkeys(interventions.silence_types + ["DNa02"] * (interventions.silence_dna02 != "none")))
 
 
-def check_cell_types(names: list[str], circuit: str = DEFAULT_CIRCUIT) -> list[str]:
-    """Cell types must exist in the named connectome circuit."""
+def intervention_types(interventions: "Interventions") -> list[str]:
+    """Every cell type an intervention addresses in the connectome model: silenced, scaled or activated."""
+    return list(dict.fromkeys(silenced_types(interventions) + [c.name for c in interventions.cell_types]))
+
+
+def check_cell_types(names: list[str], circuit=DEFAULT_CIRCUIT) -> list[str]:
+    """Cell types must exist in the connectome circuit: one named on disk, or a loaded CircuitData (what a run uses)."""
     if not names:
         return names
     if len(set(names)) != len(names):
         raise ValueError("List each cell type once.")
-    from digitalfly.neural.connectome import known_cell_types
-    try:
-        known = known_cell_types(circuit)
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"The connectome circuit is unavailable: {exc}") from exc
+    if isinstance(circuit, str):
+        from digitalfly.neural.connectome import known_cell_types
+        try:
+            known = known_cell_types(circuit)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"The connectome circuit is unavailable: {exc}") from exc
+    else:
+        known, circuit = circuit.type_members, circuit.key
     unknown = [name for name in names if name not in known]
     if unknown:
         raise ValueError(f"Not a cell type in the {circuit} circuit: {', '.join(unknown)}.")
     return names
+
+
+def check_interventions(interventions: "Interventions", circuit=DEFAULT_CIRCUIT, dynamics: str | None = None):
+    """Raise ValueError unless every cell type the interventions address is in the connectome circuit (one named on
+    disk, or a loaded CircuitData) with neurons on each side they name, and, given the dynamics, every activation
+    value fits it."""
+    if dynamics is not None:
+        interventions.for_dynamics(dynamics)
+    names = intervention_types(interventions)
+    if not names:
+        return interventions
+    if isinstance(circuit, str):
+        from digitalfly.neural.connectome import load_circuit
+        try:
+            circuit = load_circuit(circuit)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"The connectome circuit is unavailable: {exc}") from exc
+    check_cell_types(names, circuit)
+    for item in interventions.cell_types:
+        if item.side != "both" and not len(circuit.members(item.name, item.side)):
+            raise ValueError(f"{item.name} has no {item.side} neurons in the {circuit.key} circuit.")
+    return interventions
+
+
+class CellTypeIntervention(StrictModel):
+    """An engineered manipulation of one cell type's neurons on one side or both (connectome model only):
+    silence: no output (value ignored); scale: output × value (0–2); activate: independent Poisson input at value Hz
+    to each neuron (spiking dynamics, above 0 up to 500) or its rate clamped to value (rate dynamics, above 0 up to 1).
+    Equations: docs/ARCHITECTURE.md, "Connectome interventions"."""
+    name: CellTypeName
+    side: Literal["both", "left", "right"] = "both"
+    mode: Literal["silence", "scale", "activate"]
+    value: float = Field(default=0, ge=0, le=500)
+
+    @model_validator(mode="after")
+    def value_fits_mode(self):
+        if self.mode == "scale" and self.value > 2:
+            raise ValueError("Scaling multiplies a cell type's output by a value from 0 to 2.")
+        if self.mode == "activate" and self.value <= 0:
+            raise ValueError("Activation needs a value above 0: Poisson input in Hz (spiking dynamics) or a clamped "
+                             "rate (rate dynamics). To hold a cell type at rest, silence it.")
+        return self
+
+    @property
+    def target(self) -> str:
+        return self.name if self.side == "both" else f"{self.name} {self.side}"
+
+    def label(self, dynamics: str = "rate") -> str:
+        if self.mode == "silence":
+            return f"{self.target} silenced"
+        if self.mode == "scale":
+            return f"{self.target} output ×{self.value:g}"
+        return f"{self.target} activated " + (f"{self.value:g} Hz" if dynamics == "spiking" else f"(rate {self.value:g})")
 
 
 class Interventions(StrictModel):
@@ -44,9 +133,10 @@ class Interventions(StrictModel):
     zero_right: bool = False
     # Engineered six-unit model only.
     silence: Literal["none", "sensory", "steering", "descending", "all"] = "none"
-    # Connectome model only.
+    # Connectome model only. silence_types entries mean {name, side "both", mode "silence"}.
     silence_dna02: Literal["none", "left", "right", "both"] = "none"
     silence_types: list[CellTypeName] = Field(default_factory=list, max_length=32)
+    cell_types: list[CellTypeIntervention] = Field(default_factory=list, max_length=32)
 
     @field_validator("silence_types")
     @classmethod
@@ -55,13 +145,34 @@ class Interventions(StrictModel):
             raise ValueError("List each silenced cell type once.")
         return names
 
+    @model_validator(mode="after")
+    def sides_once(self):
+        """One manipulation per side of a cell type: "both" covers left and right, a silence_types entry is the
+        type on both sides and DNa02 silencing its side(s). The older fields may still overlap each other."""
+        older = [(name, "both") for name in self.silence_types] + [("DNa02", self.silence_dna02)] * (self.silence_dna02 != "none")
+        addressed = [(c.name, c.side) for c in self.cell_types]
+        for k, (name, side) in enumerate(addressed):
+            if any(name == other and (side == other_side or "both" in (side, other_side))
+                   for other, other_side in addressed[:k] + older):
+                raise ValueError(f"Set one intervention per side of a cell type: {name} ({side}) is addressed twice "
+                                 "(“both” covers left and right; silenced types count as both sides).")
+        return self
+
     def for_model(self, neural_model: str):
         """Reject interventions that the selected neural model does not have."""
-        if neural_model == "engineered" and (self.silence_dna02 != "none" or self.silence_types):
-            raise ValueError("DNa02 and cell-type silencing need the connectome model. Select it first.")
+        if neural_model == "engineered" and (self.silence_dna02 != "none" or self.silence_types or self.cell_types):
+            raise ValueError("DNa02 and cell-type interventions need the connectome model. Select it first.")
         if neural_model == "connectome" and self.silence != "none":
             raise ValueError("Group silencing belongs to the engineered six-unit model. "
                              "With the connectome model, silence DNa02 or a cell type instead.")
+        return self
+
+    def for_dynamics(self, dynamics: str):
+        """Reject activation values the connectome dynamics cannot take: rate dynamics clamp a rate within 0–1."""
+        high = [c.name for c in self.cell_types if c.mode == "activate" and c.value > 1]
+        if dynamics == "rate" and high:
+            raise ValueError("With rate dynamics, activation clamps a cell type's rate to a value from 0 to 1 "
+                             f"(spiking dynamics take 0–500 Hz): {', '.join(high)}.")
         return self
 
 
@@ -97,6 +208,11 @@ class ConnectomeParameters(StrictModel):
     speed_types: list[CellTypeName] = Field(default_factory=list, max_length=8)
     speed_gain: float = Field(default=1, ge=0, le=10)
     spiking: SpikingParameters = Field(default_factory=SpikingParameters)
+    # Engineered motor path. The defaults reproduce v0.5: equal weights, summed, no delay, no low-pass.
+    readout_weights: dict[CellTypeName, Annotated[float, Field(ge=-5, le=5)]] | None = Field(default=None, max_length=8)
+    readout_pool: Literal["sum", "mean"] = "sum"
+    motor_delay_ms: float = Field(default=0, ge=0, le=500)  # descending command → walking controller
+    motor_tau_ms: float = Field(default=0, ge=0, le=1000)  # first-order low-pass on that command; 0 = none
 
     @model_validator(mode="after")
     def distinct_populations(self):
@@ -105,25 +221,50 @@ class ConnectomeParameters(StrictModel):
                 raise ValueError("List each cell type once per population.")
         return self
 
-    def check_against_circuit(self):
-        """Raise ValueError unless the circuit exists and every named population is in it."""
-        from digitalfly.neural.connectome import load_circuit
-        try:
-            data = load_circuit(self.circuit)
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"The {self.circuit} circuit is unavailable: {exc}") from exc
+    def check_against_circuit(self, data=None, flyvis: bool = False):
+        """Raise ValueError unless the circuit exists and every population works in it: readout and input neurons on
+        both sides (the default visual input too) and, with FlyVis eyes, input neurons that the circuit's FlyVis
+        bridge reaches on both sides. `data` checks a loaded CircuitData instead of the file on disk."""
+        import numpy as np
+        from digitalfly.neural.connectome import INPUT_SUPER_CLASS, bridge_path, load_bridge, load_circuit
+        if data is None:
+            try:
+                data = load_circuit(self.circuit)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"The {self.circuit} circuit is unavailable: {exc}") from exc
         readout = self.readout_types or data.defaults["readout_types"]
         if not readout:
             raise ValueError(f"Choose readout cell types: the {self.circuit} circuit has no default steering readout.")
         for name in readout:
             if not (len(data.members(name, "left")) and len(data.members(name, "right"))):
                 raise ValueError(f"{name} needs neurons on both sides to read out turning.")
+        unweighted = sorted(set(self.readout_weights or {}) - set(readout))
+        if unweighted:
+            raise ValueError(f"Readout weights name cell types that are not read out: {', '.join(unweighted)}.")
         for name in self.speed_types:
             data.members(name)
         if self.input_types:
-            sides = {data.side[i] for name in self.input_types for i in data.members(name)}
-            if not {"left", "right"} <= sides:
+            inputs = np.concatenate([data.members(name) for name in self.input_types])
+            if not {"left", "right"} <= set(data.side[inputs]):
                 raise ValueError("The input cell types need neurons on both sides.")
+        else:
+            inputs = np.flatnonzero(data.super_class == INPUT_SUPER_CLASS)
+            for side in ("left", "right"):
+                if not (data.side[inputs] == side).any():
+                    raise ValueError(f"The {data.key} circuit has no visual projection neurons on the {side} side, so "
+                                     "its default visual input cannot steer. Choose input cell types with neurons on "
+                                     "both sides.")
+        if flyvis:
+            if not bridge_path(data).is_file():
+                raise ValueError(f"The {data.key} circuit has no FlyVis bridge. Build it with "
+                                 f"scripts/build_circuit.py flyvis-bridge --circuit {data.key}")
+            matrix, _ = load_bridge(data)
+            reached = matrix[inputs].getnnz(axis=1) > 0
+            for side in ("left", "right"):
+                if not reached[data.side[inputs] == side].any():
+                    raise ValueError(f"FlyVis eyes would give the circuit no {side} input: its FlyVis bridge reaches "
+                                     f"none of the {side} input neurons. The bridge feeds visual projection neurons; "
+                                     "use the default visual input or visual projection cell types.")
         return data
 
 
@@ -165,6 +306,8 @@ class RunConfig(StrictModel):
     connectome_parameters: ConnectomeParameters = Field(default_factory=ConnectomeParameters)
     initial_interventions: Interventions = Field(default_factory=Interventions)
     protocol: Protocol | None = None
+    # "types": connectome runs also export activity_types.npz, every cell type's mean activity per control step.
+    record_activity: Literal["none", "types"] = "none"
 
     @field_validator("neural_model", mode="before")
     @classmethod
@@ -182,17 +325,15 @@ class RunConfig(StrictModel):
             ok, reason = available()
             if not ok:
                 raise ValueError(reason)
-            from digitalfly.neural.connectome import bridge_path, load_circuit
-            if not bridge_path(load_circuit(self.connectome_parameters.circuit)).is_file():
-                raise ValueError(f"The {self.connectome_parameters.circuit} circuit has no FlyVis bridge. Build it with "
-                                 f"scripts/build_circuit.py flyvis-bridge --circuit {self.connectome_parameters.circuit}")
         scheduled = [e.interventions for e in self.protocol.events if e.interventions is not None] if self.protocol else []
         for interventions in [self.initial_interventions] + scheduled:
             interventions.for_model(self.neural_model)
-        if self.neural_model == "connectome":
-            self.connectome_parameters.check_against_circuit()
+            if self.neural_model == "connectome":
+                interventions.for_dynamics(self.connectome_parameters.dynamics)
+        if self.neural_model == "connectome" and not reads_files_later():
+            self.connectome_parameters.check_against_circuit(flyvis=self.sensor_model == "flyvis")
             for interventions in [self.initial_interventions] + scheduled:
-                check_cell_types(silenced_types(interventions), self.connectome_parameters.circuit)
+                check_interventions(interventions, self.connectome_parameters.circuit)
         return self
 
 
@@ -201,38 +342,106 @@ Condition = Literal["control", "left_sensor_off", "descending_off", "baseline",
                     "dna02_left_off", "dna02_right_off", "dna02_both_off", "cell_type_off"]
 ENGINEERED_ONLY = {"descending_off"}
 CONNECTOME_ONLY = {"dna02_left_off", "dna02_right_off", "dna02_both_off", "cell_type_off"}
+MAX_CONDITIONS = 6  # built-in and custom together
+# Connectome parameters a run can change live (POST /api/connectome/parameters); the rest need a reset.
+FIXED_CONNECTOME_FIELDS = ("circuit", "dynamics", "readout_types", "input_types", "speed_types")
+LIVE_CONNECTOME_FIELDS = tuple(k for k in ConnectomeParameters.model_fields if k not in FIXED_CONNECTOME_FIELDS)
+ConditionLabel = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40,
+                                                  pattern=r"^[^\x00-\x1f\x7f]+$")]
+
+
+class CustomCondition(StrictModel):
+    """A comparison condition of your own: its trials hold `interventions` (none when null) and, with the connectome
+    model, the configuration's connectome parameters with these live-editable fields changed (a partial `spiking`
+    keeps the other spiking settings)."""
+    label: ConditionLabel
+    interventions: Interventions | None = None
+    connectome_parameters: dict[str, Any] | None = None
+
+    @field_validator("connectome_parameters")
+    @classmethod
+    def live_editable(cls, value):
+        other = [k for k in value or {} if k not in LIVE_CONNECTOME_FIELDS]
+        if other:
+            raise ValueError(f"A condition can change only the connectome parameters a run can change live, not "
+                             f"{', '.join(other)}; circuit, dynamics and populations belong to the configuration.")
+        return value
+
+    def overrides(self, config: RunConfig) -> dict:
+        """A trial's configuration fields (model_dump form) that differ from `config`, its seed aside."""
+        changes = {"controller": "neural", "initial_interventions": (self.interventions or Interventions()).model_dump()}
+        if self.connectome_parameters:
+            base, edit = config.connectome_parameters.model_dump(), self.connectome_parameters
+            spiking = {"spiking": {**base["spiking"], **edit["spiking"]}} if isinstance(edit.get("spiking"), dict) else {}
+            changes["connectome_parameters"] = {**base, **edit, **spiking}
+        return changes
 
 
 class BatchRequest(StrictModel):
     config: RunConfig
     seeds: list[int] = Field(default_factory=lambda: [42, 43], min_length=1, max_length=5)
     conditions: list[Condition] = Field(
-        default_factory=lambda: ["control", "left_sensor_off"], min_length=1, max_length=4)
+        default_factory=lambda: ["control", "left_sensor_off"], min_length=0, max_length=4)
     cell_type: CellTypeName | None = None
+    # Labelled conditions with their own interventions and/or live-editable connectome parameters.
+    custom_conditions: list[CustomCondition] = Field(default_factory=list, max_length=MAX_CONDITIONS)
+    # True runs the trials unpaced, as fast as the computer allows; otherwise the display speed paces them.
+    max_speed: bool = False
+
+    @property
+    def condition_names(self) -> list[str]:
+        """Built-in conditions, then custom labels: the order trials run in for each seed."""
+        return [*self.conditions, *(c.label for c in self.custom_conditions)]
+
+    def custom_config(self, label: str, seed: int) -> RunConfig:
+        """A custom condition's trial configuration, validated in full like any reset."""
+        custom = next(c for c in self.custom_conditions if c.label == label)
+        return RunConfig.model_validate({**self.config.model_dump(), **custom.overrides(self.config), "seed": seed})
 
     @model_validator(mode="after")
     def bounded(self):
         if self.config.protocol is None:
             raise ValueError("A comparison needs a finite protocol.")
+        labels = [c.label for c in self.custom_conditions]
+        if not self.condition_names:
+            raise ValueError("Choose at least one condition.")
+        if len(self.condition_names) > MAX_CONDITIONS:
+            raise ValueError(f"A comparison has at most {MAX_CONDITIONS} conditions, built-in and custom together.")
+        if len(set(labels)) != len(labels) or set(labels) & set(get_args(Condition)):
+            raise ValueError("Give each custom condition its own label, different from the built-in condition names.")
+        for custom in self.custom_conditions:
+            if custom.connectome_parameters and self.config.neural_model != "connectome":
+                raise ValueError(f"Custom condition “{custom.label}” changes connectome parameters; select the "
+                                 "connectome model first.")
+            try:
+                self.custom_config(custom.label, self.config.seed)
+            except ValidationError as exc:
+                problems = "; ".join(f"{'.'.join(map(str, e['loc'])) or 'configuration'}: "
+                                     f"{e['msg'].removeprefix('Value error, ')}" for e in exc.errors()[:3])
+                raise ValueError(f"Custom condition “{custom.label}”: {problems}") from None
         model = self.config.neural_model
         if model == "engineered" and CONNECTOME_ONLY & set(self.conditions):
             raise ValueError("DNa02 and cell-type conditions need the connectome model. Select it before comparing.")
         if model == "connectome" and ENGINEERED_ONLY & set(self.conditions):
             raise ValueError("“Descending units off” belongs to the engineered model; use a DNa02 condition instead.")
+        if self.config.sensor_model == "flyvis" and "engineered_model" in self.conditions:
+            raise ValueError("FlyVis eyes drive only the connectome model, so “engineered model” cannot be compared "
+                             "with them. Choose compound-eye or geometric sensing for that comparison.")
         if ("cell_type_off" in self.conditions) != (self.cell_type is not None):
             raise ValueError("Choose a cell type for the “cell type off” condition, and only with that condition.")
         circuit = self.config.connectome_parameters.circuit
-        if "connectome_model" in self.conditions:
-            self.config.connectome_parameters.check_against_circuit()
-        if self.cell_type is not None:
-            check_cell_types([self.cell_type], circuit)
-        if (CONNECTOME_ONLY - {"cell_type_off"}) & set(self.conditions):
-            check_cell_types(["DNa02"], circuit)
+        if not reads_files_later():
+            if "connectome_model" in self.conditions:
+                self.config.connectome_parameters.check_against_circuit()
+            if self.cell_type is not None:
+                check_cell_types([self.cell_type], circuit)
+            if (CONNECTOME_ONLY - {"cell_type_off"}) & set(self.conditions):
+                check_cell_types(["DNa02"], circuit)
         if len(set(self.seeds)) != len(self.seeds) or any(s < 0 or s > 2147483647 for s in self.seeds):
             raise ValueError("Seeds must be distinct integers between 0 and 2147483647.")
         if len(set(self.conditions)) != len(self.conditions):
             raise ValueError("Conditions must be distinct.")
-        if self.config.protocol.duration_steps * len(self.seeds) * len(self.conditions) > 30000:
+        if self.config.protocol.duration_steps * len(self.seeds) * len(self.condition_names) > 30000:
             raise ValueError("A comparison is limited to 30,000 total control intervals.")
         if any(e.interventions is not None for e in self.config.protocol.events):
             raise ValueError("Comparison protocols schedule stimuli only; the selected condition holds its intervention throughout each trial.")
@@ -261,6 +470,19 @@ class SensorState(StrictModel):
     distance_mm: float = 0
 
 
+@with_config(ConfigDict(extra="forbid"))
+class BodySignals(TypedDict, total=False):
+    """FlyGym body measurements of one sample; the toy body has none. Display history leaves out joint angles."""
+    leg_order: list[str]  # LF LM LH RF RM RH
+    ground_contact_force: list[float]  # per leg, µN
+    contact: list[bool]  # per leg, force above contact_threshold
+    contact_threshold: float
+    cpg_phase_rad: list[float]
+    joint_position_rad: list[float]  # in metadata.body_joint_order
+    force_unit: str
+    source: str
+
+
 class Sample(StrictModel):
     step: int
     t: float
@@ -268,7 +490,7 @@ class Sample(StrictModel):
     sensors: SensorState
     rates: list[float]
     motor: list[float]
-    body_signals: dict = Field(default_factory=dict)
+    body_signals: BodySignals = Field(default_factory=dict)
 
 
 class Event(StrictModel):
@@ -278,6 +500,120 @@ class Event(StrictModel):
     kind: str
     message: str
     payload: dict = Field(default_factory=dict)
+
+
+# What the server publishes (State, over /api/ws and /api/status). The parts the worker assembles from its own data
+# are built with construct() at every publish, without validation; tests validate real snapshots against these
+# models, and GET /api/schema/state serves their JSON Schema (scripts/gen_types.py turns it into TypeScript).
+
+def absent(**kwargs):
+    """A field the server leaves out until it has a value; never sent as null."""
+    return Field(default=None, exclude_if=lambda value: value is None, **kwargs)
+
+
+class Provenance(StrictModel):
+    """Plain-language labels of what produced the run: which parts are data-derived, published or engineered."""
+    body_engine: str
+    sensor_model: str
+    neural_model: str
+    motor_controller: str
+    connectivity_source: str
+    input_mapping: str
+    controller_mode: str
+    viewport: str
+    body_sex: str
+    anatomy_atlas: str
+
+
+class RunMetrics(StrictModel):
+    """Behaviour since the reset; empty before the run's first sample, and in older saved runs some are missing."""
+    path_length_mm: float = absent()
+    displacement_mm: float = absent()
+    mean_speed_mm_s: float = absent()
+    net_turn_deg: float = absent()
+    target_distance_mm: float = absent()  # to the current target
+    min_target_distance_mm: float = absent()  # closest approach to the target of each recorded sample (v0.6)
+    contact_fraction: list[float] = absent()  # per leg, LF LM LH RF RM RH; empty for the toy body
+    duration_s: float = absent()
+    protocol_complete: bool = absent()
+
+
+class Vision(StrictModel):
+    """The latest eye reading, with compound-eye or FlyVis sensing; empty otherwise."""
+    ommatidia_per_eye: int = absent()
+    left: list[float] = absent()
+    right: list[float] = absent()
+    sample_interval_s: float = absent()
+    sample_time_s: float = absent()
+    encoder: str = absent()
+
+
+class TrialRecord(StrictModel):
+    """A comparison trial, as saved in its run's metadata.trial."""
+    batch_id: str
+    condition: str
+    seed: int
+    index: int
+    total: int
+    neural_model: Literal["engineered", "connectome"] = absent()
+    cell_type: str | None = None
+    partial: bool = absent()  # the trial was cut short (cancelled or failed) and saved unfinished
+
+
+class BatchTrial(TrialRecord):
+    """A saved comparison trial: where its export is and its metrics."""
+    run_id: str
+    samples: int
+    path: str
+    download_url: str
+    metrics: RunMetrics
+
+
+class Batch(StrictModel):
+    """The active or last comparison."""
+    id: str
+    status: Literal["running", "paused", "completed", "cancelled", "failed"]
+    total: int
+    current: int
+    results: list[BatchTrial]
+    protocol: str
+    cell_type: str | None
+    max_speed: bool
+    condition: str = absent()
+    seed: int = absent()
+    error: str = absent()
+    partial: BatchTrial = absent()
+    partial_error: str = absent()
+    restore_error: str = absent()
+
+
+class TypeTrace(StrictModel):
+    index: int  # the cell type's index in type_rates
+    name: str
+    trace: list[float]
+
+
+class ManipulatedNeurons(StrictModel):
+    """Neurons each intervention mode reaches now."""
+    silence: int
+    scale: int
+    activate: int
+
+
+class ConnectomeLive(StrictModel):
+    """Display-only activity of the connectome model, at the publish rate; not recorded."""
+    circuit: str
+    circuit_sha256: str
+    dynamics: Literal["rate", "spiking"]
+    unit_names: list[str]
+    readout_types: list[str]
+    type_rates: list[float]  # mean activity of every cell type, in the circuit's type order
+    turn: float
+    motor_clipped_fraction: float
+    silenced_neurons: int
+    manipulated_neurons: ManipulatedNeurons
+    trace_t: list[float]
+    top_types: list[TypeTrace]  # the most active non-readout types, with traces aligned to trace_t
 
 
 class State(StrictModel):
@@ -302,8 +638,53 @@ class State(StrictModel):
     subscribers: int = 0
     recording_samples: int = 0
     recording_limit: int = 30000
-    provenance: dict[str, str] = Field(default_factory=dict)
-    metrics: dict = Field(default_factory=dict)
-    vision: dict = Field(default_factory=dict)
-    batch: dict | None = None
-    connectome: dict | None = None
+    provenance: Provenance | None = None  # None only before the worker's first publish
+    metrics: RunMetrics = Field(default_factory=RunMetrics)
+    vision: Vision = Field(default_factory=Vision)
+    batch: Batch | None = None
+    connectome: ConnectomeLive | None = None
+
+
+@lru_cache(maxsize=None)
+def _nested(model: type[BaseModel]) -> dict:
+    """Fields of `model` that hold models, X or X | None (False) or list[X] (True)."""
+    plan = {}
+    for name, field in model.model_fields.items():
+        annotation = field.annotation
+        options = [a for a in get_args(annotation) if a is not type(None)] \
+            if get_origin(annotation) in (Union, UnionType) else [annotation]
+        if len(options) != 1:
+            continue
+        inner, many = options[0], get_origin(options[0]) is list
+        inner = get_args(inner)[0] if many else inner
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            plan[name] = (many, inner)
+    return plan
+
+
+def construct(model: type[BaseModel], data: dict | None):
+    """model.model_construct(**data), nested models built the same way: no validation, for data the server built
+    itself. Keys the model does not declare are dropped, so tests validate each source against its model."""
+    if data is None:
+        return None
+    nested = _nested(model)
+    values = {}
+    for key, value in data.items():
+        if key in nested and value is not None:
+            many, inner = nested[key]
+            value = [construct(inner, v) for v in value] if many else construct(inner, value)
+        values[key] = value
+    return model.model_construct(**values)
+
+
+class SentSchema(GenerateJsonSchema):
+    """JSON Schema of what the server sends: every field is present except those it leaves out (see absent)."""
+    def field_is_required(self, field, total):
+        if field["type"] == "typed-dict-field":
+            return field.get("required", total)
+        return field.get("serialization_exclude_if") is None
+
+
+@lru_cache(maxsize=1)
+def state_schema() -> dict:
+    return State.model_json_schema(mode="serialization", schema_generator=SentSchema)

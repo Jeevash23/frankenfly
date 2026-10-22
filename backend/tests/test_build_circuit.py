@@ -60,6 +60,16 @@ def test_cap_keeps_the_strongest_paths_and_records_the_rest():
     assert select(cap=3)["kept"].tolist() == [1, 2, 10, 11]
 
 
+def test_weakest_kept_strength_comes_from_the_deepest_hop_that_kept_neurons():
+    # With a third hop the cap still binds at hop 2 and hop 3 keeps nothing (24 is dropped too).
+    deeper = select(hops=3, cap=5)
+    assert deeper["by_hop"] == [2, 2, 1, 0] and deeper["dropped"].tolist() == [20, 21, 24]
+    assert deeper["weakest_kept_strength"] == pytest.approx(7 / 12)
+    # When the direct partners alone fill the cap, hop 1 holds the weakest kept path (10 → 1: 8 of 11 synapses).
+    assert select(cap=3)["weakest_kept_strength"] == pytest.approx(8 / 11)
+    assert select()["weakest_kept_strength"] is None  # nothing dropped
+
+
 def test_transmitter_labels_are_normalised_without_guessing():
     assert builder.transmitter("ACH") == "acetylcholine" and builder.transmitter("gaba") == "gaba"
     assert builder.transmitter("Glutamate") == "glutamate" and builder.transmitter("") == "unknown"
@@ -133,7 +143,7 @@ def brain(tmp_path, monkeypatch):
 def build(name, seeds, fmt="auto", hops=2, threshold=5, cap=100, whole=False, committed=False):
     builder.build_custom(name, seeds, hops, threshold, cap, whole, fmt, committed)
     folder = builder.OUT_DIR if committed else builder.LOCAL_DIR
-    return next(folder.glob(f"{name}.*"))
+    return next(path for suffix in (".json", ".npz") if (path := folder / f"{name}{suffix}").is_file())
 
 
 def test_prepare_sorts_neurons_and_writes_a_catalog(brain):
@@ -202,6 +212,42 @@ def test_builder_refuses_bad_names_unknown_seeds_and_built_in_names(brain):
     with pytest.raises(SystemExit, match="built-in"):
         build("fafb783-dna02", ["DNx"])
     assert build("fafb783-dna02", ["DNx"], committed=True).parent == builder.OUT_DIR
+
+
+def test_rebuilding_a_circuit_never_touches_other_circuits_or_bridges(brain, monkeypatch):
+    local = builder.LOCAL_DIR
+    build("steer.v2", ["DNx"])
+    bridge = local / "steer.flyvis.json"
+    bridge.write_text('{"format": "digitalfly-flyvis-bridge"}')
+    build("steer", ["DNx"], "json")
+    assert sorted(p.name for p in local.iterdir()) == ["steer.flyvis.json", "steer.json", "steer.v2.json"]
+    build("steer", ["DNx"], "npz")  # the same name in the other format replaces it
+    assert sorted(p.name for p in local.iterdir()) == ["steer.flyvis.json", "steer.npz", "steer.v2.json"]
+    with pytest.raises(SystemExit, match="flyvis"):
+        build("steer.flyvis", ["DNx"])
+    assert bridge.read_text() == '{"format": "digitalfly-flyvis-bridge"}'
+    # A build that fails while writing leaves the previous circuit in place and no partial file behind.
+    before = (local / "steer.npz").read_bytes()
+
+    def crash(*args, **kwargs):
+        raise MemoryError("out of memory while writing")
+    monkeypatch.setattr(builder.np, "savez_compressed", crash)
+    with pytest.raises(MemoryError):
+        build("steer", ["DNx"], "npz")
+    assert (local / "steer.npz").read_bytes() == before
+    assert sorted(p.name for p in local.iterdir()) == ["steer.flyvis.json", "steer.npz", "steer.v2.json"]
+
+
+def test_shared_options_work_before_or_after_the_subcommand():
+    for argv in (["--hops", "5", "build", "--name", "x", "--seed", "DNa02"],
+                 ["build", "--name", "x", "--seed", "DNa02", "--hops", "5"]):
+        args = builder.arguments(argv)
+        assert (args.command, args.hops, args.threshold, args.cap) == ("build", 5, 5, 3000), argv
+    args = builder.arguments(["--cap", "10", "--threshold", "7", "build", "--name", "x", "--seeds", "DNa02", "--cap", "20"])
+    assert (args.cap, args.threshold) == (20, 7)  # given twice, the subcommand's value wins
+    assert builder.arguments(["--offline", "prepare"]).offline and builder.arguments(["prepare", "--offline"]).offline
+    assert not builder.arguments(["prepare"]).offline
+    assert builder.arguments(["--hops", "3"]).hops == 3 and builder.arguments([]).command is None
 
 
 @pytest.mark.skipif(not (ROOT / ".cache/circuits/fafb783-connectome.npz").is_file(),

@@ -1,14 +1,59 @@
-"""One authoritative worker, bounded commands, one replaceable display snapshot."""
-from concurrent.futures import Future
+"""One authoritative worker, bounded commands, one replaceable display snapshot.
+
+The thread must outlive any failure: a command that fails answers its caller, and a state that cannot be
+published puts the run into the error state. Neither ends the loop.
+"""
+from concurrent.futures import Future, ThreadPoolExecutor
 from queue import Queue, Empty, Full
 from threading import Event, Lock, Thread
 import time
+from typing import NamedTuple
 import uuid
 import psutil
+from pydantic import ValidationError
 from digitalfly.api.models import (State, RunConfig, Stimulus, Interventions, Speed, NeuralParameters,
-    ConnectomeParameters, BatchRequest)
+    ConnectomeParameters, BatchRequest, check_interventions, construct, Batch, ConnectomeLive, Provenance, RunMetrics,
+    Vision)
 from digitalfly.simulation.experiment import Experiment, RECORD_LIMIT
 from digitalfly.simulation.engines import CONTROL_DT
+
+QUEUE_CAPACITY = 64
+PUBLISH_INTERVAL = .1  # telemetry while running, about 10 Hz
+HEARTBEAT_INTERVAL = 1.  # while not running; commands publish at once
+WRITING_POLL = .02  # while paused with an export being written: how soon its command is answered
+BATCH_COMMANDS = {"run", "pause", "batch_cancel", "export", "speed"}  # none changes a controlled condition
+
+
+class Rejected(ValueError):
+    """The command does not fit the experiment that is running (HTTP 422); nothing was changed."""
+
+
+class Invalid(ValueError):
+    """The command's body does not validate (HTTP 422, each error located in the body); nothing was changed.
+    Any other ValidationError is the run's own data failing, never the request's."""
+
+    def __init__(self, error: ValidationError):
+        super().__init__(str(error))
+        self.errors = error.errors()
+
+
+def parse(model, payload):
+    """A command's body as `model`, validated in full."""
+    try:
+        return model.model_validate(payload)
+    except ValidationError as exc:
+        raise Invalid(exc) from exc
+
+
+class WorkerStopped(RuntimeError):
+    """The simulation thread has exited; only restarting DigitalFly brings it back."""
+
+
+class Writing(NamedTuple):
+    """An export whose files the export thread is writing; its command is answered when they are complete."""
+    files: Future
+    run_id: str
+    samples: int
 
 
 class SimulationWorker:
@@ -16,7 +61,7 @@ class SimulationWorker:
         self.config = config or RunConfig()
         self.render = render
         self.instance_id = uuid.uuid4().hex
-        self.commands = Queue(maxsize=64)
+        self.commands = Queue(maxsize=QUEUE_CAPACITY)
         self.stopping = Event()
         self.ready = Event()
         self.lock = Lock()
@@ -28,19 +73,29 @@ class SimulationWorker:
         self.revision = 0
         self.batch = None
         self.batch_request = None
+        self.workbench = None  # the configuration to restore when a comparison ends
         self.trials = []
         self.trial_index = 0
         self.eye_bytes = None
+        # Exports are captured on this thread and written on another, one at a time, while the run goes on.
+        self.exports = ThreadPoolExecutor(max_workers=1, thread_name_prefix="digitalfly-export")
+        self.writing: list[tuple[Writing, Future]] = []
         self.snapshot = State(instance_id=self.instance_id, revision=0, run_id="initializing",
             status="initializing", config=self.config, interventions=Interventions()).model_dump()
 
     def start(self):
         self.thread.start()
 
+    def stopped(self) -> bool:
+        """True once the thread has exited after starting: commands can no longer run."""
+        return self.ready.is_set() and not self.thread.is_alive()
+
     def submit(self, name, payload=None) -> Future:
         future = Future()
         if self.stopping.is_set():
             future.set_exception(RuntimeError("The simulation worker is shutting down."))
+        elif self.stopped():
+            future.set_exception(WorkerStopped("The simulation worker has stopped."))
         else:
             try:
                 self.commands.put_nowait((name, payload or {}, future))
@@ -64,14 +119,34 @@ class SimulationWorker:
         with self.lock:
             self.subscribers = max(0, self.subscribers + delta)
 
+    def circuits_in_use(self) -> set[str]:
+        """Circuit names the running experiment has loaded, or an active comparison will load or return the Workbench
+        to (any thread)."""
+        names = set()
+        circuit = getattr(self.experiment, "circuit", None)
+        if circuit is not None and circuit.kind == "connectome":
+            names.add(circuit.data.key)
+        request, workbench = self.batch_request, self.workbench
+        if request is not None and self._batch_active() and (
+                request.config.neural_model == "connectome" or "connectome_model" in request.conditions):
+            names.add(request.config.connectome_parameters.circuit)
+        if workbench is not None and self._batch_active() and workbench.neural_model == "connectome":
+            names.add(workbench.connectome_parameters.circuit)
+        return names
+
+    def _batch_active(self):
+        batch = self.batch
+        return batch is not None and batch["status"] in {"running", "paused"}
+
     def _publish(self, capture=False):
         exp = self.experiment
         if capture and exp.body is not None:
             try:
                 frame = exp.body.frame()
                 with self.lock:
+                    if frame is not None and frame != self.frame_bytes:
+                        self.frame_revision += 1
                     self.frame_bytes = frame
-                    self.frame_revision += 1
             except Exception as exc:
                 exp.body.render_error = f"Rendering failed: {exc}. Arena shows backend poses."
                 if exp.body.renderer is not None:
@@ -79,39 +154,74 @@ class SimulationWorker:
                     exp.body.renderer = None
                 with self.lock:
                     self.frame_bytes = None
-        self.revision += 1
         wall_s = exp.wall_s
-        state = State(instance_id=self.instance_id, revision=self.revision, run_id=exp.run_id,
+        # Built from already validated parts: validating State would re-run RunConfig's checks against the circuit
+        # files on disk at every publish, which costs time and can disagree with the circuit that is loaded.
+        state = State.model_construct(instance_id=self.instance_id, revision=self.revision, run_id=exp.run_id,
             status=exp.status, error=exp.error, config=exp.config, interventions=exp.interventions,
             sample=exp.sample, history=list(exp.history), trail=list(exp.trail), events=exp.events[-50:],
-            wall_s=wall_s, real_time_factor=exp.t / max(wall_s, 1e-9) if exp.t else 0,
-            compute_real_time_factor=exp.t / max(exp.compute_s, 1e-9) if exp.t else 0,
+            wall_s=wall_s, real_time_factor=exp.t / max(wall_s, 1e-9) if exp.t else 0.,
+            compute_real_time_factor=exp.t / max(exp.compute_s, 1e-9) if exp.t else 0.,
             memory_mb=psutil.Process().memory_info().rss / 1e6, frame_revision=self.frame_revision,
             rendering=exp.body is not None and exp.body.renderer is not None,
             render_error=exp.body.render_error if exp.body else None,
-            recording_samples=len(exp.records), recording_limit=RECORD_LIMIT, provenance=exp.provenance,
-            metrics=exp.metrics, vision=exp.body.vision if exp.body else {}, batch=self.batch,
-            connectome=exp.connectome_snapshot())
+            recording_samples=len(exp.records), recording_limit=RECORD_LIMIT,
+            provenance=construct(Provenance, exp.provenance), metrics=construct(RunMetrics, exp.metrics),
+            vision=construct(Vision, exp.body.vision if exp.body else {}), batch=construct(Batch, self.batch),
+            connectome=construct(ConnectomeLive, exp.connectome_snapshot())).model_dump()
         with self.lock:
-            self.snapshot = state.model_dump()
+            previous = self.snapshot
+        # A new revision only when something besides the memory reading changed: clients skip the rest.
+        if all(value == previous.get(key) for key, value in state.items() if key != "memory_mb"):
+            return
+        self.revision += 1
+        state["revision"] = self.revision
+        with self.lock:
+            self.snapshot = state
             self.eye_bytes = exp.body.eye_frame if exp.body else None
 
-    def _start_trial(self):
-        condition, seed = self.trials[self.trial_index]
-        config = self.batch_request.config.model_copy(deep=True)
-        config.seed = seed
-        config.controller = "baseline" if condition == "baseline" else "neural"
+    def _publish_safely(self, capture=False):
+        """Publish, never raising: a state that cannot be summarized puts the run into the error state."""
+        try:
+            self._publish(capture)
+            return
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            try:
+                if self.experiment.status != "error":
+                    self.experiment.fail(exc)
+                if self._batch_active():  # saves the unfinished trial and restores the workbench
+                    self._end_batch("failed", error)
+                self._publish()
+                return
+            except Exception:
+                pass
+        with self.lock:
+            if self.snapshot["status"] != "error" or self.snapshot["error"] != error:
+                self.revision += 1
+                self.snapshot = {**self.snapshot, "revision": self.revision, "status": "error",
+                                 "error": f"{error} (the state could not be displayed; Reset to recover)"}
+
+    @staticmethod
+    def _trial_config(request: BatchRequest, condition: str, seed: int) -> RunConfig:
+        """One trial's configuration, validated in full like any reset, so an invalid one fails before the first trial."""
+        if any(custom.label == condition for custom in request.custom_conditions):
+            return request.custom_config(condition, seed)
+        overrides = {"seed": seed, "controller": "baseline" if condition == "baseline" else "neural",
+            "initial_interventions": Interventions(zero_left=condition == "left_sensor_off",
+                silence="descending" if condition == "descending_off" else "none",
+                silence_dna02={"dna02_left_off": "left", "dna02_right_off": "right",
+                               "dna02_both_off": "both"}.get(condition, "none"),
+                silence_types=[request.cell_type] if condition == "cell_type_off" else []).model_dump()}
         if condition in {"engineered_model", "connectome_model"}:
-            config.neural_model = "engineered" if condition == "engineered_model" else "connectome"
-        config.initial_interventions = Interventions(zero_left=condition == "left_sensor_off",
-            silence="descending" if condition == "descending_off" else "none",
-            silence_dna02={"dna02_left_off": "left", "dna02_right_off": "right",
-                           "dna02_both_off": "both"}.get(condition, "none"),
-            silence_types=[self.batch_request.cell_type] if condition == "cell_type_off" else [])
+            overrides["neural_model"] = "engineered" if condition == "engineered_model" else "connectome"
+        return RunConfig.model_validate({**request.config.model_dump(), **overrides})
+
+    def _start_trial(self):
+        condition, seed, config = self.trials[self.trial_index]
         self.experiment.reset(config)
         if self.experiment.status == "error":
-            self.batch["status"] = "failed"
-            self.batch["error"] = self.experiment.error
+            self._end_batch("failed", self.experiment.error)
             return
         self.experiment.trial = {"batch_id": self.batch["id"], "condition": condition, "seed": seed,
             "index": self.trial_index + 1, "total": len(self.trials), "neural_model": config.neural_model,
@@ -121,26 +231,77 @@ class SimulationWorker:
         self.experiment.status = "running"
         self.experiment.event("trial_start", f"Comparison {self.trial_index+1}/{len(self.trials)} · {condition} · seed {seed}")
 
+    def _export(self, exp, share_safe=False) -> dict:
+        """Export now, after any export still being written."""
+        return self.exports.submit(exp.export_job(share_safe=share_safe).write).result()
+
+    def _finish_exports(self, final=False):
+        """Answer the export commands whose files are complete, logging each in its run if that run is still the
+        current one. final=True, as the thread ends, waits for every export and only answers."""
+        for item in list(self.writing):
+            writing, future = item
+            if not (final or writing.files.done()):
+                continue
+            self.writing.remove(item)
+            try:
+                result = writing.files.result()
+            except Exception as exc:
+                future.set_exception(exc)
+                continue
+            if not final and self.experiment.run_id == writing.run_id:
+                self.experiment.event("export", f"Saved {writing.samples} samples locally")
+                self._publish_safely()
+            future.set_result(result)
+
     def _finish_trial(self):
-        result = self.experiment.export()
+        result = self._export(self.experiment)
         self.batch["results"].append({**result, **self.experiment.trial, "metrics": self.experiment.metrics})
+        self.experiment.trial = None  # saved
         self.trial_index += 1
         if self.trial_index == len(self.trials):
-            self.batch["status"] = "completed"
-            self.experiment.event("batch_complete", "Comparison complete; every trial saved locally")
+            self._end_batch("completed")
         else:
             self._start_trial()
 
+    def _end_batch(self, status, error=None):
+        """Close the comparison, then return the workbench to its configuration from before it, so neither the
+        Workbench nor the next comparison inherits the last trial's model, controller or interventions. An
+        unfinished trial (cancelled or failed) is saved first, marked partial. Never raises."""
+        exp = self.experiment
+        self.batch["status"] = status
+        if error is not None:
+            self.batch["error"] = error
+        if exp.trial is not None and exp.step_index:
+            try:
+                exp.trial["partial"] = True
+                self.batch["partial"] = {**self._export(exp), **exp.trial, "metrics": exp.metrics}
+            except Exception as exc:
+                self.batch["partial_error"] = f"The unfinished trial could not be saved: {type(exc).__name__}: {exc}"
+        workbench, self.workbench = self.workbench, None
+        if workbench is None:
+            return
+        message = {"completed": "Comparison complete; every trial saved locally",
+                   "cancelled": "Comparison cancelled" + ("; the unfinished trial was saved, marked partial"
+                                                           if "partial" in self.batch else ""),
+                   "failed": f"Comparison failed: {error}"}[status]
+        try:
+            exp.reset(RunConfig.model_validate(workbench.model_dump()))
+            exp.event({"completed": "batch_complete", "cancelled": "batch_cancel", "failed": "batch_failed"}[status],
+                      message + " · Workbench configuration restored")
+        except Exception as exc:
+            self.batch["restore_error"] = (f"The Workbench configuration from before the comparison could not be "
+                                           f"restored: {type(exc).__name__}: {exc}")
+
     def _command(self, name, payload):
         exp = self.experiment
-        batch_active = self.batch and self.batch["status"] in {"running", "paused"}
-        if batch_active and name not in {"run", "pause", "batch_cancel", "export"}:
+        batch_active = self._batch_active()
+        if batch_active and name not in BATCH_COMMANDS:
             raise ValueError("Cancel the active comparison before changing its controlled conditions.")
         if name == "reset":
+            exp.reset(parse(RunConfig, payload))
             with self.lock:
                 self.frame_bytes = None
-            exp.reset(RunConfig.model_validate(payload))
-            self.batch = None
+            self.batch = self.workbench = None
         elif name == "run":
             if exp.status == "error":
                 raise ValueError("Reset the experiment to recover from the error.")
@@ -164,6 +325,7 @@ class SimulationWorker:
         elif name == "step":
             if exp.status != "paused":
                 raise ValueError("Step is available only while paused.")
+            exp.check_advance()  # a finished protocol or full recording: refused, and the run stays valid
             start = time.perf_counter()
             exp.event("step", "Advanced one control interval · 10 ms")
             try:
@@ -174,60 +336,109 @@ class SimulationWorker:
             finally:
                 exp.active_wall_s += time.perf_counter() - start
         elif name == "stimulus":
-            exp.set_stimulus(Stimulus.model_validate(payload))
+            exp.set_stimulus(parse(Stimulus, payload))
         elif name == "interventions":
-            exp.set_interventions(Interventions.model_validate(payload))
+            interventions = parse(Interventions, payload)
+            # 422 as at a reset: interventions of the other model, cell types and values that do not fit. Checked
+            # against the circuit this run loaded, not the file of that name, which may have been rebuilt since.
+            try:
+                interventions.for_model(exp.circuit.kind)
+                if exp.circuit.kind == "connectome":
+                    check_interventions(interventions, exp.circuit.data, exp.circuit.parameters.dynamics)
+            except ValueError as exc:
+                raise Rejected(str(exc)) from exc
+            exp.set_interventions(interventions)
         elif name == "speed":
-            exp.config.speed = Speed.model_validate(payload).speed
+            exp.config.speed = parse(Speed, payload).speed
             exp.event("speed", f"Requested speed {exp.config.speed:g}×", payload)
+            if batch_active:  # pacing only: the remaining trials keep the new speed
+                for _, _, config in self.trials[self.trial_index + 1:]:
+                    config.speed = exp.config.speed
         elif name == "parameters":
-            exp.set_parameters(NeuralParameters.model_validate(payload))
+            exp.set_parameters(parse(NeuralParameters, payload))
         elif name == "connectome_parameters":
-            exp.set_connectome_parameters(ConnectomeParameters.model_validate(payload))
+            parameters = parse(ConnectomeParameters, payload)
+            data = getattr(exp.circuit, "data", None)
+            if data is not None and parameters.circuit == data.key:
+                try:  # populations and weights that do not fit the loaded circuit: 422, as at a reset
+                    parameters.check_against_circuit(data)
+                except ValueError as exc:
+                    raise Rejected(str(exc)) from exc
+            exp.set_connectome_parameters(parameters)
         elif name == "batch_start":
-            self.batch_request = BatchRequest.model_validate(payload)
-            self.trials = [(condition, seed) for seed in self.batch_request.seeds for condition in self.batch_request.conditions]
-            self.trial_index = 0
+            request = parse(BatchRequest, payload)
+            try:
+                trials = [(condition, seed, self._trial_config(request, condition, seed))
+                          for seed in request.seeds for condition in request.condition_names]
+            except ValidationError as exc:
+                raise Invalid(exc) from exc
+            self.batch_request, self.trials, self.trial_index = request, trials, 0
+            self.workbench = exp.config.model_copy(update={"initial_interventions": exp.interventions.model_copy()},
+                                                   deep=True)
             self.batch = {"id": uuid.uuid4().hex[:12], "status": "running", "total": len(self.trials),
-                "current": 0, "results": [], "protocol": self.batch_request.config.protocol.name,
-                "cell_type": self.batch_request.cell_type}
-            self._start_trial()
+                "current": 0, "results": [], "protocol": request.config.protocol.name,
+                "cell_type": request.cell_type, "max_speed": request.max_speed}
+            try:
+                self._start_trial()
+            except Exception:
+                self.batch = self.workbench = None  # the first trial could not be built; the workbench is untouched
+                raise
         elif name == "batch_cancel":
             if not batch_active:
                 raise ValueError("No comparison is active.")
             exp.stop_clock()
             exp.status = "paused"
-            self.batch["status"] = "cancelled"
-            exp.event("batch_cancel", "Comparison cancelled; current partial trial retained for export")
+            exp.event("batch_cancel", "Comparison cancelled")
+            self._end_batch("cancelled")
         elif name == "export":
-            result = exp.export()
-            exp.event("export", f"Saved {len(exp.records)} samples locally")
-            return result
+            # Captured here; the export thread writes the files while the run goes on (see _finish_exports).
+            # A comparison trial saved before its protocol ends is marked partial, so it never counts as a trial.
+            trial = exp.trial
+            if trial is not None:
+                exp.trial = {**trial, "partial": True}
+            try:
+                job = exp.export_job(share_safe=bool(payload.get("share_safe")))
+            finally:
+                exp.trial = trial
+            return Writing(self.exports.submit(job.write), exp.run_id, len(job.records))
         else:
             raise ValueError("Unknown command")
+
+    def _handle(self, name, payload, future):
+        if not future.set_running_or_notify_cancel():
+            return
+        try:
+            result = self._command(name, payload)
+        except Exception as exc:
+            self._publish_safely()
+            future.set_exception(exc)
+        else:
+            self._publish_safely(capture=name in {"reset", "step", "pause", "stimulus", "batch_start", "batch_cancel"})
+            if isinstance(result, Writing):
+                self.writing.append((result, future))
+            else:
+                future.set_result(result if result is not None else self.get_snapshot())
+        finally:
+            if not future.done() and not any(f is future for _, f in self.writing):
+                future.set_exception(RuntimeError("The command did not finish."))
 
     def _loop(self):
         try:
             self.experiment = Experiment(self.config, self.render)
-            self._publish(capture=True)
+            self._publish_safely(capture=True)
             self.ready.set()
             last_publish = time.perf_counter()
             while not self.stopping.is_set():
                 exp = self.experiment
+                if self.writing:
+                    self._finish_exports()
                 try:
-                    item = self.commands.get(timeout=0 if exp.status == "running" else .1)
+                    item = self.commands.get(timeout=0 if exp.status == "running" else
+                                             WRITING_POLL if self.writing else PUBLISH_INTERVAL)
                 except Empty:
                     item = None
                 if item:
-                    name, payload, future = item
-                    if future.set_running_or_notify_cancel():
-                        try:
-                            result = self._command(name, payload)
-                            self._publish(capture=name in {"reset", "step", "pause", "stimulus", "batch_start", "batch_cancel"})
-                            future.set_result(result if result is not None else self.get_snapshot())
-                        except Exception as exc:
-                            self._publish()
-                            future.set_exception(exc)
+                    self._handle(*item)
                     self.commands.task_done()
                     continue
                 if exp.status == "running":
@@ -237,28 +448,33 @@ class SimulationWorker:
                         if exp.protocol_complete:
                             if self.batch and self.batch["status"] == "running":
                                 self._finish_trial()
-                            self._publish(capture=True)
+                            self._publish_safely(capture=True)
                     except Exception as exc:
                         exp.fail(exc)
-                        if self.batch and self.batch["status"] in {"running", "paused"}:
-                            self.batch.update(status="failed", error=str(exc))
-                    elapsed = time.perf_counter() - start
-                    self.stopping.wait(max(0, CONTROL_DT / exp.config.speed - elapsed))
+                        if self._batch_active():
+                            self._end_batch("failed", str(exc))
+                    # Comparisons at maximum speed run unpaced; otherwise the display speed paces the run.
+                    if not (self._batch_active() and self.batch_request.max_speed):
+                        elapsed = time.perf_counter() - start
+                        self.stopping.wait(max(0, CONTROL_DT / exp.config.speed - elapsed))
                 now = time.perf_counter()
-                if now - last_publish >= .1:
-                    self._publish(capture=exp.status == "running")
+                if now - last_publish >= (PUBLISH_INTERVAL if exp.status == "running" else HEARTBEAT_INTERVAL):
+                    self._publish_safely(capture=exp.status == "running")
                     last_publish = now
         except Exception as exc:
             with self.lock:
-                self.snapshot = {**self.snapshot, "status": "error", "error": f"Worker failed: {type(exc).__name__}: {exc}"}
+                self.snapshot = {**self.snapshot, "revision": self.snapshot["revision"] + 1, "status": "error",
+                                 "error": f"Worker failed: {type(exc).__name__}: {exc}"}
             self.ready.set()
         finally:
+            self._finish_exports(final=True)
+            self.exports.shutdown(wait=True)
             if self.experiment is not None:
                 self.experiment.close()
             while not self.commands.empty():
                 _, _, future = self.commands.get_nowait()
                 if not future.done():
-                    future.set_exception(RuntimeError("Simulation worker stopped."))
+                    future.set_exception(WorkerStopped("The simulation worker stopped."))
 
     def close(self):
         self.stopping.set()

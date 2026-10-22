@@ -1,0 +1,11 @@
+{
+  "description": "Rendered compound eyes through the FlyVis optic-lobe network into the DNa02 circuit's visual neurons. Needs the optional FlyVis install and OpenGL; about 0.1x real time.",
+  "config": {
+    "engine": "flygym",
+    "seed": 42,
+    "sensor_model": "flyvis",
+    "neural_model": "connectome",
+    "connectome_parameters": {"circuit": "fafb783-dna02", "dynamics": "rate"},
+    "stimulus": {"x": 12, "y": 8, "intensity": 1}
+  }
+}

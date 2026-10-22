@@ -1,14 +1,25 @@
-import {useEffect, useMemo, useState} from 'react';
-import {ArrowRight, Network, Route, Search} from 'lucide-react';
-import type {Command, Config, ConnectomeParameters, State} from '../types';
+import {memo, useEffect, useMemo, useRef, useState, type KeyboardEvent} from 'react';
+import {ArrowRight, Network, Route, Search, TriangleAlert} from 'lucide-react';
+import type {Command, Config, ConnectomeParameters, InterventionChange, State} from '../types';
 import {fmt} from '../format';
-import {dynamicsLabels, readoutPairs} from '../models';
-import {useCircuit} from './useCircuit';
-import {parseTypes} from './build';
+import {clippingNote, dynamicsLabels, readoutPairs} from '../models';
+import {
+  manipulationLabel,
+  manipulationOn,
+  manipulations,
+  withCellType,
+  withoutCellType,
+  withoutManipulation,
+} from '../interventions';
+import {useCircuit, useCircuitList} from './useCircuit';
+import {parseTypes, sideBalanced} from './build';
+import {CircuitChanged} from './CircuitChanged';
+import {MANIPULATION_NOTE, ManipulationEditor, ManipulationList} from './Manipulations';
 import {
   activityColor,
   edgesToDraw,
   layoutTypes,
+  neighbour,
   readoutRows,
   READOUT_X,
   topPartners,
@@ -16,6 +27,7 @@ import {
   type CircuitSummary,
   type CircuitType,
   type Node,
+  type Spot,
 } from './layout';
 import './connectome.css';
 
@@ -32,7 +44,7 @@ function curve(a: {x: number; y: number}, b: {x: number; y: number}) {
   return `M${a.x} ${a.y} C${a.x + dx} ${a.y},${b.x - dx} ${b.y},${b.x} ${b.y}`;
 }
 
-function Edge({
+const Edge = memo(function Edge({
   from,
   to,
   sign,
@@ -60,7 +72,7 @@ function Edge({
       <title>{title}</title>
     </path>
   );
-}
+});
 
 function ParameterForm({
   state,
@@ -76,6 +88,8 @@ function ParameterForm({
   const current = state?.config.connectome_parameters;
   const [params, setParams] = useState<ConnectomeParameters | null>(current ?? null);
   const [populations, setPopulations] = useState({readout: '', input: '', speed: ''});
+  // Readout weights as typed; an empty field is the default weight 1.
+  const [weights, setWeights] = useState<Record<string, string>>({});
   const key = JSON.stringify(current);
   useEffect(() => {
     if (!current) return;
@@ -85,9 +99,33 @@ function ParameterForm({
       input: (current.input_types ?? []).join('; '),
       speed: current.speed_types.join('; '),
     });
+    setWeights(
+      Object.fromEntries(
+        Object.entries(current.readout_weights ?? {}).map(([type, w]) => [type, String(w)]),
+      ),
+    );
   }, [key]);
   if (!params || !current) return null;
   const spiking = params.dynamics === 'spiking';
+  const readoutTypes = state?.connectome?.readout_types ?? [];
+  const typedWeights = Object.entries(weights).filter(
+    ([type, w]) => w.trim() !== '' && readoutTypes.includes(type),
+  );
+  const weightProblem = typedWeights.some(
+    ([, w]) => !Number.isFinite(Number(w)) || Number(w) < -5 || Number(w) > 5,
+  )
+    ? 'Readout weights take −5 to 5.'
+    : null;
+  const submitted = (): ConnectomeParameters => ({
+    ...params,
+    readout_weights: typedWeights.length
+      ? Object.fromEntries(typedWeights.map(([type, w]) => [type, Number(w)]))
+      : null,
+  });
+  const motorFields = [
+    ['motor_delay_ms', 'Motor delay (ms)', 0, 500, 1],
+    ['motor_tau_ms', 'Motor low-pass τ (ms)', 0, 1000, 1],
+  ] as const;
   const fields = [
     ['synapse_threshold', 'Synapse threshold', 1, 1000, 1],
     ...(spiking ? [] : ([['global_gain', 'Global gain', 0, 1, 0.0001]] as const)),
@@ -115,9 +153,10 @@ function ParameterForm({
   return (
     <>
       <form
+        className="global-form"
         onSubmit={(e) => {
           e.preventDefault();
-          void command('connectome/parameters', params);
+          if (!weightProblem) void command('connectome/parameters', submitted());
         }}
       >
         <div className="parameter-fields">
@@ -177,7 +216,63 @@ function ParameterForm({
             </select>
           </label>
         </div>
-        <button className="primary-button" disabled={disabled}>
+        <fieldset className="motor-path">
+          <legend>Motor path (engineered)</legend>
+          <div className="parameter-fields">
+            {motorFields.map(([field, label, min, max, step]) => (
+              <label key={field}>
+                {label}
+                <input
+                  aria-label={label}
+                  type="number"
+                  min={min}
+                  max={max}
+                  step={step}
+                  required
+                  value={params[field] ?? 0}
+                  disabled={disabled}
+                  onChange={(e) => setParams({...params, [field]: Number(e.target.value)})}
+                />
+              </label>
+            ))}
+            <label>
+              Readout pooling
+              <select
+                aria-label="Readout pooling"
+                value={params.readout_pool ?? 'sum'}
+                disabled={disabled}
+                onChange={(e) =>
+                  setParams({...params, readout_pool: e.target.value as 'sum' | 'mean'})
+                }
+              >
+                <option value="sum">Sum over readout types (default)</option>
+                <option value="mean">Mean over readout types</option>
+              </select>
+            </label>
+            {readoutTypes.map((type) => (
+              <label key={type}>
+                Weight of {type}
+                <input
+                  aria-label={`Readout weight of ${type}`}
+                  type="number"
+                  min={-5}
+                  max={5}
+                  step={0.1}
+                  placeholder="1"
+                  value={weights[type] ?? ''}
+                  disabled={disabled}
+                  onChange={(e) => setWeights({...weights, [type]: e.target.value})}
+                />
+              </label>
+            ))}
+          </div>
+          {weightProblem && (
+            <p className="microcopy" role="status">
+              {weightProblem}
+            </p>
+          )}
+        </fieldset>
+        <button className="primary-button" disabled={disabled || !!weightProblem}>
           Apply parameters
         </button>
       </form>
@@ -226,25 +321,37 @@ function PathTrace({source, targets}: {source: string; targets: string[]}) {
   const [paths, setPaths] = useState<Path[] | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  // Only the answer to the newest request for the current source and target is shown; selecting
+  // another cell type while a trace runs drops its answer.
+  const request = useRef(0);
   useEffect(() => {
+    request.current += 1;
     setPaths(null);
     setError('');
+    setLoading(false);
   }, [source, target]);
   useEffect(() => {
     if (!targets.includes(target)) setTarget(targets[0] ?? '');
   }, [targets.join('\n')]);
   const trace = () => {
+    const id = ++request.current;
     setLoading(true);
     const query = new URLSearchParams({source, target, max_hops: '4', limit: '5'});
     fetch(`/api/connectome/paths?${query}`)
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
+        if (id !== request.current) return;
         if (!r.ok) throw Error(typeof data.detail === 'string' ? data.detail : 'No paths found.');
+        if ((data.source ?? source) !== source || (data.target ?? target) !== target) return;
         setPaths(data.paths);
         setError('');
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (id === request.current) setError(e.message);
+      })
+      .finally(() => {
+        if (id === request.current) setLoading(false);
+      });
   };
   if (!targets.length || targets.includes(source)) return null;
   return (
@@ -286,17 +393,27 @@ function PathTrace({source, targets}: {source: string; targets: string[]}) {
 export function ConnectomeCircuitView({
   state,
   command,
+  intervene,
   reset,
   disabled,
 }: {
   state: State | null;
   command: Command;
+  intervene: (change: InterventionChange) => void;
   reset: (override?: Partial<Config>) => void;
   disabled: boolean;
 }) {
-  const {circuit, error} = useCircuit(state);
+  const {circuit, error, loading, changed} = useCircuit(state);
   const [selected, setSelected] = useState<number | null>(null);
   const [query, setQuery] = useState('');
+  // The selection (and, by remounting the diagram, traced paths) resets only when another circuit
+  // file is shown; parameter edits keep it.
+  const identity = circuit ? `${circuit.name}\n${circuit.sha256}` : null;
+  const [shownIdentity, setShownIdentity] = useState(identity);
+  if (identity !== null && identity !== shownIdentity) {
+    setShownIdentity(identity);
+    if (shownIdentity !== null) setSelected(null);
+  }
   const activeBatch = !!state?.batch && ['running', 'paused'].includes(state.batch.status);
   const controlsDisabled = disabled || activeBatch;
   const readoutIndex = useMemo(
@@ -321,7 +438,8 @@ export function ConnectomeCircuitView({
         : [],
     [circuit, selected, readoutIndex],
   );
-  useEffect(() => setSelected(null), [circuit?.name]);
+  if (changed)
+    return <CircuitChanged message={error} reset={() => reset()} disabled={controlsDisabled} />;
   if (!circuit)
     return (
       <section className="panel empty-research" role="status">
@@ -334,9 +452,12 @@ export function ConnectomeCircuitView({
     );
   return (
     <CircuitDiagram
+      key={identity}
       circuit={circuit}
+      loading={loading}
       state={state}
       command={command}
+      intervene={intervene}
       reset={reset}
       controlsDisabled={controlsDisabled}
       selected={selected}
@@ -350,10 +471,80 @@ export function ConnectomeCircuitView({
   );
 }
 
+// One cell type in the diagram. Memoized on its drawn values, so a snapshot redraws only the types
+// whose color (activity) or state changed, and nothing while paused.
+const TypeNode = memo(function TypeNode({
+  nodeKey,
+  name,
+  count,
+  layer,
+  transmitter,
+  x,
+  y,
+  r,
+  fill,
+  input,
+  active,
+  silenced,
+  manipulation,
+  tabbable,
+}: {
+  nodeKey: string;
+  name: string;
+  count: number;
+  layer: number;
+  transmitter: string;
+  x: number;
+  y: number;
+  r: number;
+  fill: string;
+  input: boolean;
+  active: boolean;
+  silenced: boolean;
+  // What acts on the type, e.g. "DNa03 left output ×0.5", or null.
+  manipulation: string | null;
+  tabbable: boolean;
+}) {
+  return (
+    <g
+      className="type-node"
+      data-node={nodeKey}
+      role="button"
+      tabIndex={tabbable ? 0 : -1}
+      aria-pressed={active}
+      aria-label={`Inspect ${name}: ${count} neurons${manipulation ? `, ${manipulation}` : ''}`}
+    >
+      <circle
+        cx={x}
+        cy={y}
+        r={r}
+        fill={fill}
+        stroke={active ? '#ba9455' : manipulation ? '#9c6f2c' : input ? '#c29a55' : '#9fb390'}
+        strokeWidth={active ? 2.5 : manipulation ? 1.6 : input ? 1.4 : 0.7}
+        strokeDasharray={silenced ? '2 2' : manipulation ? '5 2' : undefined}
+      >
+        <title>
+          {name} · {count} neurons · hop {layer < 0 ? 'none' : layer} · {transmitter}
+          {manipulation ? ` · ${manipulation}` : ''}
+        </title>
+      </circle>
+      {(active || count >= 12) && (
+        <text x={x} y={y - r - 3} textAnchor="middle" className="type-label">
+          {name}
+        </text>
+      )}
+    </g>
+  );
+});
+
+const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'];
+
 function CircuitDiagram({
   circuit,
+  loading,
   state,
   command,
+  intervene,
   reset,
   controlsDisabled,
   selected,
@@ -365,8 +556,10 @@ function CircuitDiagram({
   byIndex,
 }: {
   circuit: CircuitSummary;
+  loading: boolean;
   state: State | null;
   command: Command;
+  intervene: (change: InterventionChange) => void;
   reset: (override?: Partial<Config>) => void;
   controlsDisabled: boolean;
   selected: number | null;
@@ -378,23 +571,83 @@ function CircuitDiagram({
   byIndex: Map<number, CircuitType>;
 }) {
   const rates = state?.connectome?.type_rates ?? [];
-  const dynamics = state?.config.connectome_parameters.dynamics ?? 'rate';
-  const silenced = new Set(state?.interventions.silence_types ?? []);
-  const dna02Silenced = state?.interventions.silence_dna02 ?? 'none';
+  const {circuits} = useCircuitList();
+  const balanced = sideBalanced(circuits.find((c) => c.name === circuit.name));
+  const parameters = state?.config.connectome_parameters;
+  const dynamics = parameters?.dynamics ?? 'rate';
+  const clipping = clippingNote(state?.connectome?.motor_clipped_fraction);
+  const interventions = state?.interventions;
+  // Cell types by what acts on them: silenced on both sides, or otherwise manipulated.
+  const manipulated = new Map<string, string[]>();
+  for (const m of manipulations(interventions))
+    manipulated.set(m.name, [...(manipulated.get(m.name) ?? []), manipulationLabel(m, dynamics)]);
+  const silencedBoth = (name: string) =>
+    manipulationOn(interventions, name, 'left')?.mode === 'silence' &&
+    manipulationOn(interventions, name, 'right')?.mode === 'silence';
   const pairs = readoutPairs(circuit.readouts.map((r) => r.cell_type));
-  const rows = readoutRows(circuit.readouts.length);
+  const rows = useMemo(() => readoutRows(circuit.readouts.length), [circuit]);
   const radius = Math.max(
     12,
     Math.min(30, (VIEW.bottom - 70 - VIEW.top) / circuit.readouts.length / 6),
   );
+  // The diagram is one tab stop: arrow keys move between its nodes (a roving tabindex).
+  const svg = useRef<SVGSVGElement>(null);
+  const spots = useMemo<Spot[]>(
+    () => [
+      ...circuit.types.flatMap((type) => {
+        const node = layout.get(type.index);
+        return node ? [{key: `t${type.index}`, x: node.x, y: node.y}] : [];
+      }),
+      ...circuit.readouts.flatMap((_, k) =>
+        (['left', 'right'] as const).map((side) => ({
+          key: `r${k}-${side}`,
+          x: READOUT_X,
+          y: rows[k][side],
+        })),
+      ),
+    ],
+    [circuit, layout, rows],
+  );
+  const [focused, setFocused] = useState<string | null>(null);
+  const tabStop =
+    focused !== null && spots.some((s) => s.key === focused)
+      ? focused
+      : selected !== null && layout.has(selected)
+        ? `t${selected}`
+        : (spots[0]?.key ?? null);
+  const activate = (nodeKey: string) => {
+    if (nodeKey.startsWith('t')) {
+      const index = Number(nodeKey.slice(1));
+      setSelected(selected === index ? null : index);
+    } else {
+      const k = Number(nodeKey.slice(1, nodeKey.indexOf('-')));
+      setSelected(circuit.readouts[k]?.type_index ?? null);
+    }
+  };
+  const nodeOf = (target: EventTarget) =>
+    target instanceof Element ? target.closest('[data-node]')?.getAttribute('data-node') : null;
+  const onKeyDown = (e: KeyboardEvent<SVGSVGElement>) => {
+    const here = nodeOf(e.target);
+    if (!here) return;
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      activate(here);
+      return;
+    }
+    if (!ARROWS.includes(e.key)) return;
+    e.preventDefault();
+    const next = neighbour(spots, here, e.key);
+    if (!next) return;
+    setFocused(next);
+    svg.current?.querySelector<SVGElement>(`[data-node="${next}"]`)?.focus();
+  };
   const sampleRate = (index: number) => state?.sample?.rates[index] ?? 0;
   const isOff = (name: string, side: 'left' | 'right') =>
-    silenced.has(name) ||
-    (name === 'DNa02' && (dna02Silenced === side || dna02Silenced === 'both'));
+    manipulationOn(interventions, name, side)?.mode === 'silence';
   const selectedType = selected !== null ? (byIndex.get(selected) ?? null) : null;
   const name = (index: number) => byIndex.get(index)?.name ?? '?';
-  const silence = (types: string[]) =>
-    void command('interventions', {...state?.interventions, silence_types: types});
+  // Built on the newest interventions, so quick successive edits all apply.
+  const restoreType = (type: string) => intervene((current) => withoutCellType(current, type));
   const matches = query
     ? circuit.types.filter((t) => t.name.toLowerCase().includes(query.toLowerCase())).slice(0, 8)
     : [];
@@ -402,7 +655,7 @@ function CircuitDiagram({
   const subset = circuit.types_shown < circuit.types_total;
   return (
     <div className="circuit-layout">
-      <section className="panel circuit-panel">
+      <section className="panel circuit-panel" aria-busy={loading}>
         <div className="panel-heading">
           <div>
             <Network size={17} />
@@ -410,6 +663,8 @@ function CircuitDiagram({
           </div>
           <span className="mini-badge">
             LIVE / FLYWIRE V783 / {dynamics === 'spiking' ? 'SPIKING' : 'RATE'}
+            {balanced ? ' / LEFT-RIGHT BALANCED' : ''}
+            {loading ? ' / UPDATING' : ''}
           </span>
         </div>
         <div className="connectome-labels" aria-label="What each part of the model is">
@@ -426,11 +681,45 @@ function CircuitDiagram({
             Sensor input & readout <b>engineered</b>
           </span>
         </div>
+        <div className="type-finder">
+          <label className="type-search">
+            <Search size={13} />
+            <input
+              aria-label="Find a cell type"
+              placeholder="Find a cell type"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+          {matches.map((t) => (
+            <button
+              key={t.index}
+              className="text-button"
+              onClick={() => {
+                setSelected(t.index);
+                if (layout.has(t.index)) setFocused(`t${t.index}`);
+                setQuery('');
+              }}
+            >
+              {t.name} · {t.count} <ArrowRight size={11} />
+            </button>
+          ))}
+        </div>
         <svg
+          ref={svg}
           viewBox={`0 0 ${VIEW.width} ${VIEW.height}`}
           className="circuit-svg connectome-svg"
           role="group"
-          aria-label={`Connectome circuit by cell type, from deeper inputs to the ${readoutNames.join(', ')} readout, with live computed activity`}
+          aria-label={`Connectome circuit by cell type, from deeper inputs to the ${readoutNames.join(', ')} readout. Arrow keys move between cell types; Enter inspects one.`}
+          onKeyDown={onKeyDown}
+          onClick={(e) => {
+            const here = nodeOf(e.target);
+            if (here) activate(here);
+          }}
+          onFocus={(e) => {
+            const here = nodeOf(e.target);
+            if (here) setFocused(here);
+          }}
         >
           <defs>
             <marker
@@ -518,60 +807,41 @@ function CircuitDiagram({
           {circuit.types.map((type) => {
             const node = layout.get(type.index);
             if (!node) return null;
-            const active = selected === type.index;
+            const key = `t${type.index}`;
+            const off = silencedBoth(type.name);
             return (
-              <g
+              <TypeNode
                 key={type.index}
-                className="type-node"
-                role="button"
-                tabIndex={0}
-                aria-label={`Inspect ${type.name}: ${type.count} neurons, mean activity ${fmt(rates[type.index])}`}
-                onClick={() => setSelected(active ? null : type.index)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') setSelected(active ? null : type.index);
-                }}
-              >
-                <circle
-                  cx={node.x}
-                  cy={node.y}
-                  r={node.r}
-                  fill={silenced.has(type.name) ? '#e7e2d6' : activityColor(rates[type.index] ?? 0)}
-                  stroke={active ? '#ba9455' : type.input ? '#c29a55' : '#9fb390'}
-                  strokeWidth={active ? 2.5 : type.input ? 1.4 : 0.7}
-                  strokeDasharray={silenced.has(type.name) ? '2 2' : undefined}
-                >
-                  <title>
-                    {type.name} · {type.count} neurons · hop {type.layer < 0 ? 'none' : type.layer}{' '}
-                    · {type.transmitter}
-                  </title>
-                </circle>
-                {(active || type.count >= 12) && (
-                  <text
-                    x={node.x}
-                    y={node.y - node.r - 3}
-                    textAnchor="middle"
-                    className="type-label"
-                  >
-                    {type.name}
-                  </text>
-                )}
-              </g>
+                nodeKey={key}
+                name={type.name}
+                count={type.count}
+                layer={type.layer}
+                transmitter={type.transmitter}
+                x={node.x}
+                y={node.y}
+                r={node.r}
+                fill={off ? '#e7e2d6' : activityColor(rates[type.index] ?? 0)}
+                input={type.input}
+                active={selected === type.index}
+                silenced={off}
+                manipulation={manipulated.get(type.name)?.join('; ') ?? null}
+                tabbable={tabStop === key}
+              />
             );
           })}
           {circuit.readouts.flatMap((readout, k) =>
             (['left', 'right'] as const).map((side) => {
               const value = sampleRate(side === 'left' ? pairs[k].left : pairs[k].right);
+              const key = `r${k}-${side}`;
               return (
                 <g
-                  key={`${readout.cell_type}-${side}`}
+                  key={key}
+                  className="type-node"
+                  data-node={key}
                   transform={`translate(${READOUT_X},${rows[k][side]})`}
                   role="button"
-                  tabIndex={0}
-                  aria-label={`Inspect ${readout.cell_type}`}
-                  onClick={() => setSelected(readout.type_index)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') setSelected(readout.type_index);
-                  }}
+                  tabIndex={tabStop === key ? 0 : -1}
+                  aria-label={`Inspect ${readout.cell_type} (${side} readout neuron)`}
                 >
                   <circle
                     r={radius}
@@ -591,7 +861,9 @@ function CircuitDiagram({
             }),
           )}
           <text x={READOUT_X} y="520" textAnchor="middle" className="circuit-stage">
-            turn = {fmt(state?.config.connectome_parameters.output_gain, 1)} × Σ (R − L)
+            turn = {fmt(parameters?.output_gain, 1)} ×{' '}
+            {parameters?.readout_pool === 'mean' ? 'mean' : 'Σ'}{' '}
+            {parameters?.readout_weights ? 'w × ' : ''}(R − L)
           </text>
           <text x={READOUT_X} y="536" textAnchor="middle" className="dna02-label">
             {fmt(state?.connectome?.turn)}{' '}
@@ -635,33 +907,12 @@ function CircuitDiagram({
         </div>
       </section>
       <aside className="panel circuit-inspector">
-        <label className="type-search">
-          <Search size={13} />
-          <input
-            aria-label="Find a cell type"
-            placeholder="Find a cell type"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </label>
-        {matches.map((t) => (
-          <button
-            key={t.index}
-            className="text-button"
-            onClick={() => {
-              setSelected(t.index);
-              setQuery('');
-            }}
-          >
-            {t.name} · {t.count} <ArrowRight size={11} />
-          </button>
-        ))}
         {selectedType && selected !== null ? (
           <>
             <span className="eyebrow">SELECTED CELL TYPE</span>
             <h2>{selectedType.name}</h2>
             <div className="selected-rate">
-              {silenced.has(selectedType.name) ? 'silenced' : fmt(rates[selected], 3)}
+              {silencedBoth(selectedType.name) ? 'silenced' : fmt(rates[selected], 3)}
               <small>
                 mean computed {dynamics === 'spiking' ? 'activity (rate ÷ scale)' : 'rate'} across
                 its neurons
@@ -711,13 +962,25 @@ function CircuitDiagram({
               </div>
             ))}
             <PathTrace source={selectedType.name} targets={readoutNames} />
-            <button
-              className="secondary-button"
-              disabled={controlsDisabled || silenced.has(selectedType.name)}
-              onClick={() => silence([...silenced, selectedType.name])}
-            >
-              Silence {selectedType.name}
-            </button>
+            <h3>Manipulate {selectedType.name}</h3>
+            <ManipulationEditor
+              key={selectedType.name}
+              name={selectedType.name}
+              circuit={circuit}
+              dynamics={dynamics}
+              interventions={interventions}
+              disabled={controlsDisabled}
+              onSet={(entry) => intervene((current) => withCellType(current, entry))}
+            />
+            {manipulated.has(selectedType.name) && (
+              <button
+                className="text-button"
+                disabled={controlsDisabled}
+                onClick={() => restoreType(selectedType.name)}
+              >
+                Restore {selectedType.name} on both sides
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -745,30 +1008,25 @@ function CircuitDiagram({
             <p className="microcopy">Click a cell type, or find one by name, to inspect it.</p>
           </>
         )}
-        {silenced.size > 0 && (
-          <div className="silenced-types" aria-label="Silenced cell types">
-            {[...silenced].map((type) => (
-              <button
-                key={type}
-                disabled={controlsDisabled}
-                onClick={() => silence([...silenced].filter((t) => t !== type))}
-                aria-label={`Restore ${type}`}
-              >
-                {type} ×
-              </button>
-            ))}
-          </div>
-        )}
+        <ManipulationList
+          interventions={interventions}
+          dynamics={dynamics}
+          counts={state?.connectome?.manipulated_neurons}
+          disabled={controlsDisabled}
+          onRemove={(item) => intervene((current) => withoutManipulation(current, item))}
+        />
+        <p className="microcopy manipulation-note">{MANIPULATION_NOTE}</p>
         <button
           className="text-button"
           disabled={controlsDisabled}
           onClick={() =>
-            void command('interventions', {
+            intervene({
               zero_left: false,
               zero_right: false,
               silence: 'none',
               silence_dna02: 'none',
               silence_types: [],
+              cell_types: [],
             })
           }
         >
@@ -784,6 +1042,16 @@ function CircuitDiagram({
             No per-neuron or per-synapse tuning · recorded for replay
           </span>
         </div>
+        {clipping && (
+          <div className="clipping-warning" role="note">
+            <TriangleAlert size={16} />
+            <p>
+              <strong>{clipping}</strong> Lowering the output gain
+              {dynamics === 'spiking' ? ' or raising the rate scale' : ''} reduces the clipping.
+              Details: docs/RESEARCH.md, “The clip, and how to read motor_clipped_fraction”.
+            </p>
+          </div>
+        )}
         <ParameterForm state={state} command={command} reset={reset} disabled={controlsDisabled} />
         <p className="panel-copy">
           {dynamics === 'spiking'
@@ -791,8 +1059,14 @@ function CircuitDiagram({
             : 'Every connection weight is its predicted sign × synapse count × the global gain. Sensor values drive the input neurons on their side.'}{' '}
           Forward drive is the tonic term
           {state?.config.connectome_parameters.speed_types.length ? ' plus the speed drive' : ''};
-          turning is the right − left difference summed over {readoutNames.join(', ')} (equal
-          weights, assumed).
+          turning is the right − left difference{' '}
+          {parameters?.readout_pool === 'mean' ? 'averaged' : 'summed'} over{' '}
+          {readoutNames.join(', ')} (
+          {parameters?.readout_weights ? 'with the weights above' : 'equal weights'}, assumed)
+          {parameters?.motor_delay_ms || parameters?.motor_tau_ms
+            ? `, delayed ${parameters.motor_delay_ms ?? 0} ms and low-passed with τ ${parameters.motor_tau_ms ?? 0} ms before the clip`
+            : ''}
+          .
         </p>
         <code className="equation">
           {dynamics === 'spiking'

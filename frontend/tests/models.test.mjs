@@ -9,9 +9,12 @@ import {
   groupIndex,
   modelDrivers,
   modelNames,
+  modelSwitch,
+  neuralStage,
   normalizeModel,
   readoutPairs,
   slowdownNote,
+  summaryKey,
 } from '../src/models.ts';
 
 const config = {
@@ -36,6 +39,7 @@ test('switching models starts clean and keeps the rest of the configuration', ()
     silence: 'none',
     silence_dna02: 'none',
     silence_types: [],
+    cell_types: [],
   });
   assert.match(modelDrivers.connectome, /data-derived.*assumed.*engineered/);
   assert.equal(normalizeModel('connectome_dna02'), 'connectome'); // runs recorded with v0.3
@@ -145,4 +149,87 @@ test('readout rates and trace groups follow the server order: L, R per readout t
   assert.equal(groupIndex('input', 3), 6);
   assert.equal(groupIndex('input', 1), 2); // the v0.3 layout: DNa02 L, R, then inputs
   assert.equal(groupIndex('descending', 0), 4);
+});
+
+const parameters = {
+  circuit: 'mine',
+  dynamics: 'rate',
+  synapse_threshold: 5,
+  global_gain: 0.002,
+  input_gain: 1,
+  output_gain: 2,
+  tonic_drive: 0.35,
+  tau_ms: 20,
+  other_transmitters: 'excluded',
+  readout_types: null,
+  input_types: null,
+  speed_types: [],
+  speed_gain: 1,
+  spiking: {synapse_weight_mv: 0.275, input_rate_hz: 150, rate_window_ms: 50, rate_scale_hz: 100},
+};
+
+test('the circuit summary is cached per circuit file and structure, not per gain', () => {
+  const key = summaryKey(parameters, 'aaa');
+  // Gains, tonic drive, time constants and dynamics do not change the summary.
+  for (const change of [
+    {global_gain: 0.01},
+    {input_gain: 2},
+    {output_gain: 5},
+    {tonic_drive: 0.5},
+    {tau_ms: 40},
+    {dynamics: 'spiking'},
+    {spiking: {...parameters.spiking, rate_scale_hz: 50}},
+  ])
+    assert.equal(summaryKey({...parameters, ...change}, 'aaa'), key, JSON.stringify(change));
+  // A rebuilt file under the same name, or a structural parameter, does.
+  assert.notEqual(summaryKey(parameters, 'bbb'), key);
+  for (const change of [
+    {circuit: 'other'},
+    {synapse_threshold: 10},
+    {other_transmitters: 'excitatory'},
+    {readout_types: ['DNa01']},
+    {input_types: ['LC10a']},
+    {speed_types: ['DNp09']},
+  ])
+    assert.notEqual(summaryKey({...parameters, ...change}, 'aaa'), key, JSON.stringify(change));
+  // Servers before v0.6 send no hash.
+  assert.equal(summaryKey(parameters, undefined), summaryKey(parameters, null));
+});
+
+test('leaving the connectome model with FlyVis eyes also switches the sensor, and says so', () => {
+  const flyvis = modelSwitch({sensor_model: 'flyvis'}, 'engineered');
+  assert.deepEqual(flyvis.override, {neural_model: 'engineered', sensor_model: 'vision'});
+  assert.match(flyvis.note, /FlyVis eyes drive only the connectome model/);
+  assert.deepEqual(modelSwitch({sensor_model: 'vision'}, 'engineered'), {
+    override: {neural_model: 'engineered'},
+    note: null,
+  });
+  assert.deepEqual(modelSwitch({sensor_model: 'flyvis'}, 'connectome').override, {
+    neural_model: 'connectome',
+  });
+  const switched = configForModel({...config, sensor_model: 'flyvis'}, 'engineered');
+  assert.equal(switched.sensor_model, 'vision');
+});
+
+test('a comparison with FlyVis eyes does not offer the engineered model', () => {
+  assert.ok(conditionsFor('connectome', true, 'vision').includes('engineered_model'));
+  const flyvis = conditionsFor('connectome', true, 'flyvis');
+  assert.ok(!flyvis.includes('engineered_model') && flyvis.includes('dna02_both_off'));
+  assert.match(
+    conditionProblem(['control', 'engineered_model'], 'connectome', '', true, 'flyvis'),
+    /cannot use FlyVis eyes/,
+  );
+  assert.equal(conditionProblem(['control', 'engineered_model'], 'connectome', ''), null);
+});
+
+test('the loop names the neural stage of the model that runs', () => {
+  assert.equal(neuralStage({neural_model: 'engineered'}), '6 rate units');
+  assert.equal(
+    neuralStage({neural_model: 'connectome', connectome_parameters: {dynamics: 'rate'}}),
+    'Connectome circuit · rate',
+  );
+  assert.equal(
+    neuralStage({neural_model: 'connectome', connectome_parameters: {dynamics: 'spiking'}}),
+    'Connectome circuit · spiking',
+  );
 });

@@ -1,0 +1,513 @@
+/* Every width-dependent rule, one block per breakpoint. main.tsx imports this file after all the
+   other stylesheets, so the order in which the pages load their own styles cannot change it.
+   Narrow layouts stack or wrap content; they never shrink text below the 11 px floor. */
+@media (min-width: 1500px) {
+  .world-canvas {
+    height: 430px;
+  }
+  .workspace-grid,
+  .session-grid,
+  .atlas-layout,
+  .protocol-layout {
+    grid-template-columns: minmax(0, 1fr) 330px;
+  }
+  .target-map {
+    height: 174px;
+  }
+  .inspector-body {
+    padding-bottom: 23px;
+  }
+}
+@media (max-width: 1150px) {
+  .app-header {
+    gap: 25px;
+  }
+  .app-header nav {
+    gap: 20px;
+  }
+  .header-right {
+    gap: 7px;
+  }
+  .header-right > .version {
+    display: none;
+  }
+  .workspace-grid,
+  .session-grid {
+    grid-template-columns: minmax(0, 1fr) 290px;
+    gap: 18px;
+  }
+  .workspace-heading h1 {
+    font-size: 39px;
+  }
+  .experiment-label {
+    display: none;
+  }
+  .world-canvas {
+    height: 338px;
+  }
+  .transport {
+    padding: 14px 12px;
+    flex-wrap: wrap;
+  }
+  .transport-options {
+    margin-left: auto;
+  }
+  .signal-body {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+  .unit-grid {
+    border-left: 0;
+    padding-left: 0;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 11px 17px;
+  }
+  .telemetry-strip > div {
+    padding-inline: 13px;
+  }
+  .loop-strip {
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .loop-strip > div {
+    padding: 0;
+  }
+  .inspector .panel-heading {
+    padding-inline: 14px;
+  }
+  .inspector-body {
+    padding-inline: 14px;
+  }
+  .subtle-label {
+    display: none;
+  }
+  .atlas-layout {
+    grid-template-columns: minmax(0, 1fr) 265px;
+  }
+  .research-intro {
+    align-items: flex-start;
+  }
+  .research-intro h2 {
+    font-size: 31px;
+  }
+  .sex-selector button {
+    padding: 9px 12px;
+  }
+  .parameter-panel form {
+    flex-wrap: wrap;
+  }
+  .parameter-fields {
+    min-width: 100%;
+  }
+  .parameter-panel form > .primary-button {
+    margin-left: auto;
+  }
+  /* Leg force and phase readouts stack under the contact raster instead of disappearing. */
+  .gait-grid {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .leg-readouts {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    column-gap: 24px;
+  }
+  .leg-readouts > h3 {
+    grid-column: 1 / -1;
+  }
+  .batch-progress {
+    flex-wrap: wrap;
+  }
+  .batch-meter {
+    min-width: 200px;
+  }
+  .batch-buttons {
+    margin-left: auto;
+  }
+  .protocol-layout {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .protocol-actions {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 900px) {
+  .build-layout {
+    grid-template-columns: 1fr;
+  }
+  .parameter-panel form.population-form {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 850px) {
+  .app-header {
+    height: 68px;
+    padding: 0 22px;
+    gap: 20px;
+  }
+  .app-header nav {
+    gap: 17px;
+  }
+  .header-right {
+    margin-left: auto;
+  }
+  .header-right > .connection-dot,
+  .header-right > span {
+    display: none;
+  }
+  .brand {
+    font-size: 27px;
+  }
+  .brand-mark {
+    width: 32px;
+    height: 35px;
+  }
+  .brand-mark svg {
+    width: 27px;
+  }
+  .quit-button {
+    padding: 7px;
+  }
+  main {
+    padding: 27px 22px 0;
+  }
+  .workspace-grid,
+  .session-grid,
+  .atlas-layout,
+  .protocol-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-heading {
+    margin-bottom: 25px;
+  }
+  .workspace-heading h1 {
+    font-size: 38px;
+  }
+  .inspector {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .export-group {
+    grid-column: 1/-1;
+  }
+  .loop-strip {
+    gap: 12px;
+  }
+  .configuration {
+    max-width: 440px;
+  }
+  .world-canvas {
+    height: 400px;
+  }
+  .signal-body {
+    grid-template-columns: minmax(0, 1fr) 250px;
+  }
+  .unit-grid {
+    grid-template-columns: repeat(2, 1fr);
+    border-left: 1px solid var(--line);
+    padding-left: 20px;
+  }
+  footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .telemetry-strip strong {
+    font-size: 21px;
+  }
+  .atlas-inspector {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .research-intro {
+    flex-direction: column;
+    gap: 20px;
+  }
+  .research-note {
+    grid-template-columns: 1fr;
+    gap: 15px;
+  }
+  .dataset-links {
+    grid-template-columns: 1fr 1fr;
+    row-gap: 24px;
+  }
+  .dataset-links a:nth-child(2) {
+    border: 0;
+  }
+  .circuit-layout {
+    grid-template-columns: minmax(0, 1fr) 250px;
+    gap: 16px;
+  }
+  .circuit-inspector {
+    padding: 20px 17px;
+  }
+  .gait-grid {
+    grid-template-columns: minmax(0, 1fr) 190px;
+  }
+  .leg-readouts {
+    display: block;
+  }
+  .saved-comparison {
+    gap: 20px;
+    grid-template-columns: 1fr 1fr;
+  }
+  .outcome dl {
+    flex-wrap: wrap;
+    gap: 15px;
+  }
+  .library-table td,
+  .library-table th {
+    padding: 12px;
+  }
+}
+@media (max-width: 560px) {
+  /* The header wraps: brand and Quit on the first line, the page tabs on a line of their own. */
+  .app-header {
+    padding: 10px 14px;
+    gap: 12px;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 100px;
+  }
+  .app-header .brand {
+    font-size: 25px;
+    gap: 8px;
+  }
+  .app-header nav {
+    order: 3;
+    width: 100%;
+    height: 30px;
+    justify-content: space-between;
+  }
+  .header-right > .icon-button {
+    display: none;
+  }
+  main {
+    padding: 24px 15px 0;
+  }
+  .workspace-heading h1 {
+    font-size: 32px;
+    letter-spacing: -0.3px;
+  }
+  .world-canvas {
+    height: 290px;
+    margin-inline: 7px;
+  }
+  .viewport-top,
+  .viewport-bottom {
+    left: 12px;
+    right: 12px;
+  }
+  .viewport-top {
+    top: 12px;
+  }
+  .viewport-label {
+    padding: 5px;
+    letter-spacing: 0.6px;
+  }
+  .specimen-caption {
+    padding: 7px 9px;
+  }
+  .specimen-caption > span {
+    font-size: 17px;
+  }
+  .panel-heading {
+    padding-inline: 14px;
+  }
+  .transport {
+    gap: 14px;
+  }
+  .playback {
+    gap: 6px;
+  }
+  .run-button {
+    min-width: 148px;
+  }
+  .transport-options {
+    width: 100%;
+    justify-content: flex-end;
+    border-top: 1px solid #e6eadf;
+    padding-top: 7px;
+  }
+  .telemetry-strip {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 17px;
+  }
+  .telemetry-strip > div:nth-child(2) {
+    border: 0;
+  }
+  .signal-body {
+    grid-template-columns: 1fr;
+    padding-inline: 15px;
+  }
+  .unit-grid {
+    border: 0;
+    padding-left: 0;
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .panel-footnote {
+    padding-inline: 15px;
+  }
+  .loop-strip {
+    flex-wrap: wrap;
+    gap: 7px;
+  }
+  .loop-strip > div {
+    width: 100%;
+    margin-bottom: 5px;
+  }
+  .inspector {
+    grid-template-columns: 1fr;
+  }
+  .target-map {
+    height: 185px;
+  }
+  .event-row {
+    gap: 7px;
+  }
+  .event-row small {
+    display: none;
+  }
+  footer button {
+    margin-left: 0;
+  }
+  .alert {
+    padding: 11px;
+    flex-wrap: wrap;
+  }
+  .model-dialog {
+    padding: 28px 22px;
+  }
+  .model-dialog h2 {
+    font-size: 34px;
+  }
+  .model-dialog dl > div {
+    grid-template-columns: 85px 1fr;
+  }
+  .world-canvas:fullscreen {
+    height: 100vh;
+  }
+  .research-tabs {
+    gap: 16px;
+    overflow: auto;
+    white-space: nowrap;
+    margin-bottom: 23px;
+  }
+  .research-intro h2 {
+    font-size: 31px;
+  }
+  .sex-selector {
+    width: 100%;
+  }
+  .sex-selector button {
+    flex: 1;
+  }
+  .atlas-inspector {
+    grid-template-columns: 1fr;
+  }
+  .brain-view-label {
+    left: 13px;
+    right: 13px;
+  }
+  .brain-tools > span {
+    display: none;
+  }
+  .anatomy-controls {
+    padding: 12px;
+    gap: 13px;
+  }
+  .anatomy-controls .select-wrap {
+    width: 150px;
+  }
+  .dataset-links {
+    gap: 24px 18px;
+  }
+  .metric-row > div {
+    padding-inline: 11px;
+  }
+  .metric-row strong {
+    font-size: 18px;
+  }
+  .gait-grid {
+    grid-template-columns: 1fr;
+    padding: 15px;
+  }
+  .leg-readouts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 18px;
+  }
+  .circuit-layout {
+    grid-template-columns: 1fr;
+  }
+  .circuit-inspector {
+    display: block;
+  }
+  .parameter-fields {
+    grid-template-columns: 1fr 1fr;
+    gap: 17px;
+  }
+  .parameter-panel form {
+    gap: 18px;
+  }
+  .connectivity-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .empty-research {
+    padding: 40px 20px;
+  }
+  .graph-provenance {
+    align-items: flex-start;
+    line-height: 1.7;
+    flex-wrap: wrap;
+  }
+  .graph-provenance > a {
+    margin-left: 25px;
+  }
+  .protocol-fields {
+    gap: 12px;
+    padding-inline: 15px;
+  }
+  .protocol-table-wrap {
+    padding-inline: 10px;
+  }
+  .protocol-table td {
+    padding: 5px;
+  }
+  .protocol-table input {
+    padding: 7px;
+  }
+  .protocol-actions {
+    padding: 15px;
+    gap: 18px;
+  }
+  .protocol-actions .secondary-button {
+    margin-left: auto;
+  }
+  .batch-progress {
+    padding: 18px;
+    gap: 20px;
+  }
+  .batch-meter {
+    min-width: 100%;
+  }
+  .batch-buttons {
+    width: 100%;
+  }
+  .batch-buttons .secondary-button {
+    flex: 1;
+  }
+  .saved-comparison {
+    grid-template-columns: 1fr;
+  }
+  .protocol-banner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .protocol-banner > span {
+    flex-wrap: wrap;
+  }
+}

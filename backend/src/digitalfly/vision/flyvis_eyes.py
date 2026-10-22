@@ -11,7 +11,8 @@ What this module adds, and what is engineered:
   * Column mapping: FlyGym ommatidia are matched to FlyVis columns by the nearest centroid after an affine
     fit anchored on the lattice's extreme columns, after FlyGym 1.x's RetinaMapper (Apache-2.0). FlyGym's two
     eye cameras are mirror images of each other; the right eye is mirrored onto FlyVis's layout so that T4a/T5a
-    prefer front-to-back and T4c/T4d upward/downward motion, as in flies (Maisak et al. 2013; tested).
+    prefer front-to-back and T4c/T4d upward/downward motion, as in flies (Maisak et al. 2013). The test checks
+    T4a/T4b and T4c/T4d with bright edges on the right eye only; T5 and the left eye's mapping are not tested.
   * Luminance: the mean of the RGB channels per ommatidium (FlyVis receives one value per column).
   * Pooled output: for each cell type and eye, the largest rectified activity across the eye's columns minus
     the same quantity at the grey steady state, clipped at zero. This discards where in the eye a response is.
@@ -83,7 +84,7 @@ def column_order(centroids: np.ndarray, receptor_centers: np.ndarray) -> np.ndar
 
 
 class FlyVisEyes:
-    """Both eyes as one FlyVis network run with a batch of two (left mirrored, right as is)."""
+    """Both eyes as one FlyVis network run with a batch of two (right eye mirrored, left as is)."""
 
     def __init__(self, network: str = DEFAULT_NETWORK, dt: float = DT, retina=None):
         ok, reason = available(network)
