@@ -8,27 +8,27 @@ Thank you for helping. DigitalFly is a research and teaching workbench, so two t
 
 ## Setup
 
-You need Python 3.12, Node.js 22.12–26 with npm, and an OpenGL backend for the physics and 3D views (see [running the tests](#running-the-tests)).
+You need Python 3.12 (3.13 and 3.14 work too, without FlyVis), Node.js 22.12–26 with npm, and an OpenGL backend for the physics and 3D views (see [running the tests](#running-the-tests)). The dev container in `.devcontainer/` has all of them ([INSTALL](docs/INSTALL.md#dev-container-and-codespaces)).
 
 ```sh
 git clone https://github.com/Jeevash23/frankenfly.git
 cd frankenfly
-./scripts/setup.sh        # project-local backend/.venv and frontend/node_modules, from hashed lockfiles
-./scripts/dev.sh          # hot-reloading UI at http://127.0.0.1:5173; restart it after Python changes
+./scripts/setup.sh --check  # project-local backend/.venv and frontend/node_modules from hashed lockfiles, then the doctor
+./scripts/dev.sh            # hot-reloading UI at http://127.0.0.1:5173; restart it after Python changes
 ```
 
-Optional installs, needed only for the features or tests that use them, are described in [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) and [docs/evidence/README.md](docs/evidence/README.md#before-you-start): the vision lock and pretrained networks for FlyVis eyes, the data lock and prepared FlyWire archive for building circuits, and the recorded-fly download.
+Optional installs, needed only for the features or tests that use them, come with `./scripts/setup.sh --with builder,flyvis,recording` (or one part at a time) and are described in [docs/INSTALL.md](docs/INSTALL.md#native-install) and [docs/evidence/README.md](docs/evidence/README.md#before-you-start): FlyVis eyes (the vision lock and pretrained networks), the circuit builder (the data lock and prepared FlyWire archive), and the recorded-fly download. `python3 scripts/doctor.py` says what is installed and what is missing.
 
 ## Running the tests
 
 ```sh
-./scripts/check.sh          # backend tests including FlyGym physics, frontend format check, tests and build
-./scripts/check.sh --fast   # the same without the FlyGym physics tests (what CI runs)
+./scripts/check.sh          # every backend test (FlyGym physics included), then the frontend format check, unit tests and build
+./scripts/check.sh --fast   # the same without the FlyGym physics tests
 npm --prefix frontend run format     # format the frontend with Prettier before committing
 npm --prefix frontend run typecheck
 ```
 
-The FlyGym tests (marked `flygym`) need an OpenGL context. Even the ones that render nothing import MuJoCo's GL bindings. On a desktop session the default works. On headless Linux, DigitalFly picks EGL; to choose a backend yourself:
+`./scripts/check.sh` is the check to run before a pull request. The FlyGym tests (marked `flygym`) need an OpenGL context. Even the ones that render nothing import MuJoCo's GL bindings. On a desktop session the default works. On Linux without a display, `check.sh` tries EGL and, when EGL does not work and `xvfb-run` is installed, runs the tests under a virtual display with `MUJOCO_GL=glfw`. A `MUJOCO_GL` you set is always used; to choose a backend yourself:
 
 ```sh
 MUJOCO_GL=egl ./scripts/check.sh                   # needs libEGL
@@ -38,7 +38,19 @@ xvfb-run -a env MUJOCO_GL=glfw ./scripts/check.sh  # a virtual display; works wh
 
 To run only the physics tests: `xvfb-run -a env MUJOCO_GL=glfw backend/.venv/bin/python -m pytest backend/tests -m flygym -q` (one to two minutes). Tests that need FlyVis, the prepared FlyWire archive or the recorded fly skip with a reason when those are missing; `pytest -rs` lists them.
 
-GitHub Actions runs `./scripts/check.sh --fast` equivalents and the frontend typecheck on Ubuntu for every pull request. It does not run the physics tests, so run them locally whenever you touch the body, engines, experiment, worker or neural code, and say in the pull request that you did.
+**End-to-end tests.** `frontend/e2e/` drives the built app in headless Chromium against the toy engine: Playwright starts `./scripts/start.sh --toy --port 8199` and stops it afterwards, and the tests delete the runs and presets they create. Install Playwright's Chromium once, then build and run:
+
+```sh
+cd frontend && npx playwright install chromium && cd ..   # once per machine, into Playwright's own cache
+npm --prefix frontend run build
+npm --prefix frontend run e2e
+```
+
+Run them when you change the interface or an endpoint it uses. They need `backend/.venv` and port 8199; the builder test skips without the prepared FlyWire catalog. On a Linux machine that lacks Chromium's system libraries, `npx playwright install --with-deps chromium` installs them too (with sudo), as CI does.
+
+**Generated API types.** `frontend/src/api.gen.ts` is generated from the backend's models: whenever you change `backend/src/digitalfly/api/models.py`, the published State or an endpoint's request or response model, run `backend/.venv/bin/python scripts/gen_types.py` and commit the result with your change. `--check` fails when the file is stale, and CI runs it.
+
+GitHub Actions runs, for every pull request: the backend tests without physics on Python 3.12, 3.13 and 3.14 (with `pip check` and the generated-type check); the frontend format check, typecheck, unit tests and build on Node 24 and 22.12.0; the FlyGym physics tests under Xvfb; the end-to-end tests; and pip-audit and npm audit. Changes to the `Dockerfile`, the locks or the setup scripts also build and smoke-test the Docker image. CI has no FlyVis, prepared archive or recording, so their tests skip there: run `./scripts/check.sh` locally with them installed when you touch that code, and say in the pull request which checks you ran.
 
 ## The replay-safety rule
 

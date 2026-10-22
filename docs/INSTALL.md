@@ -113,7 +113,7 @@ Natively, the server listens on `127.0.0.1` only, and it accepts only requests w
 
 A published container port has to reach the server through the container's own network interface, so the image starts it with `DIGITALFLY_HOST=0.0.0.0` and the acknowledgement `DIGITALFLY_ALLOW_NETWORK_BIND=1`. The Host, Origin and JSON checks stay on. Publish the port to this computer only, as the compose file and the commands above do (`-p 127.0.0.1:8000:8000`): `-p 8000:8000` would make it reachable from your network.
 
-The same settings work natively, for the rare case that needs them: `DIGITALFLY_ALLOW_NETWORK_BIND=1 ./scripts/start.sh --host 0.0.0.0`. Without the acknowledgement the launcher refuses any address other than `127.0.0.1`, `localhost` or `::1`. When the browser reaches the app under another host name or port, for example a host port other than 8000, add that exact origin; its host name is then accepted as well:
+The same settings work natively, for the rare case that needs them: `DIGITALFLY_ALLOW_NETWORK_BIND=1 ./scripts/start.sh --host 0.0.0.0`. Without the acknowledgement the launcher refuses any address other than `127.0.0.1` or `localhost`, `::1` included (the Host and Origin checks name only those two). When the browser reaches the app under another host name or port, for example a host port other than 8000, add that exact origin; its host name is then accepted as well:
 
 ```sh
 DIGITALFLY_ALLOWED_ORIGINS=http://localhost:9000,http://127.0.0.1:9000

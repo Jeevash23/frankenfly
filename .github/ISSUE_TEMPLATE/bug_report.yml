@@ -36,7 +36,7 @@ body:
     attributes:
       label: DigitalFly version
       description: From `backend/pyproject.toml`, or `application_version` in an export's metadata. Add the commit if you run from a checkout (`git rev-parse --short HEAD`).
-      placeholder: 0.5.0 (66c6d59)
+      placeholder: 0.6.0 (abc1234)
     validations:
       required: true
   - type: dropdown

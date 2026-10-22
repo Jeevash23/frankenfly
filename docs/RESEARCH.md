@@ -1,4 +1,4 @@
-# DigitalFly research workspace — v0.5
+# DigitalFly research workspace — v0.6
 
 This is an experimental sensorimotor workbench with explicit modeling assumptions. Its tests establish computational behavior and repeatability, not biological validity. See the [setup instructions](../README.md#quick-start) and [validation summary](../STATUS.md).
 
@@ -8,17 +8,17 @@ This is an experimental sensorimotor workbench with explicit modeling assumption
 | --- | --- | --- |
 | Embodied experiment | Actual FlyGym 2.1 / MuJoCo body, joints, contact and adhesion | Female-derived morphology; engineered walking/turning controller |
 | Vision | Two actual rendered eye images, upstream fisheye correction and 721 ommatidia per eye; optionally FlyVis eyes, an optic-lobe network wired to the circuits through FlyWire | Default: engineered green-contrast feature encoder. FlyVis: published connectome-constrained network, engineered column mapping and pooling; it does not steer the circuits toward targets |
-| Neural models | The engineered six-unit graph (default), or the connectome model on any FlyWire v783 circuit, with rate or spiking (Shiu et al. 2024) dynamics: the 3,000-neuron DNa02 circuit (default), a 4,000-neuron steering circuit around DNa01, DNa02 and DNp09, or a circuit you build, up to the whole brain; live activity, parameters, populations, silencing, path tracing and a circuit view | Engineered model: explicit rate units, not identified neurons. Connectome model: data-derived wiring, assumed signs, engineered input and readout; not an uploaded brain, not biologically validated |
+| Neural models | The engineered six-unit graph (default), or the connectome model on any FlyWire v783 circuit, with rate or spiking (Shiu et al. 2024) dynamics: the 3,000-neuron DNa02 circuit (default), a 4,000-neuron steering circuit around DNa01, DNa02 and DNp09, side-balanced versions of both, or a circuit you build, up to the whole brain; live activity, parameters, populations, path tracing and a circuit view; silencing, scaling or activating any cell type on either side; an engineered motor path (readout weights, delay, low-pass) | Engineered model: explicit rate units, not identified neurons. Connectome model: data-derived wiring, assumed signs, engineered input and readout; not an uploaded brain, not biologically validated |
 | Anatomy | Rotatable male/female surfaces and twelve published neuron skeletons | Structural anatomy, separate from dynamics |
 | Connectivity | Build circuits around any FlyWire v783 cell types or neurons, in the app or with the builder; separately, import, validate, save, search and inspect a small directed graph | Builds need the prepared FlyWire archive (once, from the cached downloads). Imports: up to 300 neurons / 3,000 edges / 2 MB; imports never drive the body |
-| Experiments | Timed stimuli, finite protocols, matched-seed comparisons, pause/resume/cancel and automatic trial export | Sequential, one body at a time |
-| Analysis | Path length, displacement, mean speed, net turn, final target distance, contact occupancy, trajectory overlays; a research toolkit (Python and command line) for batch trials, parameter sweeps, bias curves, ablation scans, path tracing and fits of turning against readout activity; one recorded fly (paired DNa02 with ball tracking) to compare against | Descriptive outcomes from one fly and simulations; no significance or biological-effect claims |
+| Experiments | Timed stimuli, finite protocols, presets, matched-seed comparisons with custom conditions, pause/resume/cancel and automatic trial export | Sequential, one body at a time |
+| Analysis | Path length, displacement, mean speed, net turn, final target distance, contact occupancy, trajectory overlays; a research toolkit (Python and command line) for batch trials, parameter sweeps, bias curves, ablation scans, path tracing, assumption-sensitivity analysis and fits of turning against readout activity; one recorded fly (paired DNa02 with ball tracking) to compare against | Descriptive outcomes from one fly and simulations; no significance or biological-effect claims |
 | Records | Local run library with filters, tags, notes and per-condition comparison summaries; configuration restoration, CSV/JSON/ZIP, optional per-cell-type activity, and replay | Same pinned software stack; no cross-device guarantee |
 | Closing | Quit and Save current run & quit | Requests graceful shutdown of this launcher’s server and its worker |
 
 ## A first experiment
 
-1. Start with `./scripts/start.sh --open` from the project directory. It opens paused. Add `--vision` to launch directly with eye inputs.
+1. Start with `./scripts/start.sh --open` from the project directory. It opens paused. Add `--vision` to launch directly with rendered compound-eye input (the engineered encoder below, not FlyVis).
 2. In **Workbench → Sensor model**, choose **Rendered compound eyes**. The body resets. Initial eye setup may take several seconds; timing depends on your hardware and graphics environment.
 3. Inspect **Through the eyes**, run briefly, and pause. Moving the target changes rendered eye input, neural activity, and motor commands.
 4. Open **Experiments**. Choose **Target reversal**, set duration to 0.5 or 2 simulated seconds, seeds to `42, 43`, and conditions to **Neural control** and **Descending units off**.
@@ -29,21 +29,21 @@ This is an experimental sensorimotor workbench with explicit modeling assumption
 
 Longer runs are not automatically more biologically meaningful. The simple attraction controller can overshoot, circle, or leave the ±40 mm display area. The physics ground is unbounded.
 
-## Vision and signal definitions
+## Compound-eye vision and signal definitions
 
 The landmark is a non-colliding, green cylinder of radius 1 mm and height 4 mm. Its position changes the actual rendered scene. It is also visible with geometric sensing; in that mode, neural inputs still use the declared geometric encoder.
 
-In vision mode:
+With rendered compound eyes (sensor model `vision`, which `--vision` selects):
 
 1. `Simulation.get_raw_vision()` renders the two FlyGym eye cameras with the upstream fisheye correction, using the package’s calibrated 512 × 450 retina.
 2. For each pixel, compute `max(G - max(R, B), 0)` from RGB normalized to [0, 1]. This is a deliberately engineered green-object feature, not a model of fly color physiology.
 3. Replicate that feature over the RGB channels and use `Retina.raw_image_to_hex_pxls()` to average it into the 721 upstream ommatidia. Combine the disjoint yellow/pale slots to get one feature value per ommatidium.
 4. Each neural input is `clip(20 × mean(features), 0, 1)` for its eye. It is held for five control intervals (50 ms of simulation time). Moving a stimulus invalidates the held reading immediately.
-5. Sensor silencing is applied after the original readout is retained. The neural and motor code sees only the left/right sensor inputs. Geometric bearing/distance in telemetry is diagnostic and does not drive the vision controller.
+5. Sensor silencing is applied after the original readout is retained. The neural and motor code sees only the left/right sensor inputs. Geometric bearing/distance in telemetry is diagnostic and does not drive the neural input.
 
 Intensity changes the rendered green channel: `min(1, 0.08 + 0.67 × intensity)`. Zero intensity hides the landmark. Higher values saturate; this is a rendering control, not a calibrated radiometric stimulus. Other green objects or body parts could contribute to the engineered contrast detector.
 
-Eye images and the current ommatidial features are displayed. Exports retain the applied bilateral input samples and encoder metadata, **not every retinal image or every per-ommatidium frame**. Replaying vision requires an offscreen graphics context even when the body-camera renderer is disabled.
+Eye images and the current ommatidial features are displayed. Exports retain the applied bilateral input samples and encoder metadata, **not every retinal image or every per-ommatidium frame**. Replaying compound-eye runs requires an offscreen graphics context even when the body-camera renderer is disabled.
 
 ## Neural parameters
 
@@ -554,7 +554,7 @@ Other public datasets checked from their metadata:
 
 ### FlyVis eyes
 
-FlyVis (Lappalainen et al. 2024, [Nature 634:1132](https://doi.org/10.1038/s41586-024-07939-3), MIT) is a connectome-constrained network of 64 optic-lobe cell types, from photoreceptors to T4/T5 and the Tm/TmY layer: 45,669 neurons per eye on a hexagonal lattice of 721 columns, the same count as FlyGym's ommatidia. Its connectivity comes from the FIB-25 and FIB-19 medulla reconstructions, not FlyWire, and its unknown neuron and synapse parameters were trained on a motion-detection task. It sees luminance only. With the optional vision install (`backend/requirements-vision.lock`, then `scripts/fetch_flyvis.py` for the pretrained networks), **Sensor model → FlyVis eyes** puts it between the rendered eyes and the connectome circuits.
+FlyVis (Lappalainen et al. 2024, [Nature 634:1132](https://doi.org/10.1038/s41586-024-07939-3), MIT) is a connectome-constrained network of 64 optic-lobe cell types, from photoreceptors to T4/T5 and the Tm/TmY layer: 45,669 neurons per eye on a hexagonal lattice of 721 columns, the same count as FlyGym's ommatidia. Its connectivity comes from the FIB-25 and FIB-19 medulla reconstructions, not FlyWire, and its unknown neuron and synapse parameters were trained on a motion-detection task. It sees luminance only. With the optional FlyVis install (`./scripts/setup.sh --with flyvis`, or `backend/requirements-vision.lock` then `scripts/fetch_flyvis.py` for the pretrained networks), **Sensor model → FlyVis eyes** puts it between the rendered eyes and the connectome circuits.
 
 | Part | Status | What it is |
 | --- | --- | --- |
@@ -666,11 +666,11 @@ Replay a saved directory:
 backend/.venv/bin/python scripts/replay.py runs/YOUR_RUN_FOLDER
 ```
 
-Replace `YOUR_RUN_FOLDER` with the name of a run you exported locally. The running app does the same check in the background (`POST /api/runs/YOUR_RUN_FOLDER/replay`) and shows the verdict, with whether the software still matches the run's recorded versions and lockfiles, as the run's `verified` field (see the [usage guide](USAGE.md#saved-runs-and-replay)). Reference validation reproduced visual-input and timed target-reversal trials with maximum absolute error 0 at a tolerance of 1e-8. Vision rendering and numerical behavior may differ on another graphics/software stack. Personal run records and raw evidence are excluded from the public repository.
+Replace `YOUR_RUN_FOLDER` with the name of a run you exported locally. The running app does the same check in the background (`POST /api/runs/YOUR_RUN_FOLDER/replay`) and shows the verdict, with whether the software still matches the run's recorded versions and lockfiles, as the run's `verified` field (see the [usage guide](USAGE.md#saved-runs-and-replay)). Reference validation reproduced visual-input and timed target-reversal trials with maximum absolute error 0 at a tolerance of 1e-8. Compound-eye rendering and numerical behavior may differ on another graphics/software stack. Personal run records and raw evidence are excluded from the public repository.
 
 ## What remains before biological simulation claims
 
-v0.3 added real connectivity with documented transmitter/sign assumptions; v0.4 added any circuit up to the whole brain, published spiking dynamics, a steering circuit that reaches targets and tools to analyze them; v0.5 adds FlyVis eyes and a comparison with one recorded fly. The motor readout is still engineered, the side biases are unexplained beyond the sampling effects above, FlyVis does not yet tell the circuits where a target is, and nothing has been fitted to fly data: one recording shows the model's turning following its DNa02 activity far faster, and its spiking DNa02 firing far more, than in the fly. The next scientific step is a **validated circuit**: dynamics fitted to recorded activity, a sensory encoding grounded in the visual projection neurons' measured responses, a descending-to-motor mapping that includes the other steering neurons, and predictions tested against measured fly behavior and neural data, including held-out interventions. A larger neuron count alone does not provide this validation.
+v0.3 added real connectivity with documented transmitter/sign assumptions; v0.4 added any circuit up to the whole brain, published spiking dynamics, a steering circuit that reaches targets and tools to analyze them; v0.5 added FlyVis eyes and a comparison with one recorded fly; v0.6 adds per-side manipulations of any cell type, an engineered motor path, side-balanced circuits and an analysis of which results survive changes to the modelling assumptions. The motor readout is still engineered (its delay and low-pass are not fitted), the side biases are only partly explained by the sampling effects above, FlyVis does not yet tell the circuits where a target is, and nothing has been fitted to fly data: one recording shows the model's turning following its DNa02 activity far faster, and its spiking DNa02 firing far more, than in the fly. The next scientific step is a **validated circuit**: dynamics fitted to recorded activity, a sensory encoding grounded in the visual projection neurons' measured responses, a descending-to-motor mapping that includes the other steering neurons, and predictions tested against measured fly behavior and neural data, including held-out interventions. A larger neuron count alone does not provide this validation.
 
 The app does not simulate the nerve cord, sex-specific behavior, flight, feeding, learning, courtship or mating. The real body supports walking and turning under the upstream leg controller. A retinotopic FlyVis bridge, fits to more recordings, measured male biomechanics, odor sensing and multi-animal experiments remain future work.
 

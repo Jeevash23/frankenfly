@@ -9,7 +9,7 @@
 
 No GPU or CUDA installation is required. Setup creates a project-local `backend/.venv`; it does not install drivers or change system settings. Each checkout should create its own environment and frontend dependencies.
 
-Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL rendering (v0.3 and v0.4). Other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
+Reference validation covers macOS/ARM64 (v0.2), x86-64 Linux with EGL rendering (v0.3–v0.5), and for v0.6 x86-64 Linux with Python 3.12–3.14 and the physics under Xvfb with GLFW, plus the Docker image with headless EGL ([STATUS](../STATUS.md#validation-summary)). Other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
 
 ## Chosen stack
 
@@ -42,7 +42,7 @@ Reference validation covers macOS/ARM64 (v0.2) and x86-64 Linux with EGL renderi
 
 v0.4 adds no dependencies: spiking dynamics, the general circuit builder, the research toolkit and the fly comparison use NumPy and SciPy, which were already installed. Only `scripts/build_circuit.py prepare` (and the default rebuild of the DNa02 circuit) needs pyarrow from the build-only data lock; `build` reads the prepared NumPy archive.
 
-Full transitive versions and hashes: `backend/requirements.lock`, generated from `backend/pyproject.toml` with pip-tools. The lock includes the test extra. Pillow and MuJoCo are imported directly, so they are declared with FlyGym 2.1.0's own ranges (`pillow>=11,<13`, `mujoco>=3.9,<3.10`); FlyGym still decides their versions. Frontend versions/integrity hashes: `frontend/package-lock.json`; update it with npm 11 (Node 24), because npm 10 drops its `libc` fields. All direct frontend imports are local packages. The runtime installs no PyTorch, JAX, Brian2, CUDA or Warp stack; CPU-only PyTorch comes only with the optional vision lock below. `jaxtyping`, IPython, imageio, ffmpeg and Matplotlib are upstream FlyGym transitives; they are not speculative extra model stacks.
+Full transitive versions and hashes: `backend/requirements.lock`, generated from `backend/pyproject.toml` with pip-tools. The lock includes the test extra. Pillow and MuJoCo are imported directly, so they are declared with FlyGym 2.1.0's own ranges (`pillow>=11,<13`, `mujoco>=3.9,<3.10`); FlyGym still decides their versions. Frontend versions/integrity hashes: `frontend/package-lock.json`; update it with npm 11 (Node 24), because npm 10 drops its `libc` fields. All direct frontend imports are local packages. The runtime installs no PyTorch, JAX, Brian2, CUDA or Warp stack; CPU-only PyTorch comes only with the optional FlyVis lock (`backend/requirements-vision.lock`) below. `jaxtyping`, IPython, imageio, ffmpeg and Matplotlib are upstream FlyGym transitives; they are not speculative extra model stacks.
 
 pip itself, pip-tools and setuptools come from a third hashed lock, `backend/requirements-tools.lock`, generated from `backend/requirements-tools.in` with the runtime lock as constraints (so click and packaging match). Setup and CI install it with `--require-hashes` before any other lock. That also replaces the pip a new environment gets from `ensurepip` (24.0 or 25.0.1, both with known advisories) with pip 26.2.2. pip-tools 7.5.3 fails under pip 26.2, so the tools lock carries 7.6.2, which reproduces the runtime and data locks byte for byte.
 
@@ -83,7 +83,7 @@ PIP_CACHE_DIR="$PWD/.cache/pip" PIP_TOOLS_CACHE_DIR="$PWD/.cache/pip-tools" \
 
 ## Security audits and exceptions
 
-The CI security job runs pip-audit (installed from the hashed `.github/requirements-audit.txt`) over the runtime, data, vision and tools locks without installing them, and `npm audit --audit-level=high` over the frontend lockfile. pip-audit cannot look up the vision lock's `+cpu` PyTorch builds and lists them as skipped; the same versions on PyPI have no advisories.
+The CI security job runs pip-audit (installed from the hashed `.github/requirements-audit.txt`) over the runtime, data, FlyVis (`requirements-vision.lock`) and tools locks without installing them, and `npm audit --audit-level=high` over the frontend lockfile. pip-audit cannot look up the vision lock's `+cpu` PyTorch builds and lists them as skipped; the same versions on PyPI have no advisories.
 
 **Pillow exception.** Pillow 12.3.0 has eight advisories in its TIFF, PDF-append, GIF, PPM/ImageMorph and EPS code, all fixed only in Pillow 13.0.0. FlyGym 2.1.0 requires `pillow<13` and there is no 12.x backport, so the audit ignores those eight IDs; `.github/workflows/ci.yml` lists each with its reason. None is reachable: DigitalFly encodes JPEG frames (and the demo GIF) from arrays and decodes only its own JPEG frames; it never opens TIFF, PDF, GIF, PPM/PGM or EPS input. Do not override FlyGym's cap. Drop the exception when a FlyGym release allows Pillow 13; Pillow changes only the JPEG frame bytes, not the telemetry that replay compares.
 
@@ -93,21 +93,23 @@ A weekly workflow (`.github/workflows/links.yml`, which can also be started by h
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on every pull request and every push to main:
+`.github/workflows/ci.yml` runs on every pull request and every push to main; the other two workflows run as noted:
 
 | Job | Runs |
 | --- | --- |
-| Backend tests | Python 3.12, 3.13 and 3.14: the tools and runtime locks with `--require-hashes`, `pip check`, then every test except the FlyGym physics tests |
+| Backend tests | Python 3.12, 3.13 and 3.14: the tools and runtime locks with `--require-hashes`, `pip check`, every test except the FlyGym physics tests, then `scripts/gen_types.py --check`, which fails when `frontend/src/api.gen.ts` no longer matches the backend's models |
 | Frontend checks | Node 24 and Node 22.12.0 (the lower bound): format check, typecheck, unit tests and build |
 | FlyGym physics tests | Python 3.12 under Xvfb with Mesa and `MUJOCO_GL=glfw`, including the bitwise check of the fast controller path |
 | End-to-end tests | Python 3.12 (hashed locks) and Node 24: Playwright's Chromium, the frontend build, then `npm --prefix frontend run e2e` in headless Chromium against `./scripts/start.sh --toy`; the Playwright report is uploaded when it fails |
 | Dependency audit | pip-audit over the four locks and `npm audit --audit-level=high` |
+| Docker image (`docker.yml`) | On pull requests that change the `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `.devcontainer/`, the backend locks or `pyproject.toml`, the frontend manifests, or the setup, start, launch and doctor scripts, and on every push to main: builds the image and the dev-container target (nothing is pushed), then runs the doctor in the image and smoke-tests a container on a port published to 127.0.0.1 (a FlyGym reset with compound eyes, a rendered frame, saving a preset as the container user, the Host and Origin checks, the health check and a clean stop) |
+| Download links (`links.yml`) | Weekly and by hand: a one-byte range request to every pinned download URL (see above) |
 
-CI installs neither the vision nor the data lock, and has no prepared FlyWire archive or recording, so the FlyVis, circuit-rebuild and recorded-fly tests skip there. Run `./scripts/check.sh` locally with those installed before changing that code.
+CI installs neither the FlyVis lock (`requirements-vision.lock`) nor the data lock, and has no prepared FlyWire archive or recording, so the FlyVis, circuit-rebuild and recorded-fly tests skip there. Run `./scripts/check.sh` locally with those installed before changing that code.
 
 ## Python and Node support policy
 
-- **Python 3.12** is the recorded stack: the reference runs, the evaluations and the vision lock use it, and setup picks it by default. It receives security fixes until October 2028.
+- **Python 3.12** is the recorded stack: the reference runs, the evaluations and the FlyVis lock use it, and setup picks it by default. It receives security fixes until October 2028.
 - **Python 3.13 and 3.14** run the app and the tests. The runtime and data locks install on both unchanged, and CI runs the fast tests on both. The FlyGym physics tests passed on 3.13.16 and 3.14.6, and short engineered and connectome runs recorded on 3.12 replayed on both with zero error. FlyVis does not install there.
 - **Python 3.15** is blocked by FlyGym's `<3.15` and by missing 3.15 wheels for MuJoCo 3.9.0, Numba 0.67.0 and PyTorch 2.14.1.
 - **Exact replay** (`scripts/replay.py`, absolute tolerance 1e-8) is only guaranteed on the recorded stack: the same Python minor version and the same locks. Each export records its Python and key package versions in `metadata.json`.
@@ -137,7 +139,7 @@ After setup, run from the repository root:
 backend/.venv/bin/python -m pip check
 backend/.venv/bin/python scripts/smoke_flygym.py
 backend/.venv/bin/python scripts/benchmark.py
-backend/.venv/bin/python scripts/benchmark.py --vision
+backend/.venv/bin/python scripts/benchmark.py --vision   # rendered compound-eye input, not FlyVis
 ```
 
 The full checks and benchmarks require graphics access. On Linux without a display or a usable EGL, `./scripts/check.sh` runs the tests under `xvfb-run -a` with `MUJOCO_GL=glfw` when `xvfb-run` is installed (Xvfb plus Mesa's software OpenGL); an explicit `MUJOCO_GL` is left alone. `./scripts/check.sh --fast` intentionally omits FlyGym integration tests and does not establish graphics/body compatibility. To test a running local server, use `backend/.venv/bin/python scripts/probe_local.py`; it advances and resets that server's experiment.
