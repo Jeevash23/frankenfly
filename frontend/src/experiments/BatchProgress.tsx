@@ -30,7 +30,7 @@ export function BatchProgress({
         </span>
         <h3>{batch.protocol}</h3>
         <p>
-          Trial {batch.current} of {batch.total} · {conditionName(batch.condition)}
+          Trial {batch.current} of {batch.total} · {conditionName(batch.condition ?? '')}
           {batch.condition === 'cell_type_off' && batch.cell_type ? ` (${batch.cell_type})` : ''} ·
           seed {batch.seed}
         </p>

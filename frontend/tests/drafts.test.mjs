@@ -59,7 +59,11 @@ test('drafts round-trip under versioned keys and survive blocked storage', () =>
   assert.match(DRAFT_KEYS.experiments, /\.v\d+$/);
   saveDraft(DRAFT_KEYS.experiments, draft, store);
   const back = loadDraft(DRAFT_KEYS.experiments, readExperimentsDraft, store);
-  assert.deepEqual(back.protocol, draft.protocol);
+  // Events come back as the server writes them, with interventions: null.
+  assert.deepEqual(back.protocol, {
+    ...draft.protocol,
+    events: [{step: 50, stimulus: {x: 1, y: 2, intensity: 1}, interventions: null}],
+  });
   assert.equal(back.seeds, '1, 2');
   assert.deepEqual(back.conditions, ['control', 'dna02_both_off']);
   assert.equal(back.maxSpeed, true);

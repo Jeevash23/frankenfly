@@ -1,6 +1,6 @@
 import {useCallback, useEffect, useState} from 'react';
 import {Bookmark, ChevronDown, Save, Trash2} from 'lucide-react';
-import type {Command, Config, PresetInfo, State} from '../types';
+import type {Command, Config, PresetInfo, PresetRequest, State} from '../types';
 import {request} from '../api';
 import {
   DESCRIPTION_LIMIT,
@@ -68,11 +68,12 @@ export function PresetPanel({
     if (!state || problem || busy) return;
     setBusy(true);
     setMessage(null);
-    const r = await request<PresetInfo>('POST', '/api/configs', {
+    const body: PresetRequest = {
       name,
       description: description.trim(),
       config: presetConfig(state),
-    });
+    };
+    const r = await request<PresetInfo>('POST', '/api/configs', body);
     setBusy(false);
     if (!r.ok) return setMessage({error: true, text: r.error});
     setMessage({error: false, text: `Saved the current settings as ${name}.`});

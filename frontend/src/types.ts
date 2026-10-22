@@ -1,71 +1,58 @@
-export type Engine = 'flygym' | 'toy';
-export type NeuralModel = 'engineered' | 'connectome';
-export type Stimulus = {x: number; y: number; intensity: number};
-export type Side = 'both' | 'left' | 'right';
-export type ManipulationMode = 'silence' | 'scale' | 'activate';
+// The server's shapes come from api.gen.ts, generated from the API models by scripts/gen_types.py;
+// a model change that breaks the UI fails the typecheck. Some keep the names the UI has always
+// used. Shapes the server does not describe (jobs, presets, the circuit list, build status) and
+// UI-only types are written out below.
+import type {
+  BatchRequest,
+  CellTypeIntervention,
+  ConnectomeParameters,
+  Event,
+  Interventions,
+  ReplayVerdict,
+  RunConfig,
+  RunItem,
+  RunMetrics,
+  Stimulus,
+} from './api.gen';
+
+export type {
+  Batch,
+  BatchRequest,
+  CellTypeIntervention,
+  ConnectomeLive,
+  ConnectomeParameters,
+  NeuralParameters,
+  PresetRequest,
+  Protocol,
+  ProtocolEvent,
+  Sample,
+  State,
+  Stimulus,
+} from './api.gen';
+
+export type Config = RunConfig;
+export type Engine = Config['engine'];
+export type NeuralModel = Config['neural_model'];
 // An engineered manipulation of one cell type on one side or both (connectome model only).
 // scale: output × value (0–2); activate: rate clamped to value (rate, 0–1) or Poisson input at
 // value Hz (spiking, 0–500); silence ignores value.
-export type CellTypeIntervention = {
-  name: string;
-  side: Side;
-  mode: ManipulationMode;
-  value: number;
-};
-export type Intervention = {
-  zero_left: boolean;
-  zero_right: boolean;
-  // Engineered six-unit model only.
-  silence: 'none' | 'sensory' | 'steering' | 'descending' | 'all';
-  // Connectome model only.
-  silence_dna02?: 'none' | 'left' | 'right' | 'both';
-  silence_types?: string[];
-  // At most one entry per side of a cell type ("both" covers left and right; silence_types and
-  // silence_dna02 count too); the server refuses overlaps.
-  cell_types?: CellTypeIntervention[];
-};
+export type Side = CellTypeIntervention['side'];
+export type ManipulationMode = CellTypeIntervention['mode'];
+// silence is the engineered six-unit model's; silence_dna02, silence_types and cell_types the
+// connectome model's. At most one entry per side of a cell type ("both" covers left and right;
+// silence_types and silence_dna02 count too); the server refuses overlaps.
+export type Intervention = Interventions;
 // A change to the live interventions: fields to set, or a function of the newest interventions
 // (including a change still in flight), for toggles and list edits.
 export type StimulusChange = Partial<Stimulus> | ((current: Stimulus) => Partial<Stimulus>);
 export type InterventionChange =
   Partial<Intervention> | ((current: Intervention) => Partial<Intervention>);
-export type NeuralParameters = {
-  sensory_gain: number;
-  steering_gain: number;
-  tonic_drive: number;
-  time_scale: number;
-};
-export type Dynamics = 'rate' | 'spiking';
-// Spiking constants follow Shiu et al. 2024; these are the closed-loop input and readout settings.
-export type SpikingParameters = {
-  synapse_weight_mv: number;
-  input_rate_hz: number;
-  rate_window_ms: number;
-  rate_scale_hz: number;
-};
-// Global settings of the connectome model; nothing addresses a single neuron or synapse.
-export type ConnectomeParameters = {
-  circuit: string;
-  dynamics: Dynamics;
-  synapse_threshold: number;
-  global_gain: number;
-  input_gain: number;
-  output_gain: number;
-  tonic_drive: number;
-  tau_ms: number;
-  other_transmitters: 'excluded' | 'excitatory';
-  // Populations by cell type; null means the circuit's default readout or every visual projection neuron.
-  readout_types: string[] | null;
-  input_types: string[] | null;
-  speed_types: string[];
-  speed_gain: number;
-  spiking: SpikingParameters;
-  // Engineered motor path; the defaults (null, 'sum', 0, 0) reproduce v0.5.
-  readout_weights?: Record<string, number> | null;
-  readout_pool?: 'sum' | 'mean';
-  motor_delay_ms?: number;
-  motor_tau_ms?: number;
-};
+export type Dynamics = ConnectomeParameters['dynamics'];
+export type Metrics = RunMetrics;
+export type Condition = NonNullable<BatchRequest['conditions']>[number];
+export type RunEvent = Event;
+export type Command = (path: string, body?: unknown) => Promise<any>;
+
 // One entry of /api/connectome/circuits.
 export type CircuitInfo = {
   name: string;
@@ -96,90 +83,8 @@ export type BuildStatus = {
   result?: {name: string; neurons: number; connections: number; cell_types: number} | null;
   log: string[];
 };
-export type ProtocolEvent = {
-  step: number;
-  stimulus?: Stimulus | null;
-  interventions?: Intervention | null;
-};
-export type Protocol = {name: string; duration_steps: number; events: ProtocolEvent[]};
-export type Config = {
-  engine: Engine;
-  seed: number;
-  controller: 'neural' | 'baseline';
-  speed: number;
-  stimulus: Stimulus;
-  sensor_model: 'geometric' | 'vision' | 'flyvis';
-  neural_model: NeuralModel;
-  neural_parameters: NeuralParameters;
-  connectome_parameters: ConnectomeParameters;
-  initial_interventions: Intervention;
-  protocol: Protocol | null;
-};
-export type BodySignals = {
-  leg_order?: string[];
-  ground_contact_force?: number[];
-  contact?: boolean[];
-  cpg_phase_rad?: number[];
-  joint_position_rad?: number[];
-  force_unit?: string;
-};
-export type Sample = {
-  step: number;
-  t: number;
-  pose: {x: number; y: number; z: number; yaw: number; velocity: number; legs: number[][][]};
-  sensors: {
-    left: number;
-    right: number;
-    raw_left: number;
-    raw_right: number;
-    bearing_rad: number;
-    distance_mm: number;
-  };
-  rates: number[];
-  motor: number[];
-  body_signals: BodySignals;
-};
-export type Metrics = {
-  path_length_mm?: number;
-  displacement_mm?: number;
-  mean_speed_mm_s?: number;
-  net_turn_deg?: number;
-  target_distance_mm?: number;
-  duration_s?: number;
-  contact_fraction?: number[];
-  protocol_complete?: boolean;
-};
-export type Condition =
-  | 'control'
-  | 'left_sensor_off'
-  | 'descending_off'
-  | 'baseline'
-  | 'engineered_model'
-  | 'connectome_model'
-  | 'dna02_left_off'
-  | 'dna02_right_off'
-  | 'dna02_both_off'
-  | 'cell_type_off';
-export type Batch = {
-  id: string;
-  status: 'running' | 'paused' | 'completed' | 'cancelled' | 'failed';
-  total: number;
-  current: number;
-  condition: string;
-  seed: number;
-  protocol: string;
-  results: {run_id: string; metrics: Metrics}[];
-  error?: string;
-  cell_type?: string | null;
-  // Trials ran unpaced (v0.6).
-  max_speed?: boolean;
-  // The unfinished trial of a cancelled or failed comparison, saved and marked partial.
-  partial?: {run_id: string; metrics: Metrics; condition?: string; seed?: number};
-  partial_error?: string;
-  // Set when the Workbench configuration from before the comparison could not be restored.
-  restore_error?: string;
-};
-// A labelled comparison condition of your own (BatchRequest.custom_conditions).
+// A labelled comparison condition of your own as the editor holds it; customRequest turns it
+// into BatchRequest.custom_conditions.
 export type CustomCondition = {
   label: string;
   interventions: Intervention | null;
@@ -188,91 +93,15 @@ export type CustomCondition = {
 };
 export type CustomParameter =
   'output_gain' | 'input_gain' | 'tonic_drive' | 'motor_delay_ms' | 'motor_tau_ms';
-// Live, display-only activity of the connectome model (not recorded).
-export type ConnectomeLive = {
-  circuit: string;
-  // SHA-256 of the circuit file loaded in the running model; absent from servers before v0.6.
-  circuit_sha256?: string;
-  dynamics: Dynamics;
-  unit_names: string[];
-  readout_types: string[];
-  type_rates: number[];
-  turn: number;
-  silenced_neurons: number;
-  // Neurons under each kind of manipulation, and the share of control intervals whose motor
-  // command was clipped to [0, 1] (v0.6).
-  manipulated_neurons?: {silence: number; scale: number; activate: number};
-  motor_clipped_fraction?: number;
-  trace_t: number[];
-  top_types: {index: number; name: string; trace: number[]}[];
-};
-export type RunEvent = {
-  seq: number;
-  step: number;
-  t: number;
-  kind: string;
-  message: string;
-  payload: Record<string, unknown>;
-};
-export type State = {
-  instance_id: string;
-  revision: number;
-  run_id: string;
-  status: 'initializing' | 'paused' | 'running' | 'error' | 'stopped';
-  error: string | null;
-  config: Config;
-  interventions: Intervention;
-  sample: Sample | null;
-  history: Sample[];
-  trail: number[][];
-  events: RunEvent[];
-  wall_s: number;
-  real_time_factor: number;
-  compute_real_time_factor: number;
-  memory_mb: number;
-  frame_revision: number;
-  rendering: boolean;
-  render_error: string | null;
-  subscribers: number;
-  recording_samples: number;
-  recording_limit: number;
-  provenance: Record<string, string>;
-  metrics: Metrics;
-  vision: {ommatidia_per_eye?: number; left?: number[]; right?: number[]; sample_time_s?: number};
-  batch: Batch | null;
-  connectome: ConnectomeLive | null;
-};
-export type Command = (path: string, body?: unknown) => Promise<any>;
-export type SavedRun = {
-  key: string;
-  run_id: string;
-  created_utc: string;
-  config: Config;
-  samples: number;
-  metrics: Metrics;
-  trial: {
-    condition: string;
-    batch_id: string;
-    seed: number;
-    neural_model?: NeuralModel;
-    cell_type?: string | null;
-    // An unfinished trial saved when its comparison was cancelled or failed.
-    partial?: boolean;
-  } | null;
-  error?: string;
-  provenance: Record<string, string>;
-  download_url: string;
+// A saved run (GET /api/runs); GET /api/runs/{key} adds its decimated trajectory
+// ([time_s, x_mm, y_mm, speed_mm_s]). Older runs may lack configuration fields added since.
+export type SavedRun = Omit<RunItem, 'verified'> & {
   trajectory?: number[][];
   // The latest replay check (POST /api/runs/{key}/replay); null when never checked.
-  verified?: Verification | null;
+  verified: Verification | null;
 };
-export type Verification = {
-  ok: boolean;
-  max_abs_error: number;
-  tolerance: number;
-  checked: string;
-  same_software: boolean;
-  message: string;
+// replay.json: the verdict fields, and what scripts/replay.py --save adds to them.
+export type Verification = ReplayVerdict & {
   samples_compared?: number;
   column_errors?: Record<string, number | null>;
   software_differences?: string[];

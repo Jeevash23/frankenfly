@@ -338,7 +338,7 @@ function RunRow({
         {run.config.engine === 'flygym' ? 'FlyGym' : 'Toy'}
         <small>
           {{vision: 'Compound eye', flyvis: 'FlyVis eyes', geometric: 'Geometric'}[
-            run.config.sensor_model
+            run.config.sensor_model ?? 'geometric'
           ] ?? 'Geometric'}{' '}
           ·{' '}
           {normalizeModel(run.config.neural_model) === 'connectome'

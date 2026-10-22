@@ -8,6 +8,7 @@ import type {
 } from './types.ts';
 import type {BuildRequest} from './connectome/build.ts';
 import {conditionNames} from './models.ts';
+import {stimulusChange} from './protocol.ts';
 import {CUSTOM_PARAMETERS} from './comparison.ts';
 
 // Unsent edits kept in this browser's localStorage, so switching pages or reloading keeps them.
@@ -72,9 +73,9 @@ const text = (value: unknown, limit: number): string | undefined =>
   typeof value === 'string' && value.length <= limit ? value : undefined;
 
 function readStimulus(value: unknown): ProtocolEvent['stimulus'] {
-  if (!isObject(value)) return undefined;
+  if (!isObject(value)) return null;
   const {x, y, intensity} = value;
-  return isNumber(x) && isNumber(y) && isNumber(intensity) ? {x, y, intensity} : undefined;
+  return isNumber(x) && isNumber(y) && isNumber(intensity) ? {x, y, intensity} : null;
 }
 
 export function readProtocol(value: unknown): Protocol | null {
@@ -83,9 +84,9 @@ export function readProtocol(value: unknown): Protocol | null {
   if (!name || !isInteger(value.duration_steps, 1, 29999)) return null;
   const events: ProtocolEvent[] = [];
   for (const event of value.events) {
-    const stimulus = isObject(event) ? readStimulus(event.stimulus) : undefined;
+    const stimulus = isObject(event) ? readStimulus(event.stimulus) : null;
     if (!isObject(event) || !Number.isInteger(event.step) || !stimulus) return null;
-    events.push({step: event.step as number, stimulus});
+    events.push(stimulusChange(event.step as number, stimulus));
   }
   return {name, duration_steps: value.duration_steps, events};
 }

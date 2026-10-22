@@ -1,6 +1,15 @@
 import {useEffect, useRef, useState} from 'react';
 import {Sparkles} from 'lucide-react';
-import type {Command, Condition, Config, CustomCondition, Job, Protocol, State} from '../types';
+import type {
+  BatchRequest,
+  Command,
+  Condition,
+  Config,
+  CustomCondition,
+  Job,
+  Protocol,
+  State,
+} from '../types';
 import type {Pending} from '../useSimulation';
 import {request} from '../api';
 import {
@@ -124,14 +133,15 @@ export default function Experiments({
     setError('');
     setNotice('');
     setStarting(true);
-    const r = await request('POST', '/api/batch/start', {
+    const body: BatchRequest = {
       config: config(),
       seeds: parsedSeeds.seeds,
       conditions,
       cell_type: conditions.includes('cell_type_off') ? cellType.trim() : null,
       custom_conditions: custom.map(customRequest),
       max_speed: maxSpeed,
-    });
+    };
+    const r = await request('POST', '/api/batch/start', body);
     setStarting(false);
     if (!r.ok) return setRunError(r.error);
     clearDraft(DRAFT_KEYS.experiments);
