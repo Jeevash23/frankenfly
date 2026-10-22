@@ -4,7 +4,7 @@
 
 ## Checks run
 
-<!-- Tick what you ran; CI runs only the fast backend tests and the frontend checks. -->
+<!-- Tick what you ran locally. CI also runs the backend tests on Python 3.12–3.14, the FlyGym physics tests under Xvfb, the frontend checks and browser end-to-end tests, the dependency audits and, when packaging files change, the Docker build. -->
 
 - [ ] `./scripts/check.sh --fast`
 - [ ] FlyGym physics tests (`./scripts/check.sh`, or headless: `xvfb-run -a env MUJOCO_GL=glfw ./scripts/check.sh`); needed when the body, engines, experiment, worker or neural code changes
