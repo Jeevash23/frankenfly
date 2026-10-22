@@ -90,7 +90,7 @@ A robustness and research-workflow release. The simulation worker, the toolkit a
 - CI runs the fast backend tests on Python 3.12, 3.13 and 3.14 with `pip check` and a check that the generated TypeScript types are current; the frontend on Node 24 and 22.12.0; the FlyGym physics tests under Xvfb; browser end-to-end tests; and pip-audit over every lock plus `npm audit`. A Docker workflow builds and smoke-tests the image, a weekly workflow checks every pinned download URL, and Dependabot proposes grouped weekly updates, leaving the replay-sensitive packages alone. The actions move to v7.
 - End-to-end tests with Playwright 1.56.1 (`npm --prefix frontend run e2e`): ten tests drive the built app in headless Chromium against the toy engine.
 - `./scripts/check.sh` runs the physics tests under `xvfb-run` when there is no display and no working EGL.
-- The backend suite grows from 88 to 355 tests (11 of them FlyGym physics tests) and the frontend unit tests from 27 to 81.
+- The backend suite grows from 88 to 356 tests (12 of them FlyGym physics tests) and the frontend unit tests from 27 to 81.
 - `CONTRIBUTING.md`, `SECURITY.md`, issue forms, a pull request template, this changelog, `CITATION.cff`, the license notices for every committed data asset, and [docs/evidence/README.md](docs/evidence/README.md) with the command behind every published number.
 
 ### Changed

@@ -37,14 +37,14 @@ backend/.venv/bin/python scripts/gen_types.py --check
 backend/.venv/bin/python scripts/smoke_flygym.py
 ```
 
-`./scripts/check.sh --fast` omits the FlyGym tests and does not establish graphics or body compatibility. The v0.6 backend suite has **355 tests**, 11 of them FlyGym physics tests. Without graphics the FlyGym tests fail; without each optional asset its tests skip: FlyVis 2 (one of them a physics test), the prepared archive 4 (the general builder's check against the DNa02 circuit, the steering circuit's rebuild and the two balanced circuits' rebuilds), the recording 1. One test checks what `benchmark.py --flyvis` reports without FlyVis, so it skips when FlyVis is installed. That gives:
+`./scripts/check.sh --fast` omits the FlyGym tests and does not establish graphics or body compatibility. The v0.6 backend suite has **356 tests**, 12 of them FlyGym physics tests. Without graphics the FlyGym tests fail; without each optional asset its tests skip: FlyVis 2 (one of them a physics test), the prepared archive 4 (the general builder's check against the DNa02 circuit, the steering circuit's rebuild and the two balanced circuits' rebuilds), the recording 1. One test checks what `benchmark.py --flyvis` reports without FlyVis, so it skips when FlyVis is installed. That gives:
 
 | Graphics and assets | Backend result |
 | --- | --- |
-| All optional assets | 354 passed, 1 skipped (expected; not run for v0.6, where FlyVis and the recording were unavailable) |
-| The prepared archive only (the v0.6 reference) | 352 passed, 3 skipped |
-| No optional assets | 348 passed, 7 skipped |
-| No optional assets, `./scripts/check.sh --fast` | 338 passed, 6 skipped (the 11 physics tests deselected) |
+| All optional assets | 355 passed, 1 skipped (expected; not run for v0.6, where FlyVis and the recording were unavailable) |
+| The prepared archive only (the v0.6 reference) | 353 passed, 3 skipped |
+| No optional assets | 349 passed, 7 skipped |
+| No optional assets, `./scripts/check.sh --fast` | 338 passed, 6 skipped (the 12 physics tests deselected) |
 
 Run `pytest -rs` to see the reason for each skip:
 
