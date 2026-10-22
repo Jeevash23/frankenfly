@@ -331,15 +331,17 @@ class SpikingState:
     def manipulate(self, manipulation: "Manipulation"):
         """Interventions from the next substep: each neuron's spikes deliver scale × its weights, and activated
         neurons receive independent Poisson input at their rate in Hz, each event adding the sensor input's kick
-        (250 × w_syn) to v, with no refractory period (as Poisson targets in Shiu et al.'s code)."""
+        (250 × w_syn) to v, with no refractory period (as Poisson targets in Shiu et al.'s code). A neuron without
+        input (0 Hz, which validation refuses) keeps its refractory period."""
         if manipulation is self.manipulation:
             return
         self.manipulation, self.scale, self.activated = manipulation, manipulation.scale, manipulation.activated
         self.activation_chance = np.minimum(1., manipulation.activation * LIF["dt_ms"] / 1000)
         self.refractory = self.base_refractory
-        if len(self.activated):
+        driven = self.activated[manipulation.activation > 0]
+        if len(driven):
             self.refractory = self.base_refractory.copy()
-            self.refractory[self.activated] = 0
+            self.refractory[driven] = 0
         self._scale_weights()
 
     def _scale_weights(self):
@@ -721,7 +723,9 @@ class ConnectomeCircuit:
         return values + ([float(r[self.speed].mean())] if self.speed is not None else [])
 
     def type_means(self) -> np.ndarray:
-        return np.bincount(self.data.type_index, weights=self.activity, minlength=len(self.data.type_names)) / self.data.type_counts
+        """Mean activity per cell type; 0 for a type the file lists without neurons (never NaN, which JSON lacks)."""
+        sums = np.bincount(self.data.type_index, weights=self.activity, minlength=len(self.data.type_names))
+        return sums / np.maximum(self.data.type_counts, 1)
 
     def description(self):
         data, p = self.data, self.parameters

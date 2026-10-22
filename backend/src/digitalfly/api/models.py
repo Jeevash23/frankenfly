@@ -88,7 +88,7 @@ def check_interventions(interventions: "Interventions", circuit=DEFAULT_CIRCUIT,
 class CellTypeIntervention(StrictModel):
     """An engineered manipulation of one cell type's neurons on one side or both (connectome model only):
     silence: no output (value ignored); scale: output × value (0–2); activate: independent Poisson input at value Hz
-    to each neuron (spiking dynamics, 0–500) or its rate clamped to value (rate dynamics, 0–1).
+    to each neuron (spiking dynamics, above 0 up to 500) or its rate clamped to value (rate dynamics, above 0 up to 1).
     Equations: docs/ARCHITECTURE.md, "Connectome interventions"."""
     name: CellTypeName
     side: Literal["both", "left", "right"] = "both"
@@ -99,6 +99,9 @@ class CellTypeIntervention(StrictModel):
     def value_fits_mode(self):
         if self.mode == "scale" and self.value > 2:
             raise ValueError("Scaling multiplies a cell type's output by a value from 0 to 2.")
+        if self.mode == "activate" and self.value <= 0:
+            raise ValueError("Activation needs a value above 0: Poisson input in Hz (spiking dynamics) or a clamped "
+                             "rate (rate dynamics). To hold a cell type at rest, silence it.")
         return self
 
     @property

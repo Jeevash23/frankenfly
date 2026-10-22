@@ -84,7 +84,7 @@ export interface BodySignals {
 /**
  * An engineered manipulation of one cell type's neurons on one side or both (connectome model only):
  * silence: no output (value ignored); scale: output × value (0–2); activate: independent Poisson input at value Hz
- * to each neuron (spiking dynamics, 0–500) or its rate clamped to value (rate dynamics, 0–1).
+ * to each neuron (spiking dynamics, above 0 up to 500) or its rate clamped to value (rate dynamics, above 0 up to 1).
  * Equations: docs/ARCHITECTURE.md, "Connectome interventions".
  */
 export interface CellTypeIntervention {
@@ -329,7 +329,7 @@ export interface BuildRequest {
 /**
  * An engineered manipulation of one cell type's neurons on one side or both (connectome model only):
  * silence: no output (value ignored); scale: output × value (0–2); activate: independent Poisson input at value Hz
- * to each neuron (spiking dynamics, 0–500) or its rate clamped to value (rate dynamics, 0–1).
+ * to each neuron (spiking dynamics, above 0 up to 500) or its rate clamped to value (rate dynamics, above 0 up to 1).
  * Equations: docs/ARCHITECTURE.md, "Connectome interventions".
  */
 export interface CellTypeInterventionInput {
