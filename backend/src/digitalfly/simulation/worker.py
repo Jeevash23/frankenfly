@@ -120,15 +120,18 @@ class SimulationWorker:
             self.subscribers = max(0, self.subscribers + delta)
 
     def circuits_in_use(self) -> set[str]:
-        """Circuit names the running experiment has loaded or an active comparison will load (any thread)."""
+        """Circuit names the running experiment has loaded, or an active comparison will load or return the Workbench
+        to (any thread)."""
         names = set()
         circuit = getattr(self.experiment, "circuit", None)
         if circuit is not None and circuit.kind == "connectome":
             names.add(circuit.data.key)
-        request = self.batch_request
+        request, workbench = self.batch_request, self.workbench
         if request is not None and self._batch_active() and (
                 request.config.neural_model == "connectome" or "connectome_model" in request.conditions):
             names.add(request.config.connectome_parameters.circuit)
+        if workbench is not None and self._batch_active() and workbench.neural_model == "connectome":
+            names.add(workbench.connectome_parameters.circuit)
         return names
 
     def _batch_active(self):

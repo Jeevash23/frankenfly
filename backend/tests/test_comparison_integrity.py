@@ -1,10 +1,13 @@
 """A comparison's summary counts each condition and seed once, from trials that ran their protocol to the end."""
 import json
+import sys
 import time
 from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
+from conftest import write_circuit
 from digitalfly.api.models import Protocol, RunConfig
+from digitalfly.data import builds
 from digitalfly.data.research import BatchSummary, batch_summary
 from digitalfly.main import create_app
 from digitalfly.simulation.experiment import Experiment
@@ -92,3 +95,22 @@ def test_a_state_that_cannot_be_published_ends_the_comparison_and_restores_the_w
     assert state["config"] == workbench and state["status"] == "paused" and state["error"] is None
     batch = state["batch"]
     assert batch["status"] == "failed" and "readout" in batch["error"] and batch["partial"]["partial"]
+
+
+def test_the_circuit_the_workbench_returns_to_cannot_be_rebuilt_during_a_comparison(client, monkeypatch, tmp_path):
+    monkeypatch.setattr("digitalfly.neural.connectome.LOCAL_DIR", tmp_path / "local")
+    write_circuit(tmp_path / "local")
+    monkeypatch.setattr(builds, "PREPARED", tmp_path / "prepared.npz")
+    builds.PREPARED.write_bytes(b"")
+    monkeypatch.setattr(builds.BuildManager, "command",
+                        staticmethod(lambda request: [sys.executable, "-c", "import time; time.sleep(5)"]))
+    workbench = {**RunConfig(engine="toy").model_dump(), "neural_model": "connectome",
+                 "connectome_parameters": {"circuit": "toy-brain"}}
+    assert client.post("/api/reset", json=workbench).status_code == 200
+    # The comparison itself runs the engineered model, then returns to the toy-brain Workbench.
+    config = RunConfig(engine="toy", speed=.05, protocol=Protocol(duration_steps=200))
+    assert client.post("/api/batch/start", json={"config": config.model_dump(), "seeds": [1],
+                                                 "conditions": ["control"]}).status_code == 200
+    refused = client.post("/api/connectome/build", json={"name": "toy-brain", "seeds": ["DNx"]})
+    assert refused.status_code == 409 and "toy-brain" in refused.json()["detail"]
+    assert client.post("/api/batch/cancel", json={}).json()["config"]["connectome_parameters"]["circuit"] == "toy-brain"
