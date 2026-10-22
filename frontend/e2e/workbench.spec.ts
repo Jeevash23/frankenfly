@@ -94,6 +94,21 @@ test('the connectome model takes a cell-type manipulation', async ({page, reques
     .toEqual([{name: 'DNa02', side: 'left', mode: 'silence', value: 0}]);
   await page.getByRole('button', {name: 'Remove: DNa02 left silenced'}).click();
   await expect(inForce).toHaveCount(0);
+
+  // Activation needs a value above 0; a type is held at rest by silencing it.
+  await cellType.fill('DNa02');
+  await page.getByLabel('Manipulation', {exact: true}).selectOption('activate');
+  const rate = page.getByLabel('Clamped rate', {exact: true});
+  await expect(rate).toHaveValue('0.6');
+  await rate.fill('0');
+  await expect(page.getByText(/clamps the rate above 0, up to 1/)).toBeVisible();
+  await expect(page.getByRole('button', {name: /activated \(rate 0\)$/})).toBeDisabled();
+  await rate.fill('0.3');
+  await page.getByRole('button', {name: /^Apply DNa02 left activated \(rate 0\.3\)/}).click();
+  await expect(inForce.getByText('DNa02 left activated (rate 0.3)')).toBeVisible();
+  await expect
+    .poll(async () => (await status(request)).interventions.cell_types)
+    .toEqual([{name: 'DNa02', side: 'left', mode: 'activate', value: 0.3}]);
 });
 
 test('presets are saved, loaded and deleted', async ({page, request}) => {

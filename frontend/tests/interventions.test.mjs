@@ -138,8 +138,20 @@ test('values and units follow the mode and the dynamics', () => {
     [1, 'rate'],
   );
   assert.match(valueProblem('scale', 2.5, 'rate'), /0 to 2/);
-  assert.match(valueProblem('activate', 80, 'rate'), /rate to 0 to 1/);
+  assert.equal(valueProblem('scale', 0, 'rate'), null); // scaling to 0 is allowed
+  assert.match(valueProblem('activate', 80, 'rate'), /above 0, up to 1/);
   assert.equal(valueProblem('activate', 80, 'spiking'), null);
+  // Activation needs a value above 0, as the server requires; silencing holds a type at rest.
+  for (const dynamics of ['rate', 'spiking']) {
+    const range = valueRange('activate', dynamics);
+    assert.ok(range.min > 0 && range.initial >= range.min && range.initial <= range.max);
+    assert.equal(valueProblem('activate', range.min, dynamics), null);
+    assert.equal(valueProblem('activate', range.initial, dynamics), null);
+    assert.match(valueProblem('activate', 0, dynamics), /above 0.*silence it/);
+    assert.match(valueProblem('activate', -1, dynamics), /above 0/);
+  }
+  assert.equal(valueProblem('activate', 0.5, 'spiking'), null); // below the slider, above 0
+  assert.equal(valueProblem('activate', 0.001, 'rate'), null);
   assert.equal(
     manipulationLabel(entry('DNp09', 'both', 'activate', 80), 'spiking'),
     'DNp09 activated 80 Hz',
