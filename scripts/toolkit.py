@@ -11,8 +11,11 @@
 
 --set and --vary take dotted RunConfig names (for bias, ablation and paths: ConnectomeParameters names,
 with or without the "connectome_parameters." prefix). Values are read as JSON when they parse
-(numbers, true/false, ["lists"]) and as text otherwise. Results are printed as Markdown and saved as
-JSON (plus CSV for tables) under runs/toolkit/ (ignored by git) unless --out names a file; every
+(numbers, true/false, ["lists"]) and as text otherwise; --vary splits its values at commas, unless they
+are one JSON list of lists, objects or null (stimulus=[{"x":5,"y":5},{"x":5,"y":-5}]). Dotted names
+also fill an unset group (connectome_parameters.readout_weights.DNa02=2). Results are printed as
+Markdown and saved as JSON (plus CSV for tables) under runs/toolkit/ (ignored by git) unless --out
+names a file (dots in its name are kept: --out gain-1.5 writes gain-1.5.json); every
 report records its provenance (git commit, command line, circuits and their SHA-256, package
 versions). `circuits` only prints the list. `trials` also appends each finished trial to a .jsonl
 and the .csv while it runs; a trial that fails becomes a row with an error, and --resume skips the
@@ -23,6 +26,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from pydantic import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend/src"))
@@ -59,7 +63,13 @@ def axes(pairs):
         key, sep, raw = pair.partition("=")
         if not sep:
             sys.exit(f"Use KEY=V1,V2 for --vary, not {pair!r}.")
-        result[key.strip()] = [value(v) for v in raw.split(",")] if not raw.startswith("[[") else value(raw)
+        if not raw.startswith(("[[", "[{", "[null")):
+            result[key.strip()] = [value(v) for v in raw.split(",")]
+            continue
+        try:  # one JSON list whose items (lists, objects or null) are the values: commas inside them do not split
+            result[key.strip()] = json.loads(raw)
+        except ValueError as exc:
+            sys.exit(f"--vary {key.strip()}: {raw!r} is not a JSON list ({exc}).")
     return result
 
 
@@ -82,7 +92,7 @@ def output_stem(name, out):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     base = Path(out) if out else ROOT / "runs/toolkit" / f"{stamp}-{name}"
     base.parent.mkdir(parents=True, exist_ok=True)
-    return base.with_suffix("") if base.suffix in {".csv", ".json", ".jsonl"} else base
+    return toolkit.with_ending(base, "")  # drops a .csv, .json or .jsonl ending; other dots stay (gain-1.5)
 
 
 def shown(path):
@@ -95,9 +105,9 @@ write_csv, TrialLog = toolkit.write_csv, toolkit.TrialLog
 
 def save(stem, rows, report, circuits=()):
     report = {**report, "provenance": toolkit.provenance(circuits)}
-    stem.with_suffix(".json").write_text(json.dumps(report, indent=1, default=str))
+    toolkit.with_ending(stem, ".json").write_text(json.dumps(report, indent=1, default=str))
     if rows:
-        write_csv(stem.with_suffix(".csv"), rows)
+        write_csv(toolkit.with_ending(stem, ".csv"), rows)
     print(f"\nSaved {shown(stem)}.json" + (f" and {shown(stem)}.csv" if rows else ""))
 
 
@@ -378,16 +388,9 @@ def circuits(args):
 #   scripts/toolkit.py robustness --vary circuit=fafb783-dna02,fafb783-dna02-balanced --vary seed=1,2,3 --analyses bias,reach
 
 def assumption_axes(pairs):
-    """--vary for robustness: as for trials, plus a JSON list of objects or null as one axis (readout_weights=[null,{…}]);
+    """--vary for robustness: as for trials (a JSON list of objects or null is one axis: readout_weights=[null,{…}]);
     names are ConnectomeParameters fields with or without the prefix, or seed."""
-    result = {}
-    for pair in pairs:
-        key, sep, raw = pair.partition("=")
-        if not sep:
-            sys.exit(f"Use KEY=V1,V2 for --vary, not {pair!r}.")
-        found = value(raw) if raw.startswith(("[{", "[null")) else axes([pair])[key.strip()]
-        result[key.strip().removeprefix(PREFIX)] = found if isinstance(found, list) else [found]
-    return result
+    return {key.removeprefix(PREFIX): found if isinstance(found, list) else [found] for key, found in axes(pairs).items()}
 
 
 def cell(value):
@@ -587,6 +590,9 @@ def main():
     args = parser.parse_args()
     try:
         args.handler(args)
+    except ValidationError as exc:  # a setting out of range, in one line per problem
+        sys.exit("; ".join(f"Invalid setting {'.'.join(map(str, e['loc']))}: " * bool(e["loc"])
+                           + e["msg"].removeprefix("Value error, ") for e in exc.errors()))
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         sys.exit(f"{type(exc).__name__}: {exc}")
 

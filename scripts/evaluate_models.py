@@ -134,9 +134,8 @@ def main(argv=None):
              if model in ("connectome", "steering") for bearing in [45, -45, 90, -90]
              for silence in ["none", "left", "right", "both"] for seed in seeds]
     path = Path(args.out) if args.out else ROOT / "docs/evidence" / report_name(args.engine, args.quick, models, duration)
-    path = path.with_suffix(".json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    log = toolkit.TrialLog(path.with_suffix(""), args.resume)
+    path = toolkit.with_ending(path, ".json")  # evaluation-toy-0.3s.json keeps its 0.3s; logs go next to it
+    log = toolkit.TrialLog(path, args.resume)
     configs = [config(args.engine, *item[1:]) for item in plan]
     hashes = [toolkit.config_hash(c, duration_s=duration) for c in configs]
     # Identical trials (the unsilenced silencing rows repeat behavior rows) run once; results are deterministic.

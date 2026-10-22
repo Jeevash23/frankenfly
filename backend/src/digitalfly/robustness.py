@@ -17,7 +17,6 @@ every variant is robust to the assumptions varied, and no more: it is still a pr
 wiring, not evidence about flies.
 """
 from collections import Counter
-from concurrent.futures import as_completed
 import hashlib
 import itertools
 import json
@@ -78,13 +77,6 @@ def readout_table(parameters: ConnectomeParameters, bearings=BEARINGS, distance_
             "rows": rows, "note": "Positive turn = rightward; positive bearing = left. Open loop: the fly does not move."}
 
 
-def _set(data: dict, key: str, value):
-    *parents, last = key.split(".")
-    for part in parents:
-        data = data.setdefault(part, {})
-    data[last] = value
-
-
 def variants(base: ConnectomeParameters, axes: dict | None = None, seed: int = 0) -> list[dict]:
     """Every combination of the axes' values on top of `base`, the first value of each axis first (that combination
     is the baseline). Axis names are ConnectomeParameters fields, dotted for nested ones (spiking.rate_scale_hz),
@@ -98,7 +90,7 @@ def variants(base: ConnectomeParameters, axes: dict | None = None, seed: int = 0
             if name == "seed":
                 variant_seed = int(value)
             else:
-                _set(data, name, value)
+                toolkit.set_setting(data, name, value)  # readout_weights.DNa02 fills an unset readout_weights
         result.append({"settings": dict(zip(names, values)), "parameters": ConnectomeParameters.model_validate(data),
                        "seed": variant_seed, "seed_axis": "seed" in names})
     return result
@@ -219,7 +211,8 @@ def _evaluate_task(task):
 
 def run(variants: list[dict], analyses=("bias",), workers: int = 1, on_result=None, **settings) -> list[dict]:
     """Evaluate every variant; rows follow the order of `variants`. A variant that raises becomes a row with its
-    settings and an `error` text, and the rest still run; `on_result(index, row)` is called as each finishes."""
+    settings and an `error` text, and the rest still run; a worker process that dies costs no variants (as in
+    `toolkit.run_trials`). `on_result(index, row)` is called as each finishes."""
     unknown = set(analyses) - set(ANALYSES)
     if unknown or not analyses:
         raise ValueError(f"Choose analyses from {', '.join(ANALYSES)}.")
@@ -235,19 +228,12 @@ def run(variants: list[dict], analyses=("bias",), workers: int = 1, on_result=No
         for task in tasks:
             finished(*_evaluate_task(task))
         return rows
+    def failed(task, error):  # the worker process died running it twice, or could not return it
+        index, data, _, _ = task
+        return {**_row(index, {**data, "parameters": ConnectomeParameters.model_validate(data["parameters"])}, None),
+                "error": error}
     with toolkit.thread_limit(workers):
-        pool = toolkit._pool(workers)
-        try:
-            futures = {pool.submit(_evaluate_task, task): task for task in tasks}
-            for future in as_completed(futures):
-                try:
-                    finished(*future.result())
-                except Exception as exc:  # the worker process itself died
-                    index, data, _, _ = futures[future]
-                    variant = {**data, "parameters": ConnectomeParameters.model_validate(data["parameters"])}
-                    finished(index, {**_row(index, variant, None), "error": f"{type(exc).__name__}: {exc}"})
-        finally:
-            pool.shutdown(wait=True, cancel_futures=True)
+        toolkit._parallel(_evaluate_task, tasks, workers, finished, failed)
     return rows
 
 
