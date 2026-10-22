@@ -256,13 +256,13 @@ def test_live_cell_type_interventions(client):
     metadata = json.loads((Path(client.post("/api/export", json={}).json()["path"]) / "metadata.json").read_text())
     assert [i["mode"] for i in metadata["neural"]["interventions"]] == ["silence", "scale", "activate"]
     assert metadata["final_interventions"]["cell_types"][1]["value"] == .8
-    # Spiking dynamics take activation in Hz; the engineered model has no cell types (409 live, 422 in a config).
+    # Spiking dynamics take activation in Hz; the engineered model has no cell types (422 live, as in a config).
     spiking = {**CONNECTOME.model_dump(), "connectome_parameters": {"dynamics": "spiking"}}
     assert client.post("/api/reset", json=spiking).status_code == 200
     assert post(cell_types=[{"name": "DNa03", "mode": "activate", "value": 250}]).status_code == 200
     engineered = {**CONNECTOME.model_dump(), "neural_model": "engineered"}
     assert client.post("/api/reset", json=engineered).status_code == 200
-    assert post(cell_types=[{"name": "DNa03", "mode": "silence"}]).status_code == 409
+    assert post(cell_types=[{"name": "DNa03", "mode": "silence"}]).status_code == 422
     bad_reset = {**engineered, "initial_interventions": {"cell_types": [{"name": "DNa03", "mode": "silence"}]}}
     assert client.post("/api/reset", json=bad_reset).status_code == 422
 

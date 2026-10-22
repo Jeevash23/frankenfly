@@ -10,6 +10,7 @@ import time
 from typing import NamedTuple
 import uuid
 import psutil
+from pydantic import ValidationError
 from digitalfly.api.models import (State, RunConfig, Stimulus, Interventions, Speed, NeuralParameters,
     ConnectomeParameters, BatchRequest, check_interventions, construct, Batch, ConnectomeLive, Provenance, RunMetrics,
     Vision)
@@ -25,6 +26,23 @@ BATCH_COMMANDS = {"run", "pause", "batch_cancel", "export", "speed"}  # none cha
 
 class Rejected(ValueError):
     """The command does not fit the experiment that is running (HTTP 422); nothing was changed."""
+
+
+class Invalid(ValueError):
+    """The command's body does not validate (HTTP 422, each error located in the body); nothing was changed.
+    Any other ValidationError is the run's own data failing, never the request's."""
+
+    def __init__(self, error: ValidationError):
+        super().__init__(str(error))
+        self.errors = error.errors()
+
+
+def parse(model, payload):
+    """A command's body as `model`, validated in full."""
+    try:
+        return model.model_validate(payload)
+    except ValidationError as exc:
+        raise Invalid(exc) from exc
 
 
 class WorkerStopped(RuntimeError):
@@ -277,7 +295,7 @@ class SimulationWorker:
         if batch_active and name not in BATCH_COMMANDS:
             raise ValueError("Cancel the active comparison before changing its controlled conditions.")
         if name == "reset":
-            exp.reset(RunConfig.model_validate(payload))
+            exp.reset(parse(RunConfig, payload))
             with self.lock:
                 self.frame_bytes = None
             self.batch = self.workbench = None
@@ -315,30 +333,42 @@ class SimulationWorker:
             finally:
                 exp.active_wall_s += time.perf_counter() - start
         elif name == "stimulus":
-            exp.set_stimulus(Stimulus.model_validate(payload))
+            exp.set_stimulus(parse(Stimulus, payload))
         elif name == "interventions":
-            interventions = Interventions.model_validate(payload)
-            if exp.circuit.kind == "connectome":
-                # The circuit this run loaded, not the file of that name, which may have been rebuilt since.
-                try:
+            interventions = parse(Interventions, payload)
+            # 422 as at a reset: interventions of the other model, cell types and values that do not fit. Checked
+            # against the circuit this run loaded, not the file of that name, which may have been rebuilt since.
+            try:
+                interventions.for_model(exp.circuit.kind)
+                if exp.circuit.kind == "connectome":
                     check_interventions(interventions, exp.circuit.data, exp.circuit.parameters.dynamics)
-                except ValueError as exc:
-                    raise Rejected(str(exc)) from exc
+            except ValueError as exc:
+                raise Rejected(str(exc)) from exc
             exp.set_interventions(interventions)
         elif name == "speed":
-            exp.config.speed = Speed.model_validate(payload).speed
+            exp.config.speed = parse(Speed, payload).speed
             exp.event("speed", f"Requested speed {exp.config.speed:g}×", payload)
             if batch_active:  # pacing only: the remaining trials keep the new speed
                 for _, _, config in self.trials[self.trial_index + 1:]:
                     config.speed = exp.config.speed
         elif name == "parameters":
-            exp.set_parameters(NeuralParameters.model_validate(payload))
+            exp.set_parameters(parse(NeuralParameters, payload))
         elif name == "connectome_parameters":
-            exp.set_connectome_parameters(ConnectomeParameters.model_validate(payload))
+            parameters = parse(ConnectomeParameters, payload)
+            data = getattr(exp.circuit, "data", None)
+            if data is not None and parameters.circuit == data.key:
+                try:  # populations and weights that do not fit the loaded circuit: 422, as at a reset
+                    parameters.check_against_circuit(data)
+                except ValueError as exc:
+                    raise Rejected(str(exc)) from exc
+            exp.set_connectome_parameters(parameters)
         elif name == "batch_start":
-            request = BatchRequest.model_validate(payload)
-            trials = [(condition, seed, self._trial_config(request, condition, seed))
-                      for seed in request.seeds for condition in request.condition_names]
+            request = parse(BatchRequest, payload)
+            try:
+                trials = [(condition, seed, self._trial_config(request, condition, seed))
+                          for seed in request.seeds for condition in request.condition_names]
+            except ValidationError as exc:
+                raise Invalid(exc) from exc
             self.batch_request, self.trials, self.trial_index = request, trials, 0
             self.workbench = exp.config.model_copy(update={"initial_interventions": exp.interventions.model_copy()},
                                                    deep=True)

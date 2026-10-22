@@ -18,16 +18,19 @@ services:
       - "127.0.0.1:${DIGITALFLY_PORT_ON_HOST:-8000}:8000"
     environment:
       DIGITALFLY_ALLOWED_ORIGINS: "http://localhost:${DIGITALFLY_PORT_ON_HOST:-8000},http://127.0.0.1:${DIGITALFLY_PORT_ON_HOST:-8000}"
-    # Saved runs, downloads and caches, circuits built in the app and imported connectivity outlive the
-    # container. To keep runs in this checkout's runs/ instead, use ./runs:/app/runs (and DIGITALFLY_UID).
+    # Saved runs, downloads and caches, presets saved in the app, circuits built in the app and imported
+    # connectivity outlive the container. To keep runs in this checkout's runs/ instead, use ./runs:/app/runs
+    # (and DIGITALFLY_UID).
     volumes:
       - runs:/app/runs
       - cache:/app/.cache
+      - presets:/app/configs/local
       - local-circuits:/app/data/circuits/local
       - connectivity:/app/data/connectivity
 
 volumes:
   runs:
   cache:
+  presets:
   local-circuits:
   connectivity:

@@ -465,7 +465,7 @@ export interface ProtocolInput {
   events?: ProtocolEventInput[];
 }
 
-/** The latest replay check of a saved run (its replay.json). */
+/** The latest replay check of a saved run (its replay.json, from scripts/replay.py --save). */
 export interface ReplayVerdict {
   ok: boolean;
   max_abs_error: number;
@@ -473,6 +473,9 @@ export interface ReplayVerdict {
   checked: string;
   same_software: boolean;
   message: string;
+  samples_compared?: number;
+  column_errors?: Record<string, number | null>;
+  software_differences?: string[];
 }
 
 /**

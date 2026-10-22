@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 import numpy as np
 from pydantic import Field, field_validator, model_validator
-from digitalfly.api.models import DEFAULT_CIRCUIT, RunConfig, RunMetrics, StrictModel, TrialRecord
+from digitalfly.api.models import DEFAULT_CIRCUIT, RunConfig, RunMetrics, StrictModel, TrialRecord, absent
 from digitalfly.simulation.engines import ROOT
 from digitalfly.toolkit import REACH_MM, summarize
 
@@ -44,13 +44,16 @@ class RunAnnotations(StrictModel):
 
 
 class ReplayVerdict(StrictModel):
-    """The latest replay check of a saved run (its replay.json)."""
+    """The latest replay check of a saved run (its replay.json, from scripts/replay.py --save)."""
     ok: bool
     max_abs_error: float
     tolerance: float
     checked: str
     same_software: bool
     message: str
+    samples_compared: int = absent()
+    column_errors: dict[str, float | None] = absent()  # largest absolute difference per column; None: not a number
+    software_differences: list[str] = absent()  # how the software differs from the recording's
 
 
 class RunItem(StrictModel):
@@ -198,7 +201,7 @@ def _verdict(path: str, mtime_ns: int, size: int):
         return None
     if not isinstance(data, dict) or any(field not in data for field in VERDICT_FIELDS):
         return None
-    return data
+    return {key: value for key, value in data.items() if key in ReplayVerdict.model_fields}
 
 
 def _entry(directory: Path, summary: dict) -> dict:
@@ -273,7 +276,8 @@ def delete_run(key: str, root: Path | None = None):
         raise FileNotFoundError("Saved run not found.")
     if directory.is_dir():
         trash = root / f".deleting-{key}-{uuid.uuid4().hex[:6]}"
-        directory.rename(trash)
+        with _annotating:  # never while its notes are being written: they would land in the folder being removed
+            directory.rename(trash)
         shutil.rmtree(trash)
     archive.unlink(missing_ok=True)
     return {"deleted": key}

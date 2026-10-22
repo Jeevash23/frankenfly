@@ -9,14 +9,15 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Annotated
 from pydantic import Field, ValidationError
-from digitalfly.api.models import RunConfig, StrictModel
+from digitalfly.api.models import CONFIG_SIZE_LIMIT, RunConfig, StrictModel
 from digitalfly.simulation.engines import ROOT
 
 CONFIG_DIR = ROOT / "configs"
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,47}")
-SIZE_LIMIT = 65536  # bytes per preset file
+SIZE_LIMIT = CONFIG_SIZE_LIMIT  # bytes per preset file, as for a configuration sent to the API
 LOCAL_LIMIT = 200  # presets saved from the app
 PresetName = Annotated[str, Field(pattern=rf"^{NAME.pattern}$")]
 Description = Annotated[str, Field(max_length=200)]
@@ -42,8 +43,19 @@ class PresetUnavailable(ValueError):
     """The preset is valid but needs something this computer lacks, such as FlyVis or a circuit (HTTP 409)."""
 
 
+class PresetStorageError(OSError):
+    """configs/local/ cannot be written, such as in a container without a volume there (HTTP 503)."""
+
+
 def _folders():
     return [("shipped", CONFIG_DIR), ("local", CONFIG_DIR / "local")]
+
+
+def writable() -> bool:
+    """True when presets can be saved: configs/local/ is a folder this process may write, or can be made in configs/."""
+    local = CONFIG_DIR / "local"
+    folder = local if local.exists() or local.is_symlink() else CONFIG_DIR
+    return folder.is_dir() and os.access(folder, os.W_OK | os.X_OK)
 
 
 def _path(name: str):
@@ -73,7 +85,7 @@ def summary(config: RunConfig) -> str:
 def read_file(path: Path) -> tuple[str, dict]:
     """A preset file's description and configuration (not yet validated as a RunConfig)."""
     if path.stat().st_size > SIZE_LIMIT:
-        raise ValueError(f"The file is larger than {SIZE_LIMIT // 1024} KB.")
+        raise ValueError(f"The file is larger than {SIZE_LIMIT // 2**20} MB.")
     try:
         data = json.loads(path.read_text())
     except (UnicodeDecodeError, ValueError) as exc:
@@ -166,14 +178,22 @@ def save(request: PresetRequest) -> dict:
     text = json.dumps({"name": request.name, "description": request.description, "config": config.model_dump()},
                       indent=2, allow_nan=False) + "\n"
     if len(text.encode()) > SIZE_LIMIT:
-        raise ValueError(f"The preset is larger than {SIZE_LIMIT // 1024} KB.")
-    folder.mkdir(parents=True, exist_ok=True)
-    part = folder / f".{request.name}.json.{os.getpid()}.part"
+        raise ValueError(f"The preset is larger than {SIZE_LIMIT // 2**20} MB.")
+    # A new, unpredictable partial file (never one a link stands in for), renamed into place when complete.
+    part = None
     try:
-        part.write_text(text)
+        folder.mkdir(parents=True, exist_ok=True)
+        descriptor, part = tempfile.mkstemp(prefix=f".{request.name}.json.", suffix=".part", dir=folder)
+        with os.fdopen(descriptor, "w") as file:
+            file.write(text)
         os.replace(part, path)
-    except BaseException:
-        part.unlink(missing_ok=True)
+    except BaseException as exc:
+        if part is not None:
+            Path(part).unlink(missing_ok=True)
+        if isinstance(exc, OSError):
+            raise PresetStorageError(f"Presets cannot be saved in {folder}: {exc.strerror or exc}. It must be a folder "
+                                     "DigitalFly may write; in a container, a volume at /app/configs/local "
+                                     "(see docs/INSTALL.md).") from exc
         raise
     return {"name": request.name, "source": "local", "description": request.description or summary(config),
             "config": config.model_dump()}

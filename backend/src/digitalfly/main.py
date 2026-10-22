@@ -13,8 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import Field
-from digitalfly.api.models import (Interventions, RunConfig, Stimulus, Speed, StrictModel, NeuralParameters,
-    ConnectomeParameters, BatchRequest, state_schema)
+from digitalfly.api.models import (CONFIG_SIZE_LIMIT, SERVING_REQUEST, Interventions, RunConfig, Stimulus, Speed,
+    StrictModel, NeuralParameters, ConnectomeParameters, BatchRequest, state_schema)
 from digitalfly.neural.connectome import circuit_summary, list_circuits, load_circuit, trace_paths
 from digitalfly.neural.model import NAMES as ENGINEERED_UNITS, RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog, catalog_ready
@@ -26,7 +26,11 @@ from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, lo
 from digitalfly.data.research import (BATCH_ID, BatchSummary, RunAnnotations, RunItem, RunPage, annotate_run,
     batch_summary, batch_summary_csv, filter_runs)
 from digitalfly.simulation.engines import CONTROL_DT, NEURAL_DT, PHYSICS_DT, ROOT, select_gl
-from digitalfly.simulation.worker import PUBLISH_INTERVAL, Rejected, SimulationWorker, WorkerStopped
+from digitalfly.simulation.worker import PUBLISH_INTERVAL, Invalid, Rejected, SimulationWorker, WorkerStopped
+
+# Request bodies are at most 16 KB, except these. A preset holds a configuration, so all three take the same size.
+BODY_LIMITS = {"/api/connectivity/import": 2_000_000, "/api/reset": CONFIG_SIZE_LIMIT,
+               "/api/batch/start": CONFIG_SIZE_LIMIT, "/api/configs": CONFIG_SIZE_LIMIT}
 
 
 @lru_cache(maxsize=8)
@@ -101,10 +105,15 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 length = int(request.headers.get("content-length", "0") or 0)
             except ValueError:
                 return JSONResponse({"detail": "Invalid content length."}, status_code=400)
-            limit = {"/api/connectivity/import": 2_000_000, "/api/configs": presets.SIZE_LIMIT}.get(request.url.path, 16384)
+            limit = BODY_LIMITS.get(request.url.path, 16384)
             if length > limit or len(await request.body()) > limit:
                 return JSONResponse({"detail": "Command body is too large."}, status_code=413)
-        response = await call_next(request)
+        # Request bodies are validated on this event loop without reading circuit files (models.reads_files_later).
+        token = SERVING_REQUEST.set(True)
+        try:
+            response = await call_next(request)
+        finally:
+            SERVING_REQUEST.reset(token)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = f"default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; connect-src 'self' {connect_src}; frame-ancestors 'none'"
@@ -123,13 +132,17 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         future = worker.submit(name, payload)
         try:
             return await asyncio.wait_for(asyncio.wrap_future(future), timeout=25)
-        except ValidationError as exc:
+        except Invalid as exc:
             # The worker validates every configuration in full, circuit files included (see reads_files_later).
-            raise HTTPException(422, validation_details(exc.errors(), ("body",))) from exc
+            raise HTTPException(422, validation_details(exc.errors, ("body",))) from exc
         except Rejected as exc:
             raise HTTPException(422, str(exc)) from exc
         except WorkerStopped as exc:
             raise stopped() from exc
+        except ValidationError as exc:
+            # Not the request: the run produced data its own records cannot hold, such as a non-finite position.
+            problems = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:3])
+            raise HTTPException(500, f"The simulation produced invalid data ({exc.title}: {problems}).") from exc
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(409, str(exc)) from exc
         except TimeoutError as exc:
@@ -187,7 +200,8 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 "single_authoritative_instance": True, "input_queue_capacity": worker.commands.maxsize,
                 "recording_limit": RECORD_LIMIT, "provenance": state["provenance"],
                 "jobs": {"available": True, "kinds": list(background.KINDS)},
-                "presets": {"available": presets.CONFIG_DIR.is_dir()}}
+                # Shipped presets can be listed and loaded; saving needs a writable configs/local/.
+                "presets": {"available": presets.CONFIG_DIR.is_dir(), "writable": presets.writable()}}
 
     @app.post("/api/run")
     async def run(body: StrictModel):
@@ -336,6 +350,9 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         trials = {Path(r["path"]).name for r in batch.get("results", [])} if batch.get("status") in {"running", "paused"} else set()
         if key.startswith(state["run_id"] + "-") or key in trials:
             raise HTTPException(409, "This run is still being recorded. Reset, or let the comparison finish, before deleting it.")
+        if jobs.active("replay", key):
+            raise HTTPException(409, "A replay check of this run is waiting or running. Let it finish, or cancel it, "
+                                     "before deleting the run.")
         try:
             return delete_run(key)
         except (FileNotFoundError, ValueError) as exc:
@@ -355,7 +372,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
     def annotate_saved_run(key: str, body: RunAnnotations):
         try:
             return annotate_run(key, body)
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, FileNotFoundError) as exc:  # deleted meanwhile: FileNotFoundError
             raise HTTPException(404, "Saved run not found or unreadable.") from exc
         except OSError as exc:
             raise HTTPException(500, f"The notes could not be saved: {exc.strerror or type(exc).__name__}.") from exc
@@ -471,6 +488,8 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
+        except presets.PresetStorageError as exc:
+            raise HTTPException(503, str(exc)) from exc
         except OSError as exc:
             raise HTTPException(500, f"The preset could not be saved: {exc.strerror or type(exc).__name__}.") from exc
 

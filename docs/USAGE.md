@@ -43,7 +43,7 @@ curl -X POST -H 'Content-Type: application/json' http://127.0.0.1:8000/api/confi
 curl -X DELETE http://127.0.0.1:8000/api/configs/my-setup
 ```
 
-Names use lowercase letters, digits, `-` and `_` (up to 48 characters); a preset file may be at most 64 KB. Saving checks the configuration in full, circuit included, and replaces a local preset of the same name; the shipped presets cannot be replaced or deleted. Every preset is checked again whenever it is listed or read: one this computer cannot run (FlyVis not installed, a circuit that is not there) is listed with `"available": false` and the reason, and a damaged file is listed with an `error`, never hiding the others. A preset file holds `{"description": "...", "config": {...}}`; a plain configuration file, such as `configs/default.json` or an export's `initial_config` saved on its own, works too.
+Names use lowercase letters, digits, `-` and `_` (up to 48 characters); a preset file may be at most 1 MB, as may a configuration sent to `POST /api/reset` or `/api/batch/start`, which holds the largest valid one. Saving checks the configuration in full, circuit included, and replaces a local preset of the same name; the shipped presets cannot be replaced or deleted. Every preset is checked again whenever it is listed or read: one this computer cannot run (FlyVis not installed, a circuit that is not there) is listed with `"available": false` and the reason, and a damaged file is listed with an `error`, never hiding the others. A preset file holds `{"description": "...", "config": {...}}`; a plain configuration file, such as `configs/default.json` or an export's `initial_config` saved on its own, works too.
 
 ## Controls
 
@@ -142,7 +142,7 @@ To publish a run, tick **Share-safe export** under **Export this run**, or throu
 curl -X POST -H 'Content-Type: application/json' -d '{"share_safe": true}' http://127.0.0.1:8000/api/export
 ```
 
-The API also lists saved runs page by page (`GET /api/runs?offset=0&limit=100&include_empty=true`; the `X-Total-Count` header gives the total) and deletes one with `DELETE /api/runs/FOLDER_NAME`, which removes its folder and ZIP. The run being recorded cannot be deleted until you Reset.
+The API also lists saved runs page by page (`GET /api/runs?offset=0&limit=100&include_empty=true`; the `X-Total-Count` header gives the total) and deletes one with `DELETE /api/runs/FOLDER_NAME`, which removes its folder and ZIP. The run being recorded cannot be deleted until you Reset, nor a run while a replay check of it waits or runs (409).
 
 The list takes filters, all optional and combined: `model=engineered` or `connectome`, `circuit=NAME` (connectome runs on that circuit), `batch=COMPARISON_ID`, `tag=TAG` and `q=TEXT` (found, ignoring case, in the run's folder name, notes or comparison condition); `X-Total-Count` then counts the matching runs. Each run lists its `tags`, `notes`, `batch_id` and `condition`. To tag a run or write notes on it:
 

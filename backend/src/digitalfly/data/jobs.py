@@ -91,7 +91,9 @@ def verdict_result(job, code):
 
 
 def _terminate(processes, timeout=STOP_TIMEOUT):
-    """Terminate each process's group (its session), then kill what is left after the timeout."""
+    """Terminate each process's group (its session), then kill what is left after the timeout. A process that has
+    exited is left alone: once it is reaped, its id may belong to another process."""
+    processes = [process for process in processes if process.poll() is None]
     def signal_group(process, number):
         try:
             os.killpg(process.pid, number)
@@ -229,7 +231,8 @@ class JobManager:
             for job in jobs:
                 if job.status == "queued":
                     job.status, job.error, job.finished, job.finished_s = "cancelled", "Cancelled.", _now(), time.time()
-                elif job.status == "running":
+                # A running job whose process has exited is finishing on its own: its result stands.
+                elif job.status == "running" and (job.process is None or job.process.poll() is None):
                     job.cancel_requested = True
                     running.append(job)
         _terminate([job.process for job in running if job.process is not None])
