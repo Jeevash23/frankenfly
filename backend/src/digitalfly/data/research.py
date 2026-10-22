@@ -252,9 +252,10 @@ def annotate_run(key: str, change: RunAnnotations, root: Path | None = None) -> 
     directory = _run_directory(key, root)
     with _annotating:
         updated = RunAnnotations.model_validate({**annotations(directory), **change.model_dump(include=change.model_fields_set)})
-        staged = directory / f".{ANNOTATIONS}.{uuid.uuid4().hex[:6]}.tmp"
+        staged = directory / f".{ANNOTATIONS}.{uuid.uuid4().hex}.tmp"
         try:
-            staged.write_text(updated.model_dump_json(indent=2))
+            with staged.open("x") as output:  # a new file: a link placed at its name is never written through
+                output.write(updated.model_dump_json(indent=2))
             os.replace(staged, directory / ANNOTATIONS)
         finally:
             staged.unlink(missing_ok=True)

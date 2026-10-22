@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import platform
 import sys
+import uuid
 import numpy as np
 from pydantic import ValidationError
 
@@ -209,11 +210,14 @@ def verdict(report: dict, metadata: dict) -> dict:
 
 
 def save_verdict(run_directory: Path, result: dict):
-    """Write replay.json atomically: a hidden partial file, renamed into place."""
+    """Write replay.json atomically: a new hidden file with an unpredictable name, renamed into place. It is created
+    exclusively, so a link or file someone placed at that name is never written through."""
     path = Path(run_directory) / "replay.json"
-    part = path.with_name(f".replay.json.{os.getpid()}.part")
+    text = json.dumps(result, indent=2, allow_nan=False)
+    part = path.with_name(f".replay.json.{uuid.uuid4().hex}.part")
     try:
-        part.write_text(json.dumps(result, indent=2, allow_nan=False))
+        with part.open("x") as output:
+            output.write(text)
         os.replace(part, path)
     except BaseException:
         part.unlink(missing_ok=True)

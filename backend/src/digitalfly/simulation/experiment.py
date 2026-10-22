@@ -160,7 +160,9 @@ class ExportJob:
                         output.write(json.dumps({"step": s.step, "t": s.t, **s.body_signals}, allow_nan=False)+"\n")
             if self.activity is not None:
                 _write_activity(staging / ACTIVITY_FILE, *self.activity)
-            with zipfile.ZipFile(staged_archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
+            # Created exclusively, as the staging folder is: a link placed at either name is never written through.
+            with (staged_archive.open("xb") as handle,
+                  zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_DEFLATED) as output):
                 for file in sorted(staging.iterdir()):
                     # The activity file is compressed already.
                     output.write(file, file.name, compress_type=zipfile.ZIP_STORED if file.suffix == ".npz" else None)

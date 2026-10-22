@@ -24,6 +24,7 @@ import io
 import json
 import os
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
@@ -105,10 +106,12 @@ def fetch(url, start=None, end=None, path=None, size=None, missing_ok=False):
 
 def write_atomic(path, write):
     """Write through `write(handle)` to a temporary file next to `path`, then rename it into place, so a
-    crash or a terminated build never leaves a truncated file or loses the previous one."""
-    part = path.with_name(f".{path.name}.{os.getpid()}.part")  # hidden from the circuit list
+    crash or a terminated build never leaves a truncated file or loses the previous one. The temporary file is
+    new (created exclusively, its name unpredictable), so nothing placed there in advance is written through."""
+    # Hidden from the circuit list; the process id comes last, for the app's leftover cleanup.
+    part = path.with_name(f".{path.name}.{uuid.uuid4().hex[:12]}.{os.getpid()}.part")
     try:
-        with part.open("wb") as handle:
+        with part.open("xb") as handle:
             write(handle)
         os.replace(part, path)
     except BaseException:
@@ -225,8 +228,7 @@ def connectivity_columns(offline):
         order = np.argsort([r[0] for r in ranges])
         blob = b"".join(chunks[i] for i in order)
         ranges = [ranges[i] for i in order]
-        blob_path.with_suffix(".part").write_bytes(blob)
-        blob_path.with_suffix(".part").rename(blob_path)
+        write_atomic(blob_path, lambda handle: handle.write(blob))
         index_path.write_text(json.dumps({"url": source["url"], "upstream_bytes": size, "ranges": ranges,
                                           "sha256": sha256(blob)}, indent=1))
     index = json.loads(index_path.read_text())
