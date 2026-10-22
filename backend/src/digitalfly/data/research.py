@@ -100,7 +100,8 @@ class PairedDifference(StrictModel):
 class BatchSummary(StrictModel):
     batch_id: str
     n_trials: int
-    partial_trials: int  # saved unfinished (cancelled or failed) and left out
+    partial_trials: int  # saved unfinished (cancelled, failed or exported mid-trial) and left out
+    duplicate_trials: int  # another complete trial of a condition and seed already counted, left out
     reach_mm: float
     conditions: list[ConditionSummary]
     paired: list[PairedDifference]
@@ -285,14 +286,20 @@ def _sd(values) -> float | None:
 def batch_summary(batch_id: str, root: Path | None = None) -> dict:
     """A comparison's saved trials, per condition: mean, SD and 95% interval of each metric, and differences from
     the first condition over trials with the same seed, with the toolkit's statistics (toolkit.summarize). Reached
-    (closest approach within the toolkit's REACH_MM) needs metrics.min_target_distance_mm, saved since v0.6. Trials
-    saved unfinished (cancelled or failed) are left out and counted."""
+    (closest approach within the toolkit's REACH_MM) needs metrics.min_target_distance_mm, saved since v0.6. Only
+    trials that ran their protocol to the end count, each condition and seed once: trials saved unfinished
+    (cancelled, failed, or exported by hand during the comparison) and repeats of a condition and seed are left out
+    and counted."""
     runs = [run for run in list_runs(root) if run["batch_id"] == batch_id]
     if not runs:
         raise FileNotFoundError("No saved trials belong to this comparison.")
-    partial = [run for run in runs if run["trial"].get("partial")]
-    trials = sorted((run for run in runs if not run["trial"].get("partial")),
-                    key=lambda run: (run["trial"].get("index") or 0, run["key"]))
+    complete = [run for run in runs if not run["trial"].get("partial") and run["metrics"].get("protocol_complete") is True]
+    trials, seen = [], set()
+    for run in sorted(complete, key=lambda run: (run["trial"].get("index") or 0, run["key"])):
+        pair = (str(run["condition"]), run["trial"].get("seed"))
+        if pair not in seen:
+            seen.add(pair)
+            trials.append(run)
     reached = bool(trials) and all(run["metrics"].get("min_target_distance_mm") is not None for run in trials)
     rows = []
     for run in trials:
@@ -316,7 +323,8 @@ def batch_summary(batch_id: str, root: Path | None = None) -> dict:
     paired = [{"condition": item["condition"]["condition"], "baseline": item["baseline"]["condition"], "metric": name,
                "mean_diff": item[name]["mean_difference"], "ci95": item[name]["ci95"], "n_pairs": item["pairs"]}
               for item in stats["paired_differences"] for name in names]
-    return {"batch_id": batch_id, "n_trials": len(trials), "partial_trials": len(partial), "reach_mm": REACH_MM,
+    return {"batch_id": batch_id, "n_trials": len(trials), "partial_trials": len(runs) - len(complete),
+            "duplicate_trials": len(complete) - len(trials), "reach_mm": REACH_MM,
             "conditions": conditions, "paired": paired,
             "methods": {**stats["methods"], "sd": "sample standard deviation (n − 1)",
                         "reached": f"closest approach to the target within {REACH_MM:g} mm "

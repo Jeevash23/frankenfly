@@ -310,6 +310,7 @@ export interface BatchSummary {
   batch_id: string;
   n_trials: number;
   partial_trials: number;
+  duplicate_trials: number;
   reach_mm: number;
   conditions: ConditionSummary[];
   paired: PairedDifference[];

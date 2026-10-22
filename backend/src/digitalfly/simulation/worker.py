@@ -169,8 +169,8 @@ class SimulationWorker:
             try:
                 if self.experiment.status != "error":
                     self.experiment.fail(exc)
-                if self._batch_active():
-                    self.batch.update(status="failed", error=error)
+                if self._batch_active():  # saves the unfinished trial and restores the workbench
+                    self._end_batch("failed", error)
                 self._publish()
                 return
             except Exception:
@@ -359,7 +359,14 @@ class SimulationWorker:
             self._end_batch("cancelled")
         elif name == "export":
             # Captured here; the export thread writes the files while the run goes on (see _finish_exports).
-            job = exp.export_job(share_safe=bool(payload.get("share_safe")))
+            # A comparison trial saved before its protocol ends is marked partial, so it never counts as a trial.
+            trial = exp.trial
+            if trial is not None:
+                exp.trial = {**trial, "partial": True}
+            try:
+                job = exp.export_job(share_safe=bool(payload.get("share_safe")))
+            finally:
+                exp.trial = trial
             return Writing(self.exports.submit(job.write), exp.run_id, len(job.records))
         else:
             raise ValueError("Unknown command")
