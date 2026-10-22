@@ -65,7 +65,7 @@ With Docker Compose:
 docker compose up --build     # first build: about 5 minutes and 1.6 GB
 ```
 
-Open http://localhost:8000. Stop with **Quit** in the app, Ctrl+C, or `docker compose down`. Saved runs, caches and downloads, circuits built in the app and imported connectivity are kept in named volumes (`digitalfly_runs`, `digitalfly_cache`, `digitalfly_local-circuits`, `digitalfly_connectivity`) and survive `docker compose down`; `docker compose down --volumes` deletes them. Settings go in the environment or a `.env` file next to `docker-compose.yml`:
+Open http://localhost:8000. Stop with **Quit** in the app, Ctrl+C, or `docker compose down`. Saved runs, caches and downloads, presets saved in the app, circuits built in the app and imported connectivity are kept in named volumes (`digitalfly_runs`, `digitalfly_cache`, `digitalfly_presets`, `digitalfly_local-circuits`, `digitalfly_connectivity`) and survive `docker compose down`; `docker compose down --volumes` deletes them. Settings go in the environment or a `.env` file next to `docker-compose.yml`:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
@@ -78,8 +78,10 @@ With plain Docker:
 ```sh
 docker build -t digitalfly .
 docker run --rm --init -p 127.0.0.1:8000:8000 \
-  -v digitalfly_runs:/app/runs -v digitalfly_cache:/app/.cache digitalfly
+  -v digitalfly_runs:/app/runs -v digitalfly_cache:/app/.cache -v digitalfly_presets:/app/configs/local digitalfly
 ```
+
+Without `-v` for a folder, Docker gives it a new anonymous volume, which `--rm` deletes with the container: name the volumes to keep runs and presets.
 
 Build arguments: `--build-arg EXTRAS=flyvis,builder,recording`, `--build-arg UID=$(id -u)`, and `--build-arg APT_MIRROR=https://...` for another Ubuntu archive. Command-line options go after the image name, for example `docker run ... digitalfly ./scripts/start.sh --toy`. The same image runs the other tools:
 
@@ -154,5 +156,5 @@ Docker Desktop with its WSL2 backend can run the [Docker image](#docker) instead
 - **`Frontend build is stale` after a pull:** run `./scripts/setup.sh`, or just `npm --prefix frontend run build`.
 - **The page loads but buttons do nothing, or "Origin is not permitted":** the browser address differs from the published one. Use `http://localhost:PORT`, or add the address to `DIGITALFLY_ALLOWED_ORIGINS`.
 - **`Invalid host header`:** the request named a host other than `localhost` or `127.0.0.1`; add its origin to `DIGITALFLY_ALLOWED_ORIGINS`.
-- **Permission denied writing `runs/` from a container:** a bind-mounted folder belongs to another user; build with `--build-arg UID=$(id -u)` or use the named volumes.
+- **Permission denied writing `runs/` from a container, or saving a preset fails with "Presets cannot be saved":** a bind-mounted folder belongs to another user; build with `--build-arg UID=$(id -u)` or use the named volumes. `python3 scripts/doctor.py` lists the data folders it cannot write, and `GET /api/capabilities` reports `"presets": {"writable": false}`.
 - **Downloads fail behind a proxy:** set `HTTPS_PROXY`, and for a TLS-inspecting proxy point `PIP_CERT`, `SSL_CERT_FILE` and `NODE_EXTRA_CA_CERTS` at its CA certificate (Docker: the `ca` build secret above).

@@ -166,7 +166,7 @@ def synthetic_metrics(condition, seed):
     shift = {"control": 0, "left_sensor_off": 3, "baseline": -1}[condition]
     return {"target_distance_mm": 10 + shift + seed, "path_length_mm": 20 + 2 * shift + seed * seed,
             "net_turn_deg": 30 * shift - seed, "mean_speed_mm_s": 4 + seed / 10,
-            "min_target_distance_mm": 1.5 if (condition == "control" or seed == 1) else 6.0}
+            "min_target_distance_mm": 1.5 if (condition == "control" or seed == 1) else 6.0, "protocol_complete": True}
 
 
 def test_comparison_summary_statistics(client, tmp_path):
@@ -175,6 +175,7 @@ def test_comparison_summary_statistics(client, tmp_path):
     assert response.status_code == 200
     data = response.json()
     assert data["batch_id"] == "cmp" and data["n_trials"] == 9 and data["partial_trials"] == 1 and data["reach_mm"] == 2
+    assert data["duplicate_trials"] == 0
     assert [c["condition"] for c in data["conditions"]] == ["control", "left_sensor_off", "baseline"]
     control = data["conditions"][0]
     assert control["n"] == 3 and set(control["metrics"]) == set(toolkit_metrics()) | {"reached"}

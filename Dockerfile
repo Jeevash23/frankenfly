@@ -3,7 +3,8 @@
 # rendering (EGL, with OSMesa as the fallback). See docs/INSTALL.md.
 #
 #   docker build -t digitalfly .
-#   docker run --rm --init -p 127.0.0.1:8000:8000 -v digitalfly_runs:/app/runs -v digitalfly_cache:/app/.cache digitalfly
+#   docker run --rm --init -p 127.0.0.1:8000:8000 -v digitalfly_runs:/app/runs -v digitalfly_cache:/app/.cache \
+#     -v digitalfly_presets:/app/configs/local digitalfly
 #
 # then open http://localhost:8000. Build arguments:
 #   EXTRAS=flyvis,builder,recording  optional parts, as for ./scripts/setup.sh --with (flyvis: CPU-only PyTorch)
@@ -102,8 +103,8 @@ ARG UID=1000
 RUN set -eu; \
     userdel --remove ubuntu 2>/dev/null || true; \
     useradd --uid "$UID" --create-home --shell /usr/sbin/nologin digitalfly; \
-    mkdir -p runs data/circuits/local data/connectivity data/flygym-assets; \
-    chown -R digitalfly:digitalfly runs .cache data/circuits/local data/connectivity data/flygym-assets
+    mkdir -p runs configs/local data/circuits/local data/connectivity data/flygym-assets; \
+    chown -R digitalfly:digitalfly runs .cache configs/local data/circuits/local data/connectivity data/flygym-assets
 ARG REVISION=""
 LABEL org.opencontainers.image.title="DigitalFly" \
       org.opencontainers.image.description="Closed-loop fruit-fly sensorimotor workbench (FlyGym/MuJoCo, FlyWire circuits)" \
@@ -121,7 +122,8 @@ ENV PATH=/app/backend/.venv/bin:$PATH \
     DIGITALFLY_HOST=0.0.0.0 \
     DIGITALFLY_ALLOW_NETWORK_BIND=1
 USER ${UID}
-VOLUME ["/app/runs", "/app/.cache"]
+# Saved runs, caches and presets saved in the app. A new volume starts with the image's folder, owned by its user.
+VOLUME ["/app/runs", "/app/.cache", "/app/configs/local"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD ["python", "-c", "import json, urllib.request as u; r = u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:8000/api/health', timeout=4); assert json.load(r)['worker_alive']"]

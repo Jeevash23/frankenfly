@@ -266,6 +266,23 @@ def check_caches():
         report("ok", "Saved runs", detail)
 
 
+def check_writable():
+    """The folders the app saves to: each one, or the folder it would be made in, must be writable."""
+    blocked = []
+    for folder in ["runs", "configs/local", "data/circuits/local", "data/connectivity"]:
+        path = ROOT / folder
+        while not path.exists() and path != ROOT:
+            path = path.parent
+        if not (path.is_dir() and os.access(path, os.W_OK | os.X_OK)):
+            blocked.append(folder)
+    if blocked:
+        report("warn", "Data folders", f"cannot write {', '.join(blocked)}: saving runs, presets, built circuits or "
+               "imported connectivity there fails",
+               "give them to this user (chown), or in a container mount volumes there (see docs/INSTALL.md)")
+    else:
+        report("ok", "Data folders", "runs, presets, built circuits and imported connectivity can be saved")
+
+
 def check_disk():
     free = shutil.disk_usage(ROOT).free / 1e9
     fix = "free space, for example by deleting old runs in the Run library or folders under runs/"
@@ -287,7 +304,9 @@ def check_port(port: int):
         except OSError:
             pass
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=2) as response:
+        # Straight to this computer: a proxy from the environment would answer for another one, or not at all.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{port}/api/health", timeout=2) as response:
             ours = json.loads(response.read()).get("service") == "DigitalFly"
     except Exception:
         ours = False
@@ -317,6 +336,7 @@ def main():
         check_gl()
         check_extras()
     check_caches()
+    check_writable()
     check_disk()
     check_port(args.port)
     print("\n" + (f"{len(failures)} check(s) failed: {', '.join(failures)}." if failures else "No blocking problems found."))

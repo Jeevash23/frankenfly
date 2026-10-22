@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 from functools import lru_cache
 from types import UnionType
 from typing import Annotated, Any, Literal, TypedDict, Union, get_args, get_origin
@@ -22,10 +23,21 @@ CircuitName = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")]
 DEFAULT_CIRCUIT = "fafb783-dna02"
 
 
+# Bytes of a request body or preset file that holds a RunConfig (POST /api/reset, /api/batch/start, /api/configs).
+# The largest valid configuration, 64 protocol events and the initial interventions each addressing 64 cell types
+# with names at their full 120 characters, is about 0.7 MB as JSON and 0.9 MB as an indented preset file.
+CONFIG_SIZE_LIMIT = 1 << 20
+# True while the API serves a request on its event loop (set by main.py), where FastAPI validates request bodies.
+SERVING_REQUEST = ContextVar("digitalfly_serving_request", default=False)
+
+
 def reads_files_later() -> bool:
-    """True while validating on an asyncio event loop, as FastAPI does with every request body. Checks that read
-    circuit files are skipped there, so a large circuit never stalls the API and its telemetry; the simulation
-    worker validates every configuration again, in full and in its own thread, before using it."""
+    """True while the API validates a request body on its event loop. Checks that read circuit files are skipped
+    there, so a large circuit never stalls the API and its telemetry; the simulation worker validates every
+    configuration again, in full and in its own thread, before using it. Anywhere else, in a thread a request hands
+    its work to or in other code on an event loop such as a Jupyter cell, configurations are validated in full."""
+    if not SERVING_REQUEST.get():
+        return False
     try:
         asyncio.get_running_loop()
     except RuntimeError:

@@ -1,4 +1,5 @@
 import argparse
+import errno
 import os
 from pathlib import Path
 import socket
@@ -7,7 +8,22 @@ import threading
 import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
-LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+# IPv4 only: the app's Host and Origin checks, and the address printed at start, name 127.0.0.1 and localhost.
+LOOPBACK = {"127.0.0.1", "localhost"}
+
+
+def address_problem(host: str, port: int) -> str | None:
+    """Why the server could not listen on host:port, or None when it can."""
+    try:
+        with socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, port))
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            return (f"Port {port} is occupied. Stop your previous DigitalFly server or choose --port {port + 1}. "
+                    "No process was stopped.")
+        return f"Cannot listen on {host} port {port}: {exc.strerror or exc}. Check --host (or DIGITALFLY_HOST)."
+    return None
 
 
 def main():
@@ -32,12 +48,9 @@ def main():
                  "write to runs/: there is no login. Only do this where the port stays private, for example in a "
                  "container published to 127.0.0.1 only, and confirm with DIGITALFLY_ALLOW_NETWORK_BIND=1. "
                  "See docs/INSTALL.md.")
-    with socket.socket(socket.AF_INET6 if ":" in args.host else socket.AF_INET) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            probe.bind((args.host, args.port))
-        except OSError:
-            sys.exit(f"Port {args.port} is occupied. Stop your previous DigitalFly server or choose --port 8001. No process was stopped.")
+    problem = address_problem(args.host, args.port)
+    if problem:
+        sys.exit(problem)
     index = ROOT / "frontend/dist/index.html"
     if not args.dev:
         if not index.is_file():

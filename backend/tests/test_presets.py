@@ -87,11 +87,11 @@ def test_presets_are_listed_read_saved_and_deleted_through_the_api(client, confi
     refused = client.post("/api/configs", json={"name": "ok", "config": missing_circuit})
     assert refused.status_code == 422 and "not-built" in refused.json()["detail"]  # checked off the event loop
     assert not (configs / "local/ok.json").exists()
-    # Bodies up to the 64 KB file limit are accepted (other commands stop at 16 KB).
+    # Bodies up to the 1 MB file limit are accepted (other commands stop at 16 KB).
     body = json.dumps({"name": "padded", "config": config}) + " " * 30000
     headers = {"content-type": "application/json"}
     assert client.post("/api/configs", content=body, headers=headers).status_code == 201
-    assert client.post("/api/configs", content=body + " " * 40000, headers=headers).status_code == 413
+    assert client.post("/api/configs", content=body + " " * presets.SIZE_LIMIT, headers=headers).status_code == 413
     assert client.delete("/api/configs/padded").json() == {"deleted": "padded"}
     assert client.delete("/api/configs/padded").status_code == 404
     assert client.delete("/api/configs/default").status_code == 409 and (configs / "default.json").is_file()
@@ -111,7 +111,7 @@ def test_damaged_local_presets_are_listed_with_an_error(client, configs):
     assert sorted(listed) == ["broken", "gone-circuit", "good", "huge", "wrong"]
     assert "not valid JSON" in listed["broken"]["error"] and not listed["broken"]["available"]
     assert listed["wrong"]["description"] == "Old" and "engine" in listed["wrong"]["error"]
-    assert "64 KB" in listed["huge"]["error"]
+    assert "1 MB" in listed["huge"]["error"]
     assert listed["gone-circuit"]["available"] is False and "no circuit named gone" in listed["gone-circuit"]["reason"]
     assert listed["good"] == {"name": "good", "source": "local", "description": "toy body · engineered six-unit model · geometric sensing",
                               "available": True}
