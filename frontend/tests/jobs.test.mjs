@@ -8,7 +8,13 @@ import {
   replayJob,
   verificationBadge,
 } from '../src/jobs.ts';
-import {presetConfig, presetOption, presetProblem, runInProgress} from '../src/presets.ts';
+import {
+  presetConfig,
+  presetOption,
+  presetProblem,
+  runInProgress,
+  saveBlock,
+} from '../src/presets.ts';
 import {nudgeTarget} from '../src/plot.ts';
 import {describeError} from '../src/errors.ts';
 
@@ -124,4 +130,14 @@ test('nested validation locations read as words', () => {
     describeError(detail, 422),
     'custom conditions 1 › label: String should have at most 40 characters',
   );
+});
+
+test('saving presets is blocked, with the reason, only when the server says it cannot write them', () => {
+  assert.match(
+    saveBlock({presets: {available: true, writable: false}}),
+    /configs\/local\/ is not writable/,
+  );
+  assert.equal(saveBlock({presets: {available: true, writable: true}}), null);
+  assert.equal(saveBlock({presets: {available: true}}), null); // servers before v0.6
+  assert.equal(saveBlock(null), null);
 });

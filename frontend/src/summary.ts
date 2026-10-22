@@ -82,5 +82,21 @@ export function sampleNote(summary: Pick<BatchSummary, 'conditions'>): string | 
   return `Small samples: as few as ${per} per condition. With so few trials the SD is unstable and the intervals are approximate (a bootstrap interval of a mean from a handful of trials tends to be too narrow), so read the differences as descriptive. More seeds narrow them.`;
 }
 
+// "1 partial and 2 duplicate trials left out.": trials the statistics do not count (unfinished
+// ones, and repeats of a condition and seed), or null when every trial counts. Servers before
+// v0.6 do not count duplicates.
+export function leftOutNote(
+  summary: Pick<BatchSummary, 'partial_trials'> & {duplicate_trials?: number},
+): string | null {
+  const partial = summary.partial_trials,
+    duplicate = summary.duplicate_trials ?? 0;
+  const parts = [
+    partial ? `${partial} partial` : '',
+    duplicate ? `${duplicate} duplicate` : '',
+  ].filter(Boolean);
+  if (!parts.length) return null;
+  return `${parts.join(' and ')} ${partial + duplicate === 1 ? 'trial' : 'trials'} left out: only complete trials count, once per condition and seed.`;
+}
+
 export const summaryCsvUrl = (batchId: string) =>
   `/api/batches/${encodeURIComponent(batchId)}/summary?format=csv`;

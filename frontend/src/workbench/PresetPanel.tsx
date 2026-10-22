@@ -8,6 +8,7 @@ import {
   presetOption,
   presetProblem,
   runInProgress,
+  saveBlock,
 } from '../presets';
 
 // Named configurations: load one (a fresh run with its configuration), save the current settings
@@ -31,7 +32,11 @@ export function PresetPanel({
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  // Why saving is impossible on this server (configs/local/ not writable), or null.
+  const [saveBlocked, setSaveBlocked] = useState<string | null>(null);
   const list = useCallback(async () => {
+    const capabilities = await request('GET', '/api/capabilities');
+    if (capabilities.ok) setSaveBlocked(saveBlock(capabilities.data));
     const r = await request<{configs: PresetInfo[]}>('GET', '/api/configs');
     if (r.ok) {
       setPresets(r.data.configs);
@@ -235,7 +240,7 @@ export function PresetPanel({
                 <div className="preset-actions">
                   <button
                     className="secondary-button"
-                    disabled={disabled || !!problem || !state}
+                    disabled={disabled || !!problem || !state || !!saveBlocked}
                     aria-busy={busy}
                   >
                     <Save size={13} />
@@ -253,7 +258,8 @@ export function PresetPanel({
             ) : (
               <button
                 className="text-button"
-                disabled={disabled || !state}
+                disabled={disabled || !state || !!saveBlocked}
+                aria-describedby={saveBlocked ? 'preset-save-blocked' : undefined}
                 onClick={() => {
                   setSaving(true);
                   setMessage(null);
@@ -261,6 +267,11 @@ export function PresetPanel({
               >
                 Save current settings as preset
               </button>
+            )}
+            {saveBlocked && (
+              <p className="microcopy" id="preset-save-blocked">
+                {saveBlocked}
+              </p>
             )}
           </>
         )}

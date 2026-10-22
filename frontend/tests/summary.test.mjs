@@ -5,6 +5,7 @@ import {
   formatInterval,
   formatTick,
   formatValue,
+  leftOutNote,
   metricLabel,
   metricOrder,
   sampleNote,
@@ -19,6 +20,7 @@ const summary = {
   batch_id: '3c0cb86dee80',
   n_trials: 4,
   partial_trials: 0,
+  duplicate_trials: 0,
   reach_mm: 2,
   conditions: [
     {
@@ -85,4 +87,18 @@ test('intervals wider than their estimate are marked wide, small samples are nam
   assert.equal(sampleNote(large), null);
   assert.equal(sampleNote({conditions: []}), null);
   assert.equal(summaryCsvUrl('3c0cb86dee80'), '/api/batches/3c0cb86dee80/summary?format=csv');
+});
+
+test('trials the statistics leave out are counted in one sentence', () => {
+  assert.equal(leftOutNote(summary), null);
+  assert.equal(leftOutNote({partial_trials: 0}), null); // a server without duplicate_trials
+  assert.match(leftOutNote({partial_trials: 1, duplicate_trials: 0}), /^1 partial trial left out:/);
+  assert.match(
+    leftOutNote({partial_trials: 0, duplicate_trials: 2}),
+    /^2 duplicate trials left out:/,
+  );
+  assert.match(
+    leftOutNote({partial_trials: 1, duplicate_trials: 2}),
+    /^1 partial and 2 duplicate trials left out: only complete trials count, once per condition and seed\.$/,
+  );
 });

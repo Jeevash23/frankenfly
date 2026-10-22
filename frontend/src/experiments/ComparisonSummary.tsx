@@ -9,6 +9,7 @@ import {
   formatInterval,
   formatTick,
   formatValue,
+  leftOutNote,
   metricLabel,
   metricOrder,
   sampleNote,
@@ -61,6 +62,7 @@ export function ComparisonSummary({
   const metrics = summary ? metricOrder(summary) : [];
   const baseline = summary?.conditions[0]?.condition;
   const note = summary ? sampleNote(summary) : null;
+  const leftOut = summary ? leftOutNote(summary) : null;
   return (
     <section className="panel comparison-summary" aria-labelledby={`${id}-heading`}>
       <div className="panel-heading">
@@ -95,12 +97,7 @@ export function ComparisonSummary({
         ) : (
           <>
             {note && <p className="summary-note">{note}</p>}
-            {summary.partial_trials > 0 && (
-              <p className="microcopy">
-                {summary.partial_trials} unfinished{' '}
-                {summary.partial_trials === 1 ? 'trial is' : 'trials are'} left out.
-              </p>
-            )}
+            {leftOut && <p className="microcopy">{leftOut}</p>}
             <div className="summary-table-wrap">
               <table className="summary-table">
                 <caption>Per condition: mean ± SD, with the 95% interval below</caption>

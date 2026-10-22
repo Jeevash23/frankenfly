@@ -100,17 +100,9 @@ export type CustomParameter =
   'output_gain' | 'input_gain' | 'tonic_drive' | 'motor_delay_ms' | 'motor_tau_ms';
 // A saved run (GET /api/runs); GET /api/runs/{key} adds its decimated trajectory
 // ([time_s, x_mm, y_mm, speed_mm_s]). Older runs may lack configuration fields added since.
-export type SavedRun = Omit<RunItem, 'verified'> & {
-  trajectory?: number[][];
-  // The latest replay check (POST /api/runs/{key}/replay); null when never checked.
-  verified: Verification | null;
-};
-// replay.json: the verdict fields, and what scripts/replay.py --save adds to them.
-export type Verification = ReplayVerdict & {
-  samples_compared?: number;
-  column_errors?: Record<string, number | null>;
-  software_differences?: string[];
-};
+// `verified` is the latest replay check (POST /api/runs/{key}/replay), null when never checked.
+export type SavedRun = RunItem & {trajectory?: number[][]};
+export type Verification = ReplayVerdict;
 // A background job: a circuit build or a replay check, in its own process (GET /api/jobs).
 export type Job = {
   id: string;

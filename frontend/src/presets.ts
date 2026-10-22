@@ -40,3 +40,12 @@ export function presetOption(preset: PresetInfo): string {
   if (!preset.available) return `${preset.name}${source} · unavailable`;
   return `${preset.name}${source}`;
 }
+
+// Why presets cannot be saved on this server, from GET /api/capabilities, or null. A server that
+// does not say (before v0.6) is assumed writable; a refusal then still shows its reason.
+export function saveBlock(capabilities: unknown): string | null {
+  const presets = (capabilities as {presets?: {writable?: unknown}} | null)?.presets;
+  return presets?.writable === false
+    ? 'Presets cannot be saved here: configs/local/ is not writable (in a container, mount a volume there). Shipped presets still load.'
+    : null;
+}
