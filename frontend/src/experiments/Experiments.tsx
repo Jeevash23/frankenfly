@@ -28,6 +28,7 @@ import {useJobs} from '../useJobs';
 import {useCircuit} from '../connectome/useCircuit';
 import {BatchProgress} from './BatchProgress';
 import {ComparisonBuilder} from './ComparisonBuilder';
+import {ComparisonSummary} from './ComparisonSummary';
 import {JobsPanel} from './JobsPanel';
 import {ProtocolEditor} from './ProtocolEditor';
 import {RunLibrary} from './RunLibrary';
@@ -89,6 +90,8 @@ export default function Experiments({
   // Background jobs; the library reloads when a replay check finishes, for its new verdict.
   const {jobs, loaded, error: jobsError, refresh: refreshJobs, cancel: cancelJob} = useJobs();
   const [reload, setReload] = useState(0);
+  // The comparison whose trials the library lists ("Show these trials in the library").
+  const [showBatch, setShowBatch] = useState<{id: string; at: number} | null>(null);
   // The jobs of the first listing that have finished are not news.
   const previousJobs = useRef<Job[] | null>(null);
   useEffect(() => {
@@ -217,6 +220,13 @@ export default function Experiments({
         />
       </div>
       {state?.batch && <BatchProgress state={state} command={command} disabled={disabled} />}
+      {state?.batch && !active && state.batch.results.length > 0 && (
+        <ComparisonSummary
+          batchId={state.batch.id}
+          reload={`${state.batch.status}-${state.batch.results.length}-${reload}`}
+          showTrials={() => setShowBatch({id: state.batch!.id, at: Date.now()})}
+        />
+      )}
       {jobsError && <p className="microcopy">{jobsError}</p>}
       <JobsPanel jobs={jobs} cancel={(id) => void cancelJob(id)} />
       <RunLibrary
@@ -228,6 +238,7 @@ export default function Experiments({
         refreshJobs={refreshJobs}
         cancelJob={cancelJob}
         reload={reload}
+        showBatch={showBatch}
         onLoaded={onLoaded}
       />
     </>

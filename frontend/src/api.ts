@@ -3,7 +3,7 @@ import {describeError} from './errors';
 // A JSON request to the local server that answers {ok, status, data} or {ok: false, error}, for
 // panels that show their own errors (commands that change the simulation use useSimulation).
 export async function request<T = any>(
-  method: 'GET' | 'POST' | 'DELETE',
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<{ok: true; status: number; data: T} | {ok: false; status: number; error: string}> {
