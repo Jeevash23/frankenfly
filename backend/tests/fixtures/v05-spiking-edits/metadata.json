@@ -1,0 +1,442 @@
+{
+  "schema_version": 3,
+  "application_version": "0.5.0",
+  "run_id": "20261021T153237-ec8b3ba1",
+  "created_utc": "2026-10-21T15:32:37.758132+00:00",
+  "exported_utc": "2026-10-21T15:32:38.391113+00:00",
+  "initial_config": {
+    "engine": "toy",
+    "seed": 3,
+    "controller": "neural",
+    "speed": 0.25,
+    "stimulus": {
+      "x": 25.0,
+      "y": 12.0,
+      "intensity": 1
+    },
+    "sensor_model": "geometric",
+    "neural_model": "connectome",
+    "neural_parameters": {
+      "sensory_gain": 1,
+      "steering_gain": 1,
+      "tonic_drive": 0.35,
+      "time_scale": 1
+    },
+    "connectome_parameters": {
+      "circuit": "fafb783-dna02",
+      "dynamics": "spiking",
+      "synapse_threshold": 5,
+      "global_gain": 0.001,
+      "input_gain": 1,
+      "output_gain": 1,
+      "tonic_drive": 0.35,
+      "tau_ms": 20,
+      "other_transmitters": "excluded",
+      "readout_types": null,
+      "input_types": null,
+      "speed_types": [],
+      "speed_gain": 1,
+      "spiking": {
+        "synapse_weight_mv": 0.275,
+        "input_rate_hz": 150,
+        "rate_window_ms": 50,
+        "rate_scale_hz": 100
+      }
+    },
+    "initial_interventions": {
+      "zero_left": false,
+      "zero_right": false,
+      "silence": "none",
+      "silence_dna02": "none",
+      "silence_types": []
+    },
+    "protocol": null
+  },
+  "final_config": {
+    "engine": "toy",
+    "seed": 3,
+    "controller": "neural",
+    "speed": 0.25,
+    "stimulus": {
+      "x": -10.0,
+      "y": 20.0,
+      "intensity": 1
+    },
+    "sensor_model": "geometric",
+    "neural_model": "connectome",
+    "neural_parameters": {
+      "sensory_gain": 1,
+      "steering_gain": 1,
+      "tonic_drive": 0.35,
+      "time_scale": 1
+    },
+    "connectome_parameters": {
+      "circuit": "fafb783-dna02",
+      "dynamics": "spiking",
+      "synapse_threshold": 5,
+      "global_gain": 0.001,
+      "input_gain": 1.5,
+      "output_gain": 2.0,
+      "tonic_drive": 0.35,
+      "tau_ms": 20,
+      "other_transmitters": "excluded",
+      "readout_types": null,
+      "input_types": null,
+      "speed_types": [],
+      "speed_gain": 1,
+      "spiking": {
+        "synapse_weight_mv": 0.3,
+        "input_rate_hz": 150,
+        "rate_window_ms": 50,
+        "rate_scale_hz": 100
+      }
+    },
+    "initial_interventions": {
+      "zero_left": false,
+      "zero_right": false,
+      "silence": "none",
+      "silence_dna02": "none",
+      "silence_types": []
+    },
+    "protocol": null
+  },
+  "final_interventions": {
+    "zero_left": false,
+    "zero_right": false,
+    "silence": "none",
+    "silence_dna02": "left",
+    "silence_types": []
+  },
+  "final_sample": {
+    "step": 60,
+    "t": 0.6,
+    "pose": {
+      "x": 4.1205701638057075,
+      "y": 0.27934207701558267,
+      "z": 0.7,
+      "yaw": -1.0586253821299378,
+      "velocity": 8.399999999999999,
+      "legs": []
+    },
+    "sensors": {
+      "left": 0.05202300623271694,
+      "right": 0.06742173790531912,
+      "raw_left": 0.05202300623271694,
+      "raw_right": 0.06742173790531912,
+      "bearing_rad": -3.0879816359956327,
+      "distance_mm": 24.171292628794784
+    },
+    "rates": [
+      0.0,
+      0.6739049681970052,
+      0.24036981502517785,
+      0.12373809473687118,
+      0.050616996521960216
+    ],
+    "motor": [
+      1.4,
+      0.0
+    ],
+    "body_signals": {}
+  },
+  "status": "paused",
+  "error": null,
+  "provenance": {
+    "body_engine": "Toy demo: not FlyGym physics",
+    "sensor_model": "Geometric bilateral bearing / intensity approximation \u00b7 v1",
+    "neural_model": "Connectome-constrained spiking (leaky integrate-and-fire, Shiu et al. 2024 parameters) model \u00b7 3,000 neurons and 77,709 connections (fafb783-dna02) \u00b7 structure data-derived, signs assumed, neuron model and constants from Shiu et al. 2024",
+    "motor_controller": "Differential kinematic controller \u00b7 engineered",
+    "connectivity_source": "FlyWire FAFB v783 \u00b7 FAFB, one adult female brain \u00b7 circuit fafb783-dna02 \u00b7 CC BY-NC 4.0 (FlyWire public-release terms): non-commercial use only \u00b7 sha256 282d88732bd6",
+    "input_mapping": "Engineered: the left/right sensor value \u00d7 input gain drives every visual projection neuron on that side as Poisson spikes (input rate \u00d7 sensor)",
+    "controller_mode": "Connectome closed loop: turning from right \u2212 left of DNa02 (direction from Rayshubskiy et al. 2025); forward drive is an engineered tonic term",
+    "viewport": "MuJoCo rendered body / pose-synchronized arena schematic",
+    "body_sex": "Unspecified; kinematic demonstration",
+    "anatomy_atlas": "Female DNa02 skeletons are tinted with this model's DNa02 output when it has one; other anatomy is display-only"
+  },
+  "time_steps_s": {
+    "physics": 0.01,
+    "neural": 0.001,
+    "control": 0.01
+  },
+  "units": {
+    "position": "mm",
+    "velocity": "mm/s",
+    "yaw": "rad",
+    "time": "s",
+    "rates_and_commands": "dimensionless"
+  },
+  "coordinates": "Right-handed world; +z up; yaw counterclockwise from +x. Camera follows body. Arena is top-down.",
+  "warmup_s": 0,
+  "rendering": {
+    "requested": false,
+    "resolution": [
+      640,
+      288
+    ],
+    "wall_target_hz": 10
+  },
+  "performance": {
+    "active_wall_s": 0.0,
+    "compute_s": 0.6141131860022142
+  },
+  "neural": {
+    "kind": "connectome",
+    "unit_names": [
+      "DNa02 L",
+      "DNa02 R",
+      "Visual input L",
+      "Visual input R",
+      "Circuit mean"
+    ],
+    "parameters": {
+      "circuit": "fafb783-dna02",
+      "dynamics": "spiking",
+      "synapse_threshold": 5,
+      "global_gain": 0.001,
+      "input_gain": 1.5,
+      "output_gain": 2.0,
+      "tonic_drive": 0.35,
+      "tau_ms": 20,
+      "other_transmitters": "excluded",
+      "readout_types": null,
+      "input_types": null,
+      "speed_types": [],
+      "speed_gain": 1,
+      "spiking": {
+        "synapse_weight_mv": 0.3,
+        "input_rate_hz": 150,
+        "rate_window_ms": 50,
+        "rate_scale_hz": 100
+      }
+    },
+    "circuit": "fafb783-dna02",
+    "circuit_file": "data/circuits/fafb783-dna02.json",
+    "circuit_sha256": "282d88732bd6b223f11b3464461d1eb97f8c63056c5e1962f041663a5690b315",
+    "circuit_name": "FlyWire FAFB v783 DNa02 input subcircuit",
+    "dataset": "FlyWire FAFB v783 \u00b7 FAFB, one adult female brain",
+    "license": "CC BY-NC 4.0 (FlyWire public-release terms): non-commercial use only",
+    "coverage": "Both DNa02 neurons and their presynaptic partners up to 2 hops back, connections with at least 5 synapses, at most 3000 neurons",
+    "neurons": 3000,
+    "cell_types": 1257,
+    "connections_total": 78615,
+    "connections_active": 77709,
+    "excluded_below_threshold": 0,
+    "excluded_by_sign_assumption": 906,
+    "excitatory_connections": 45376,
+    "inhibitory_connections": 32333,
+    "readout": [
+      {
+        "cell_type": "DNa02",
+        "left": [
+          "720575940629327659"
+        ],
+        "right": [
+          "720575940604737708"
+        ]
+      }
+    ],
+    "input_population": {
+      "cell_types": "super class visual_projection",
+      "left": 250,
+      "right": 227
+    },
+    "speed_population": null,
+    "dynamics": "spiking",
+    "readout_units": "firing rate (spikes/s) \u00f7 rate scale",
+    "equation": "Shiu et al. 2024 LIF: dv/dt = (v_rest \u2212 v + g)/tau_m, dg/dt = \u2212g/tau_s; spike \u2192 g_post += sign \u00d7 synapses \u00d7 w_syn after 1.8 ms",
+    "spiking_constants": {
+      "v_rest_mv": -52.0,
+      "v_reset_mv": -52.0,
+      "v_threshold_mv": -45.0,
+      "tau_membrane_ms": 20.0,
+      "tau_synapse_ms": 5.0,
+      "refractory_ms": 2.2,
+      "delay_ms": 1.8,
+      "poisson_scale": 250,
+      "dt_ms": 0.1
+    },
+    "signs": {
+      "acetylcholine": "+1 (assumed)",
+      "gaba": "-1 (assumed)",
+      "glutamate": "-1 (assumed)",
+      "dopamine, serotonin, octopamine, unknown": "excluded (assumed)"
+    },
+    "input_mapping": "Engineered: the left/right sensor value \u00d7 input gain drives every visual projection neuron on that side as Poisson spikes (input rate \u00d7 sensor)",
+    "output_mapping": "Engineered readout: turn = output gain \u00d7 \u03a3 (right \u2212 left) over DNa02; forward = tonic; motor = 1.4 \u00d7 clip([forward + turn, forward \u2212 turn], 0, 1). Direction: higher right DNa02 \u2192 rightward turn (Rayshubskiy et al. 2025); larger left amplitude turns right (FlyGym HybridTurningController).",
+    "labels": {
+      "structure": "data-derived",
+      "signs": "assumed",
+      "dynamics": "published model (Shiu et al. 2024 parameters)",
+      "input_mapping": "engineered",
+      "output_mapping": "engineered, direction from literature"
+    }
+  },
+  "metrics": {
+    "path_length_mm": 4.735068389537198,
+    "displacement_mm": 4.130027901944147,
+    "mean_speed_mm_s": 7.891780649228654,
+    "net_turn_deg": -59.230333243845394,
+    "target_distance_mm": 24.254790262262176,
+    "contact_fraction": [],
+    "duration_s": 0.6,
+    "protocol_complete": false
+  },
+  "trial": null,
+  "body_joint_order": [],
+  "vision": {},
+  "events": [
+    {
+      "seq": 0,
+      "step": 0,
+      "t": 0.0,
+      "kind": "reset",
+      "message": "Experiment initialized \u00b7 seed 3",
+      "payload": {
+        "engine": "toy",
+        "seed": 3,
+        "controller": "neural",
+        "speed": 0.25,
+        "stimulus": {
+          "x": 25.0,
+          "y": 12.0,
+          "intensity": 1
+        },
+        "sensor_model": "geometric",
+        "neural_model": "connectome",
+        "neural_parameters": {
+          "sensory_gain": 1,
+          "steering_gain": 1,
+          "tonic_drive": 0.35,
+          "time_scale": 1
+        },
+        "connectome_parameters": {
+          "circuit": "fafb783-dna02",
+          "dynamics": "spiking",
+          "synapse_threshold": 5,
+          "global_gain": 0.001,
+          "input_gain": 1,
+          "output_gain": 1,
+          "tonic_drive": 0.35,
+          "tau_ms": 20,
+          "other_transmitters": "excluded",
+          "readout_types": null,
+          "input_types": null,
+          "speed_types": [],
+          "speed_gain": 1,
+          "spiking": {
+            "synapse_weight_mv": 0.275,
+            "input_rate_hz": 150,
+            "rate_window_ms": 50,
+            "rate_scale_hz": 100
+          }
+        },
+        "initial_interventions": {
+          "zero_left": false,
+          "zero_right": false,
+          "silence": "none",
+          "silence_dna02": "none",
+          "silence_types": []
+        },
+        "protocol": null
+      }
+    },
+    {
+      "seq": 1,
+      "step": 15,
+      "t": 0.15,
+      "kind": "connectome_parameters",
+      "message": "Connectome parameters updated",
+      "payload": {
+        "circuit": "fafb783-dna02",
+        "dynamics": "spiking",
+        "synapse_threshold": 5,
+        "global_gain": 0.001,
+        "input_gain": 1,
+        "output_gain": 2.0,
+        "tonic_drive": 0.35,
+        "tau_ms": 20,
+        "other_transmitters": "excluded",
+        "readout_types": null,
+        "input_types": null,
+        "speed_types": [],
+        "speed_gain": 1,
+        "spiking": {
+          "synapse_weight_mv": 0.275,
+          "input_rate_hz": 150,
+          "rate_window_ms": 50,
+          "rate_scale_hz": 100
+        }
+      }
+    },
+    {
+      "seq": 2,
+      "step": 25,
+      "t": 0.25,
+      "kind": "interventions",
+      "message": "Inputs L on / R on \u00b7 silence DNa02 left",
+      "payload": {
+        "zero_left": false,
+        "zero_right": false,
+        "silence": "none",
+        "silence_dna02": "left",
+        "silence_types": [],
+        "source": "manual"
+      }
+    },
+    {
+      "seq": 3,
+      "step": 35,
+      "t": 0.35,
+      "kind": "connectome_parameters",
+      "message": "Connectome parameters updated",
+      "payload": {
+        "circuit": "fafb783-dna02",
+        "dynamics": "spiking",
+        "synapse_threshold": 5,
+        "global_gain": 0.001,
+        "input_gain": 1.5,
+        "output_gain": 2.0,
+        "tonic_drive": 0.35,
+        "tau_ms": 20,
+        "other_transmitters": "excluded",
+        "readout_types": null,
+        "input_types": null,
+        "speed_types": [],
+        "speed_gain": 1,
+        "spiking": {
+          "synapse_weight_mv": 0.3,
+          "input_rate_hz": 150,
+          "rate_window_ms": 50,
+          "rate_scale_hz": 100
+        }
+      }
+    },
+    {
+      "seq": 4,
+      "step": 45,
+      "t": 0.45,
+      "kind": "stimulus",
+      "message": "Target moved to (-10, 20) mm \u00b7 intensity 1",
+      "payload": {
+        "x": -10.0,
+        "y": 20.0,
+        "intensity": 1,
+        "source": "manual"
+      }
+    }
+  ],
+  "recorded_samples": 61,
+  "complete_from_reset": true,
+  "platform": "Linux-6.18.44-fc-v139-x86_64-with-glibc2.39",
+  "python": "3.12.3",
+  "dependencies": {
+    "flygym": "2.1.0",
+    "mujoco": "3.9.0",
+    "numpy": "2.5.3",
+    "fastapi": "0.141.1",
+    "pydantic": "2.13.5",
+    "numba": "0.67.0",
+    "scipy": "1.18.1"
+  },
+  "reproducibility": "Fixed seed and step-indexed stimulus/intervention schedule. Same pinned stack tested at absolute tolerance 1e-8; cross-device bitwise equality is not promised."
+}

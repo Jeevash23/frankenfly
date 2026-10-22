@@ -24,7 +24,10 @@ from digitalfly.simulation.engines import FlyGymBody, ToyBody, CONTROL_DT, PHYSI
 RECORD_LIMIT = 30000
 EVENT_LIMIT = 10000  # manual input changes, the schedule a replay re-applies; bookkeeping events do not count
 SCHEDULE_KINDS = {"stimulus", "interventions", "parameters", "connectome_parameters"}
-MERGED_KINDS = SCHEDULE_KINDS | {"speed"}  # repeats within one control step keep only the last value
+# Repeats within one control step keep only the last value: these changes leave no trace but their value. Interventions
+# and connectome parameters are never merged: applying one changes the network or motor path at once (silenced
+# neurons go to rest, a clamped rate is set, the motor path restarts), so replay must apply each in turn.
+MERGED_KINDS = {"stimulus", "parameters", "speed"}
 BOOKKEEPING_KINDS = {"run", "pause", "step", "speed", "export"}  # never replayed
 BOOKKEEPING_LIMIT = 10000  # logged per run; later ones are left out after one marker event
 # 4 adds lockfiles, optional dependencies, vision.flyvis/bridge and share_safe; 5 adds the target, stimulus and
@@ -286,8 +289,8 @@ class Experiment:
 
     def event(self, kind: str, message: str, payload: dict | None = None):
         """Log an event. Manual input changes count toward EVENT_LIMIT; protocol and bookkeeping events (run,
-        pause, step, speed, export, ...) never do. A repeat of an input or speed change within the same control
-        step replaces the previous one: only the last value ever applied, so replay is unchanged. Past
+        pause, step, speed, export, ...) never do. A repeat of a stimulus, engineered-parameter or speed change
+        within the same control step replaces the previous one (see MERGED_KINDS), so replay is unchanged. Past
         BOOKKEEPING_LIMIT run, pause, step, speed and export events, one marker says that later ones are left out."""
         payload = payload or {}
         if self._merges(kind, payload.get("source")):
@@ -426,12 +429,25 @@ class Experiment:
             self.status = "paused"
             self.event("limit", LIMIT_MESSAGE)
 
+    def _observe_change(self, undo, body_change=None):
+        """body_change(), then observe(), after an input change. A failure may leave the body or circuit changed in
+        a way no event records (silenced neurons at rest, a moved target), so undo() restores what it can and the
+        run enters the error state: its export still replays, and Reset recovers."""
+        try:
+            if body_change is not None:
+                body_change()
+            self.observe()
+        except Exception as exc:
+            undo()
+            self.fail(exc)
+            raise
+
     def set_stimulus(self, stimulus: Stimulus, source="manual"):
         self._schedule_room("stimulus", source)
-        self.config.stimulus = stimulus
+        previous, self.config.stimulus = self.config.stimulus, stimulus
         if self.body is not None and self.status != "error":
-            self.body.set_stimulus(stimulus)
-            self.observe()
+            self._observe_change(lambda: setattr(self.config, "stimulus", previous),
+                                 lambda: self.body.set_stimulus(stimulus))
         self.event("stimulus", f"Target moved to ({stimulus.x:g}, {stimulus.y:g}) mm · intensity {stimulus.intensity:g}", {**stimulus.model_dump(), "source": source})
 
     def set_interventions(self, interventions: Interventions, source="manual"):
@@ -442,11 +458,7 @@ class Experiment:
             self.circuit.manipulation(interventions)
         previous, self.interventions = self.interventions, interventions
         if self.body is not None and self.status != "error":
-            try:
-                self.observe()
-            except Exception:
-                self.interventions = previous
-                raise
+            self._observe_change(lambda: setattr(self, "interventions", previous))
         others = ""
         if self.circuit.kind == "connectome":
             silenced = ", ".join([f"DNa02 {interventions.silence_dna02}"] * (interventions.silence_dna02 != "none")
@@ -532,6 +544,8 @@ class Experiment:
         if isinstance(exc, RunLimit):
             self.status = "paused" if self.status == "running" else self.status
             return
+        if self.status == "error" and self.error == f"{type(exc).__name__}: {exc}":
+            return  # reported already, by the input change that failed within this step
         self.status = "error"
         self.error = f"{type(exc).__name__}: {exc}"
         self.event("error", self.error)

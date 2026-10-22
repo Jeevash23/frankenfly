@@ -601,6 +601,13 @@ class ConnectomeCircuit:
         if self._history is not None:
             self._restart_motor_path()
 
+    def restart_spiking(self):
+        """Rebuild the spiking network at rest, its random generator seeded with the run's seed: what every live
+        parameter edit did up to v0.5 (export schema 3). scripts/replay.py uses it to replay those runs."""
+        if self.spiking is not None:
+            self.spiking = None
+            self.configure(self.parameters)
+
     def set_visual(self, responses: np.ndarray | None):
         """Drive the input neurons from FlyVis (an eyes × types array, left eye first) through the circuit's
         FlyWire bridge, or return to the left/right sensor values with None. Returns the mean drive per side."""
