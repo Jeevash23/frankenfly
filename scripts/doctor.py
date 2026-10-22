@@ -116,10 +116,14 @@ def check_python():
     if info is None:
         report("fail", "Python", f"{VENV_PYTHON} does not run", f"rm -rf backend/.venv && {SETUP}")
         return None
-    found = ".".join(map(str, info["python"]))
-    if info["python"][:2] != [3, 12]:
-        report("fail", "Python", f"the project environment has Python {found}; DigitalFly needs 3.12",
-               f"rm -rf backend/.venv && PYTHON_BIN=/path/to/python3.12 {SETUP}")
+    found, minor = ".".join(map(str, info["python"])), tuple(info["python"][:2])
+    recreate = f"rm -rf backend/.venv && PYTHON_BIN=/path/to/python3.12 {SETUP}"
+    if not (3, 12) <= minor < (3, 15):
+        report("fail", "Python", f"the project environment has Python {found}; DigitalFly needs 3.12, 3.13 or 3.14 "
+               "(3.12 recommended)", recreate)
+    elif minor != (3, 12):  # supported (pyproject, CI), as setup.sh says when it builds one
+        report("info", "Python", f"{found} in the project environment; 3.12 is the recorded stack: on {found} FlyVis is "
+               "unavailable and exact replay of recorded runs is not guaranteed", f"for those, {recreate}")
     else:
         report("ok", "Python", f"{found} in the project environment")
     return pins, info["installed"]
@@ -161,13 +165,15 @@ def check_frontend():
     index = ROOT / "frontend/dist/index.html"
     sources = [*(ROOT / "frontend/src").rglob("*"), ROOT / "frontend/package-lock.json", ROOT / "frontend/index.html",
                ROOT / "frontend/vite.config.ts"]
-    if not index.is_file() and BACKEND_ONLY:
-        report("info", "Frontend build", "not built (--backend-only); the toolkit, replay and tests do not need it",
+    stale = index.is_file() and any(path.is_file() and path.stat().st_mtime > index.stat().st_mtime for path in sources)
+    if BACKEND_ONLY and (stale or not index.is_file()):  # the interface was opted out of, so it cannot fail
+        report("info", "Frontend build", ("frontend/dist is older than frontend/src" if stale else "not built")
+               + " (--backend-only); the toolkit, replay and tests do not need it",
                f"{SETUP} without --backend-only, for the web interface")
     elif not index.is_file():
         report("fail", "Frontend build", "frontend/dist is missing", REBUILD if IMAGE else
                f"{SETUP}, or npm --prefix frontend ci && npm --prefix frontend run build")
-    elif any(path.is_file() and path.stat().st_mtime > index.stat().st_mtime for path in sources):
+    elif stale:
         report("fail", "Frontend build", "frontend/dist is older than frontend/src; the launcher refuses a stale build",
                "npm --prefix frontend run build")
     else:

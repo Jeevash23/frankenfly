@@ -134,7 +134,8 @@ def fetch_bytes(url: str, start: int | None = None, end: int | None = None, agen
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as response:
             if ranged and _start(response, first) != first:
                 if start is not None:
-                    raise DownloadError(f"{url} does not serve byte ranges (asked for bytes {start}-{end - 1}).")
+                    raise DownloadError(f"{url} does not serve byte ranges (asked for bytes "
+                                        f"{start}-{'' if end is None else end - 1}).")
                 received.clear()  # the server sent the whole file again
             expected = _length(response)
             before = len(received)
