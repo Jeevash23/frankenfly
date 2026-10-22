@@ -6,13 +6,16 @@ As a library (the app's replay jobs run this file): replay() returns the compari
 --save writes to RUN_FOLDER/replay.json and the run library shows as "verified".
 """
 import argparse
+import csv
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
 import sys
+import uuid
 import numpy as np
 from pydantic import ValidationError
 
@@ -23,6 +26,8 @@ from digitalfly.simulation.experiment import BACKEND, Experiment, dependency_ver
 
 TOLERANCE = 1e-8
 POSE = ["x_mm", "y_mm", "z_mm", "yaw_rad"]
+# Up to v0.5 (export schema 3) every live connectome parameter edit restarted a spiking network from the run's seed.
+RESTARTING_SCHEMA = 3
 
 
 class CannotReplay(Exception):
@@ -66,20 +71,35 @@ def software_differences(metadata: dict) -> list[str]:
     return differences
 
 
-def read_telemetry(run_directory: Path):
-    """The recorded rows, or a sentence saying why they cannot be compared."""
+def _number(text: str) -> float:
     try:
-        recorded = np.atleast_1d(np.genfromtxt(run_directory / "telemetry.csv", delimiter=",", names=True))
-    except (OSError, ValueError) as exc:
+        return float(text)
+    except ValueError:
+        return math.nan  # reported as "not a number in telemetry.csv"
+
+
+def read_telemetry(run_directory: Path):
+    """(header, values): the column names and the rows as numbers (text becomes NaN), or (None, a sentence saying
+    why they cannot be compared). Read as CSV, so a quoted name (a readout cell type such as "LAL003,LAL044") keeps
+    its one column."""
+    try:
+        with (run_directory / "telemetry.csv").open(newline="") as file:
+            lines = list(csv.reader(file))
+    except (OSError, ValueError, csv.Error) as exc:
         return None, f"telemetry.csv is unreadable: {' '.join(str(exc).split())[:300] or type(exc).__name__}"
-    names = recorded.dtype.names or ()
-    missing = [name for name in ["step", *POSE, "motor_l", "motor_r"] if name not in names]
-    if missing or not len(recorded):
+    header = lines[0] if lines else []
+    rows = [(number, row) for number, row in enumerate(lines[1:], 2) if row]
+    ragged = next(((number, row) for number, row in rows if len(row) != len(header)), None)
+    if ragged:
+        return None, f"telemetry.csv is unreadable: line {ragged[0]} has {len(ragged[1])} fields, the header {len(header)}"
+    missing = [name for name in ["step", *POSE, "motor_l", "motor_r"] if name not in header]
+    if missing or not rows:
         return None, f"telemetry.csv lacks the column{'s' * (len(missing) > 1)} {', '.join(missing)}" if missing else "telemetry.csv has no rows"
-    steps = recorded["step"]
+    values = np.array([[_number(cell) for cell in row] for _, row in rows], dtype=float)
+    steps = values[:, header.index("step")]
     if not (np.isfinite(steps).all() and (steps == np.round(steps)).all() and steps[0] >= 0 and (np.diff(steps) > 0).all()):
         return None, "telemetry.csv's step column is not an increasing sequence of whole numbers"
-    return recorded, None
+    return (header, values), None
 
 
 def replay(run_directory: Path, allow_circuit_mismatch=False, progress=None) -> dict:
@@ -101,14 +121,20 @@ def replay(run_directory: Path, allow_circuit_mismatch=False, progress=None) -> 
     if not allow_circuit_mismatch:
         check_circuit(metadata)
     recorded, problem = read_telemetry(run_directory)
-    report = {"samples": 0 if recorded is None else len(recorded), "neural_model": config.neural_model,
+    report = {"samples": 0 if recorded is None else len(recorded[1]), "neural_model": config.neural_model,
               "compared_rates": [], "maximum_absolute_error": 0., "tolerance": TOLERANCE, "passed": False,
               "column_errors": {}, "message": problem}
     if recorded is None:
         return report
+    header, values = recorded
     # Rate columns differ by neural model: six engineered units, or the connectome model's readouts.
-    rate_columns = [name for name in recorded.dtype.names if name.startswith("rate_")]
+    rates = [index for index, name in enumerate(header) if name.startswith("rate_")]
+    rate_columns = [header[index] for index in rates]
     columns = [*POSE, *rate_columns, "motor_l", "motor_r"]
+    compared = values[:, [header.index(name) for name in POSE] + rates + [header.index("motor_l"), header.index("motor_r")]]
+    steps = values[:, header.index("step")].astype(int).tolist()
+    schema = metadata.get("schema_version", 0)
+    restart_spiking = isinstance(schema, int) and schema <= RESTARTING_SCHEMA
     errors = np.zeros(len(columns))
     worst = None  # (error, column, step, recorded, replayed), the first largest difference
     exp = Experiment(config, render=False)
@@ -119,9 +145,8 @@ def replay(run_directory: Path, allow_circuit_mismatch=False, progress=None) -> 
             report["message"] = (f"telemetry.csv has {len(rate_columns)} rate columns, but the replayed model "
                                  f"records {len(exp.sample.rates)}")
             return report
-        event_index, last_step, reported = 0, int(recorded["step"][-1]), 0.
-        for row in recorded:
-            target_step = int(row["step"])
+        event_index, last_step, reported = 0, steps[-1], 0.
+        for target_step, expected in zip(steps, compared):
             while exp.step_index < target_step:
                 while event_index < len(events) and events[event_index]["step"] <= exp.step_index:
                     event = events[event_index]
@@ -137,11 +162,12 @@ def replay(run_directory: Path, allow_circuit_mismatch=False, progress=None) -> 
                         exp.set_parameters(NeuralParameters.model_validate(payload))
                     elif event["kind"] == "connectome_parameters":
                         exp.set_connectome_parameters(ConnectomeParameters.model_validate(payload))
+                        if restart_spiking:
+                            exp.circuit.restart_spiking()
                     event_index += 1
                 exp.advance()
             s = exp.sample
             actual = np.asarray([s.pose.x, s.pose.y, s.pose.z, s.pose.yaw, *s.rates, *s.motor], dtype=float)
-            expected = np.asarray([row[k] for k in columns], dtype=float)
             difference = np.abs(actual - expected)
             # A value that is not a number never matches, and never counts as an error of 0.
             difference[~np.isfinite(difference)] = np.inf
@@ -157,16 +183,16 @@ def replay(run_directory: Path, allow_circuit_mismatch=False, progress=None) -> 
     finite = errors[np.isfinite(errors)]
     report.update(compared_rates=rate_columns, maximum_absolute_error=float(finite.max()) if len(finite) else 0.,
                   column_errors={c: float(e) if np.isfinite(e) else None for c, e in zip(columns, errors)})
-    expected_rows = metadata.get("recorded_samples", len(recorded))
+    expected_rows = metadata.get("recorded_samples", len(steps))
     if worst is not None and worst[0] >= TOLERANCE:
         error, column, step, then, now = worst
         report["message"] = (f"{column} at step {step} is not a number in telemetry.csv" if not np.isfinite(then) else
                              f"the replay's {column} at step {step} is not finite" if not np.isfinite(now) else
                              f"{column} differs by {error:.3g} at step {step} (recorded {then:.10g}, replayed {now:.10g})")
-    elif len(recorded) != expected_rows:
-        report["message"] = f"telemetry.csv has {len(recorded)} rows, but the run recorded {expected_rows} samples"
+    elif len(steps) != expected_rows:
+        report["message"] = f"telemetry.csv has {len(steps)} rows, but the run recorded {expected_rows} samples"
     else:
-        report.update(passed=True, message=f"Replayed {len(recorded)} samples: maximum absolute error "
+        report.update(passed=True, message=f"Replayed {len(steps)} samples: maximum absolute error "
                                            f"{report['maximum_absolute_error']:g}, within the tolerance {TOLERANCE:g}")
     return report
 
@@ -184,11 +210,14 @@ def verdict(report: dict, metadata: dict) -> dict:
 
 
 def save_verdict(run_directory: Path, result: dict):
-    """Write replay.json atomically: a hidden partial file, renamed into place."""
+    """Write replay.json atomically: a new hidden file with an unpredictable name, renamed into place. It is created
+    exclusively, so a link or file someone placed at that name is never written through."""
     path = Path(run_directory) / "replay.json"
-    part = path.with_name(f".replay.json.{os.getpid()}.part")
+    text = json.dumps(result, indent=2, allow_nan=False)
+    part = path.with_name(f".replay.json.{uuid.uuid4().hex}.part")
     try:
-        part.write_text(json.dumps(result, indent=2, allow_nan=False))
+        with part.open("x") as output:
+            output.write(text)
         os.replace(part, path)
     except BaseException:
         part.unlink(missing_ok=True)

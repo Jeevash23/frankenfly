@@ -555,13 +555,16 @@ def ablation_scan(parameters: ConnectomeParameters, left: float = .5, right: flo
                   mode: str = "silence", value: float = 0., side: str = "both") -> dict:
     """Manipulate each cell type in turn under fixed sensor input, and rank the types by how much the turn
     command changes. The default silences all of a type's neurons (both sides); `mode` "scale" multiplies their
-    output by `value` (0–2) and "activate" drives them at `value` (Hz in spiking dynamics, a clamped rate of 0–1
-    in rate dynamics); `side` "left" or "right" manipulates one side only, and skips types with no neurons there.
+    output by `value` (0–2) and "activate" drives them at `value`, which must be above 0 (Hz in spiking dynamics,
+    a clamped rate up to 1 in rate dynamics); `side` "left" or "right" manipulates one side only, and skips types
+    with no neurons there.
     With equal input on both sides, silencing finds the types that create a side bias: a positive change means
     the type was pushing the fly to the left. A type whose run fails gets a row with an `error` text. The readout
     types are never scanned, and naming one in `cell_types` is refused."""
     if mode not in ("silence", "scale", "activate") or side not in ("both", "left", "right"):
         raise ValueError("Choose mode silence, scale or activate and side both, left or right.")
+    if mode == "activate" and not value > 0:
+        raise ValueError("Activation needs a value above 0: Hz in spiking dynamics, a clamped rate in rate dynamics.")
     # A value the mode or dynamics cannot take fails before the scan, naming the types it would manipulate.
     check = CellTypeIntervention(name="probe", side=side, mode=mode, value=value)
     named = [check.model_copy(update={"name": n}) for n in cell_types or ["every cell type"]]
