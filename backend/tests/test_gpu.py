@@ -297,3 +297,37 @@ def test_batched_worlds_follow_the_cpu_engine_closely(cuda):
     for row in result["rows"][1:]:
         assert row["world_steps_per_s"] > 0 and row["distance_from_cpu_end_mm"] < .05
     assert LIF["dt_ms"] == .1  # the neural constants are untouched by the physics extra
+
+
+@needs_cuda
+def test_gpu_runs_export_and_replay(cuda, tmp_path):
+    """Exports record the backend, and replay runs them on it again: spiking exactly (fixed-point delay queue and
+    counter-based random numbers), rate within replay's tolerance."""
+    import json
+    import subprocess
+    import sys
+    from pathlib import Path
+    from digitalfly import toolkit
+    from digitalfly.simulation.experiment import Experiment
+    root = Path(__file__).resolve().parents[2]
+    for dynamics in ("spiking", "rate"):
+        config = toolkit.configure({"engine": "toy", "neural_model": "connectome", "seed": 5,
+                                    "connectome_parameters": {"dynamics": dynamics, "backend": "torch"}},
+                                   stimulus=toolkit.target(30, 10))
+        exp = Experiment(config, render=False)
+        try:
+            for _ in range(40):
+                exp.advance()
+            run = Path(exp.export(tmp_path / dynamics)["path"])
+        finally:
+            exp.close()
+        metadata = json.loads((run / "metadata.json").read_text())
+        assert metadata["neural"]["parameters"]["backend"] == "torch"
+        assert metadata["neural"]["backend"]["name"] == "torch"
+        done = subprocess.run([sys.executable, str(root / "scripts/replay.py"), str(run)], capture_output=True,
+                              text=True, timeout=300)
+        assert done.returncode == 0, done.stderr
+        result = json.loads(done.stdout)
+        assert result["passed"] is True, result
+        if dynamics == "spiking":
+            assert result["maximum_absolute_error"] == 0, result

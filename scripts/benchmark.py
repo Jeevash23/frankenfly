@@ -270,7 +270,7 @@ def main(argv=None):
                         help='--flyvis: simulated seconds of closed loop per circuit; --check: seconds per spiking run; '
                              '--worlds: simulated seconds per measurement')
     parser.add_argument('--backend', choices=['cpu', 'torch', 'both'], default='cpu', help='--neural: which backends')
-    parser.add_argument('--seeds', type=int, default=4, help='--check: spiking runs per backend')
+    parser.add_argument('--seeds', type=int, default=8, help='--check: spiking runs per backend')
     parser.add_argument('--check-steps', type=int, default=600, help='--check: rate steps compared')
     parser.add_argument('--world-counts', default='1,16,64,256',
                         help='--worlds: comma-separated numbers of batched worlds')

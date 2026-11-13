@@ -9,6 +9,7 @@
 ./scripts/start.sh --toy                       # kinematic toy demo, no physics
 ./scripts/start.sh --port 8001                 # use another port
 ./scripts/start.sh --config steering-circuit       # start from a preset (see below) or a configuration file
+./scripts/start.sh --gpu                       # from the GPU environment: the GPU brain backend is available
 ```
 
 Installing, Docker, the dev container, headless servers and updating after `git pull` are covered in [INSTALL](INSTALL.md).
@@ -61,6 +62,7 @@ Names use lowercase letters, digits, `-` and `_` (up to 48 characters); a preset
 | Sensor model | Geometric bearing, rendered compound eyes, or FlyVis eyes (the optional optic-lobe network; needs FlyGym, the connectome model and a circuit with a FlyVis bridge); switching starts a fresh experiment |
 | Neural model | The engineered six-unit loop (default) or the connectome circuit; switching starts a fresh experiment. FlyVis eyes drive only the connectome model, so switching to the engineered loop with them selected also switches to rendered compound eyes, with a note |
 | Circuit, Dynamics | With the connectome model: which FlyWire circuit (committed or built on this computer) and whether its neurons are rate units or spiking neurons (Shiu et al. 2024). Either change starts a fresh experiment |
+| Brain backend | With the connectome model: **CPU (NumPy)**, the default, or **GPU (PyTorch CUDA)**, which runs the same dynamics on an NVIDIA GPU (rate dynamics give the same numbers within float rounding; spiking dynamics the same statistics with other random spikes). The GPU option is available when the server runs from the GPU environment (`./scripts/start.sh --gpu`, after `./scripts/setup.sh --with gpu`); otherwise it is disabled and its tooltip says why. A change starts a fresh experiment. See [the GPU backend](RESEARCH.md#gpu-backend) |
 | Sensor switches | Zero the corresponding input to the neural circuit |
 | Neural silencing | Engineered model: clamps a group of units to zero |
 | Cell-type manipulations | Connectome model: choose a cell type, the side (both, left or right) and **Silence**, **Scale output** (× 0 to 2) or **Activate** (a clamped rate from 0 to 1 with rate dynamics, Poisson input from 0 to 500 Hz with spiking dynamics; the unit is shown), then **Apply**. The list below shows each manipulation in force with a remove button, and how many neurons are silenced, scaled and activated. Each side of a type takes one manipulation: a new one replaces what acted on the same side (the other side of a two-sided one is kept) instead of adding a second. These are engineered manipulations: activation approximates optogenetic activation, and none of them is calibrated |
@@ -217,7 +219,14 @@ backend/.venv/bin/python scripts/benchmark.py            # the app's worker: rea
 backend/.venv/bin/python scripts/benchmark.py --vision   # with rendered compound-eye input
 backend/.venv/bin/python scripts/benchmark.py --neural   # wall time per 1 ms neural step, per circuit and dynamics
 backend/.venv/bin/python scripts/benchmark.py --flyvis   # FlyVis eyes, when FlyVis is installed
+backend/.venv-gpu/bin/python scripts/benchmark.py --neural --backend both   # CPU and GPU, per circuit and dynamics
+backend/.venv-gpu/bin/python scripts/benchmark.py --check   # does the GPU backend compute what the CPU computes?
+backend/.venv-gpu/bin/python scripts/benchmark.py --worlds  # batched MuJoCo Warp worlds vs CPU MuJoCo (experimental)
 ```
+
+`--check` runs [the agreement harness](RESEARCH.md#gpu-backend) on every committed circuit and local whole-brain build and exits with an error if any fails. Reports go to `docs/evidence/` (ignored by git).
+
+To run a sweep or scan on the GPU, set the backend like any other parameter, for example `--set connectome_parameters.backend=torch` with `scripts/toolkit.py trials`, or `--set backend=torch` for `bias` and `ablation`, from `backend/.venv-gpu/bin/python`. Keep `--workers` small (1–2): every worker process opens its own CUDA context (a few hundred MB of GPU memory) and they share one GPU.
 
 ## Provenance, methods and NWB export
 

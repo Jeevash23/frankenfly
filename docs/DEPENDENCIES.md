@@ -7,7 +7,7 @@
 - Node.js **22.12–26** and npm for installing/building the frontend. Vite 7 needs Node 22.12 or newer. The frontend unit tests import TypeScript directly through Node's built-in type stripping, which the test script enables explicitly for Node 22.12–22.17 (later releases enable it by default). Node 24 is the recommended LTS release.
 - An offscreen OpenGL context for the body camera and compound-eye sensing. Geometric sensing with `--no-render` can run without those images.
 
-No GPU or CUDA installation is required. Setup creates a project-local `backend/.venv`; it does not install drivers or change system settings. Each checkout should create its own environment and frontend dependencies.
+No GPU or CUDA installation is required; only the optional [GPU environment](#optional-gpu-environment-torch-brain-backend-mujoco-warp) uses one. Setup creates a project-local `backend/.venv`; it does not install drivers or change system settings. Each checkout should create its own environment and frontend dependencies.
 
 Reference validation covers macOS/ARM64 (v0.2), x86-64 Linux with EGL rendering (v0.3–v0.5), and for v0.6 x86-64 Linux with Python 3.12–3.14 and the physics under Xvfb with GLFW, plus the Docker image with headless EGL ([STATUS](../STATUS.md#validation-summary)). Other environments have not been validated by this project. Use the commands below to check a new environment rather than treating one platform's results as a compatibility guarantee.
 
@@ -42,7 +42,7 @@ Reference validation covers macOS/ARM64 (v0.2), x86-64 Linux with EGL rendering 
 
 v0.4 adds no dependencies: spiking dynamics, the general circuit builder, the research toolkit and the fly comparison use NumPy and SciPy, which were already installed. Only `scripts/build_circuit.py prepare` (and the default rebuild of the DNa02 circuit) needs pyarrow from the build-only data lock; `build` reads the prepared NumPy archive.
 
-Full transitive versions and hashes: `backend/requirements.lock`, generated from `backend/pyproject.toml` with pip-tools. The lock includes the test extra. Pillow and MuJoCo are imported directly, so they are declared with FlyGym 2.1.0's own ranges (`pillow>=11,<13`, `mujoco>=3.9,<3.10`); FlyGym still decides their versions. Frontend versions/integrity hashes: `frontend/package-lock.json`; update it with npm 11 (Node 24), because npm 10 drops its `libc` fields. All direct frontend imports are local packages. The runtime installs no PyTorch, JAX, Brian2, CUDA or Warp stack; CPU-only PyTorch comes only with the optional FlyVis lock (`backend/requirements-vision.lock`) below. `jaxtyping`, IPython, imageio, ffmpeg and Matplotlib are upstream FlyGym transitives; they are not speculative extra model stacks.
+Full transitive versions and hashes: `backend/requirements.lock`, generated from `backend/pyproject.toml` with pip-tools. The lock includes the test extra. Pillow and MuJoCo are imported directly, so they are declared with FlyGym 2.1.0's own ranges (`pillow>=11,<13`, `mujoco>=3.9,<3.10`); FlyGym still decides their versions. Frontend versions/integrity hashes: `frontend/package-lock.json`; update it with npm 11 (Node 24), because npm 10 drops its `libc` fields. All direct frontend imports are local packages. The runtime installs no PyTorch, JAX, Brian2, CUDA or Warp stack; CPU-only PyTorch comes only with the optional FlyVis lock (`backend/requirements-vision.lock`), and CUDA PyTorch and Warp only with the optional GPU lock (`backend/requirements-gpu.lock`), both below. `jaxtyping`, IPython, imageio, ffmpeg and Matplotlib are upstream FlyGym transitives; they are not speculative extra model stacks.
 
 pip itself, pip-tools and setuptools come from a third hashed lock, `backend/requirements-tools.lock`, generated from `backend/requirements-tools.in` with the runtime lock as constraints (so click and packaging match). Setup and CI install it with `--require-hashes` before any other lock. That also replaces the pip a new environment gets from `ensurepip` (24.0 or 25.0.1, both with known advisories) with pip 26.2.2. pip-tools 7.5.3 fails under pip 26.2, so the tools lock carries 7.6.2, which reproduces the runtime and data locks byte for byte.
 
@@ -215,3 +215,29 @@ The vision lock was validated on x86-64 Linux only; the macOS entries are hashed
 The `vision` extra is marked `python_version < '3.13'`, because FlyVis 1.2.0 and datamate 1.0.0 support Python 3.12 only. The committed vision lock was resolved before that marker existed, and its certifi entry was set to the runtime lock's by hand, because the PyTorch index was unreachable where that change was made. Its next regeneration with the command above should add `python_full_version < '3.13'` markers to the vision-only entries without moving a pin; check the diff.
 
 Recorded fly data needs no package: SciPy reads the MATLAB files. `scripts/fetch_recording.py` downloads a file listed in `data/recordings/downloads.json` into the ignored `.cache/recordings/` and keeps it only if its size, MD5 and SHA-256 match. The first entry is one paired DNa02 recording from Rayshubskiy et al. 2025 (71,381,032 bytes, CC0 1.0).
+
+## Optional GPU environment (torch brain backend, MuJoCo Warp)
+
+The torch brain backend (`connectome_parameters.backend = "torch"`) and batched MuJoCo Warp worlds need CUDA PyTorch, Triton, warp-lang and mujoco-warp. They live in the optional `gpu` extra and its own lock, `backend/requirements-gpu.lock`: the runtime and test pins unchanged (`diff` shows only additions) plus PyTorch 2.13.0 (PyPI's Linux build is the CUDA 13.0 build) with its NVIDIA libraries, Triton 3.7.1, warp-lang 1.14.0 and mujoco-warp 3.9.0.1 (FlyGym 2.1.0's `warp` extra), hashed for every file. It is resolved for Python 3.12 on Linux x86-64 and needs an NVIDIA driver for CUDA 13.0 or newer; nothing else is installed system-wide.
+
+It installs into a second environment, `backend/.venv-gpu` (git-ignored), so the app's own environment and the FlyVis lock's CPU-only PyTorch stay exactly as they are:
+
+```sh
+./scripts/setup.sh --with gpu        # creates backend/.venv-gpu from the tools and GPU locks, about 2.9 GB of downloads
+./scripts/start.sh --gpu             # the app, run from backend/.venv-gpu
+backend/.venv-gpu/bin/python -m pytest backend/tests/test_gpu.py
+```
+
+The downloads beyond the runtime lock come to 2.87 GB for Linux x86-64 (the largest: PyTorch 527 MB, cuBLAS 423 MB, cuDNN 366 MB, cuFFT 214 MB, NCCL 206 MB, cuSOLVER 201 MB, Triton 198 MB, cuSPARSELt 170 MB, cuSPARSE 146 MB, warp-lang 139 MB). The PyTorch version follows what was already installed on the reference laptop for another project, so the environment there was assembled from those installed files (btrfs reflinks of the same versions) and only warp-lang, mujoco-warp, pip and pip-tools (143 MB) were downloaded; on another machine setup downloads everything once. A PyTorch other than the vision lock's (2.14.1+cpu) is fine: the two never share an environment.
+
+To regenerate the lock after changing the `gpu` extra or the runtime lock, keeping its current pins:
+
+```sh
+grep -E '^[A-Za-z0-9_.-]+==' backend/requirements-gpu.lock | sed 's/ \\$//' > gpu-pins.txt
+uv pip compile backend/pyproject.toml --extra test --extra gpu --python-version 3.12 \
+  --python-platform x86_64-manylinux_2_28 --generate-hashes --emit-index-url --index-url https://pypi.org/simple \
+  -c backend/requirements.lock -c backend/requirements-tools.lock -c gpu-pins.txt -o backend/requirements-gpu.lock
+rm gpu-pins.txt
+```
+
+Then check that `diff` against `backend/requirements.lock` only adds packages. CI audits this lock with pip-audit on its own (it pins another PyTorch than the vision lock), and installs nothing from it: CI has no GPU, so the CUDA tests in `backend/tests/test_gpu.py` skip there, and its PyTorch-on-CPU tests skip without PyTorch.

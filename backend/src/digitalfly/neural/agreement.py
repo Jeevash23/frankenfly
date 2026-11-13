@@ -9,11 +9,12 @@ against Brian2): for several seeds per backend, under the same constant input,
   - per-neuron firing rates: the correlation across neurons between a CPU run and a torch run must reach the
     correlation between two CPU runs with different seeds, less a margin;
   - the population rate (mean over neurons), of all neurons and of the recurrent ones (not driven by the sensors,
-    so their rates follow the weights): the backends' means over seeds must differ by less than three standard
-    errors of the difference plus 1 % of the rate;
+    so their rates follow the weights): the backends' means over seeds must differ by less than Welch's t at the
+    99.9 % level times the standard error of the difference, plus 1 % of the rate;
   - the readout neurons' spike counts, per readout type and side, judged the same way.
-With the defaults (four seeds, 2 s) on the DNa02 circuit, synaptic weights 5 % too strong fail the recurrent rate
-test, and 2 % too strong come close (2.7 standard errors).
+With the defaults (eight seeds, 2 s) on the DNa02 circuit, a weight per synapse 5 % too large on the torch side fails
+the recurrent rate test (+0.34 Hz against a bound of 0.20 Hz) and 2 % too large passes (+0.15 Hz). Four seeds were
+too few: a noisy standard error made a correct backend fail now and then.
 """
 import math
 import numpy as np
@@ -21,7 +22,9 @@ from digitalfly.api.models import ConnectomeParameters, Interventions, SensorSta
 
 RATE_TOLERANCE = 1e-9  # largest |torch − CPU| rate allowed (dimensionless rates in [0, 1])
 CORRELATION_MARGIN = 0.03  # torch-CPU per-neuron rate correlation may fall this far below CPU-CPU
-RELATIVE_SLACK = 0.01  # population and readout means may also differ by 1 % (beyond 3 standard errors)
+RELATIVE_SLACK = 0.01  # population and readout means may also differ by 1 % (beyond the t bound)
+CONFIDENCE = 0.001  # two-sided level of the t bound: a correct backend fails one metric in 1,000 by chance
+SEEDS = tuple(range(8))
 
 
 def _circuit(circuit: str | None, dynamics: str, backend: str, path=None, **changes):
@@ -70,15 +73,19 @@ def _spike_run(circuit, backend, seed, steps, left, right, path):
 
 
 def _same_mean(a: list[float], b: list[float]) -> tuple[bool, float, float]:
-    """(whether two sets of per-seed values share a mean within 3 standard errors + RELATIVE_SLACK, difference, bound)."""
+    """(whether two sets of per-seed values share a mean, difference, bound). The bound is Welch's t at the 99.9 %
+    two-sided level times the standard error of the difference, plus RELATIVE_SLACK of the larger mean."""
+    from scipy import stats
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
-    se = math.sqrt(a.var(ddof=1) / len(a) + b.var(ddof=1) / len(b)) if len(a) > 1 and len(b) > 1 else 0.
-    bound = 3 * se + RELATIVE_SLACK * max(abs(a.mean()), abs(b.mean())) + 1e-9
+    va, vb = (a.var(ddof=1) / len(a), b.var(ddof=1) / len(b)) if len(a) > 1 and len(b) > 1 else (0., 0.)
+    se = math.sqrt(va + vb)
+    df = (va + vb) ** 2 / (va ** 2 / (len(a) - 1) + vb ** 2 / (len(b) - 1)) if va + vb > 0 else 1.
+    bound = float(stats.t.ppf(1 - CONFIDENCE / 2, df)) * se + RELATIVE_SLACK * max(abs(a.mean()), abs(b.mean())) + 1e-9
     difference = float(b.mean() - a.mean())
     return bool(abs(difference) <= bound), difference, float(bound)
 
 
-def spiking_agreement(circuit: str | None = None, seconds: float = 2.0, seeds=(0, 1, 2, 3), left: float = .6,
+def spiking_agreement(circuit: str | None = None, seconds: float = 2.0, seeds=SEEDS, left: float = .6,
                       right: float = .4, path=None) -> dict:
     """Spiking dynamics on both backends, `seeds` runs each of `seconds` under constant sensor input."""
     steps = round(seconds * 1000)

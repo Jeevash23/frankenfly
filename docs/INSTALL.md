@@ -29,6 +29,7 @@ Options:
 | `--backend-only` | Skips Node.js and the interface. The toolkit, replay and tests work; `start.sh` needs the interface. For clusters and CI |
 | `--with builder` | Installs pyarrow (`backend/requirements-data.lock`) and prepares the FlyWire archive for circuit builds: about 61 MB of downloads, 115 MB in `.cache/circuits/` |
 | `--with flyvis` | Installs FlyVis with CPU-only PyTorch (`backend/requirements-vision.lock`, about 261 MB of downloads on Linux) and its pretrained networks (3.4 MB). Python 3.12 only |
+| `--with gpu` | Creates a second environment, `backend/.venv-gpu`, with CUDA PyTorch and MuJoCo Warp (`backend/requirements-gpu.lock`, about 2.9 GB of downloads; Linux x86-64 with an NVIDIA GPU) for the torch brain backend; start the app with it through `./scripts/start.sh --gpu`. See [DEPENDENCIES](DEPENDENCIES.md#optional-gpu-environment-torch-brain-backend-mujoco-warp) |
 | `--with recording` | Downloads the recorded-fly data listed in `data/recordings/downloads.json` (71 MB) into `.cache/recordings/` |
 | `--check` | Runs `scripts/doctor.py` at the end and fails if it finds a blocking problem |
 
