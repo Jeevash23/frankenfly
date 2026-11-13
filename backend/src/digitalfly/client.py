@@ -44,6 +44,11 @@ def _plain(value):
     return value.model_dump(mode="json") if hasattr(value, "model_dump") else value
 
 
+def _query(options: dict) -> dict:
+    """Query parameters: booleans as true/false, as the server reads them."""
+    return {k: str(v).lower() if isinstance(v, bool) else v for k, v in options.items()}
+
+
 class Client:
     def __init__(self, url: str = DEFAULT_URL, timeout: float = 30.0):
         parts = urllib.parse.urlsplit(url.rstrip("/"))
@@ -154,6 +159,34 @@ class Client:
         """Save the run under runs/ ({run_id, samples, path, download_url}); share_safe leaves out local paths,
         the host name and the platform string, for runs to publish."""
         return self._post("/api/export", {"share_safe": share_safe})
+
+    # Connectivity explorer (whole brain from the prepared archive, or a circuit by name; see docs/USAGE.md)
+    def explore_graphs(self) -> dict:
+        """The graphs the explorer can query ("brain" and every circuit) and the running circuit."""
+        return self._get("/api/explore/graphs")
+
+    def partners(self, query: str, direction: str = "upstream", graph: str = "brain", **options) -> dict:
+        """Upstream or downstream partners of cell types or FlyWire root IDs (comma-separated), by cell type
+        (group="cell_type") or neuron; options: side, threshold, limit, other_transmitters."""
+        return self._get("/api/explore/partners", query=query, direction=direction, graph=graph, **_query(options))
+
+    def paths(self, source: str, target: str, mode: str = "strongest", level: str = "cell_type", graph: str = "brain",
+              **options) -> dict:
+        """Strongest or shortest paths between cell types or neurons; options: threshold, limit, max_hops,
+        source_side, target_side, other_transmitters."""
+        return self._get("/api/explore/paths", source=source, target=target, mode=mode, level=level, graph=graph,
+                         **_query(options))
+
+    def influence(self, query: str, direction: str = "from", graph: str = "brain", **options) -> dict:
+        """Steady-state influence (BANC-style linear model) of the query on every neuron (direction="from"), or of
+        every neuron on the query ("onto"); options: group, side, threshold, limit, signed, other_transmitters."""
+        return self._get("/api/explore/influence", query=query, direction=direction, graph=graph, **_query(options))
+
+    def neuroglancer(self, groups=None, circuit: str | None = None, graph: str = "brain", **options) -> dict:
+        """A Neuroglancer link ({url, state, neurons, truncated, ...}) for groups of neurons, each {label, ids} or
+        {label, cell_type, side}, and/or a whole circuit; options: title, limit."""
+        body = {"graph": graph, "groups": list(groups or []), **({"circuit": circuit} if circuit else {}), **options}
+        return self._post("/api/explore/neuroglancer", body)
 
     # Waiting and watching
     def wait_until(self, predicate, timeout: float = 60.0, interval: float = 0.1) -> dict:

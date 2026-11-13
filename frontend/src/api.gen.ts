@@ -438,6 +438,25 @@ export interface NeuralParametersInput {
   time_scale?: number;
 }
 
+export interface NeuroglancerGroup {
+  label?: string | null;
+  ids?: string[] | null;
+  cell_type?: string | null;
+  side?: 'both' | 'left' | 'right';
+  color?: string | null;
+}
+
+/**
+ * Neurons to show in Neuroglancer: groups of root IDs or cell types in `graph`, or a whole circuit.
+ */
+export interface NeuroglancerRequest {
+  graph?: string;
+  groups?: NeuroglancerGroup[];
+  circuit?: string | null;
+  title?: string;
+  limit?: number;
+}
+
 export interface PairedDifference {
   condition: string;
   baseline: string;
@@ -571,6 +590,7 @@ export interface RequestBodies {
   'POST /api/connectivity/import': ConnectivityGraph;
   'POST /api/connectome/build': BuildRequest;
   'POST /api/connectome/parameters': ConnectomeParametersInput;
+  'POST /api/explore/neuroglancer': NeuroglancerRequest;
   'POST /api/export': ExportRequest;
   'POST /api/interventions': InterventionsInput;
   'POST /api/jobs/{job_id}/cancel': StrictModel;

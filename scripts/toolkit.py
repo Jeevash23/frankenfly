@@ -1,4 +1,5 @@
-"""DigitalFly research toolkit from the command line: trials, sweeps, bias curves, ablation scans and paths.
+"""DigitalFly research toolkit from the command line: trials, sweeps, bias curves, ablation scans, paths, and the
+connectivity explorer (partners, route, influence, neuroglancer).
 
     backend/.venv/bin/python scripts/toolkit.py trials --set neural_model=connectome --vary connectome_parameters.dynamics=rate,spiking
     backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
@@ -8,6 +9,10 @@
     backend/.venv/bin/python scripts/toolkit.py compare --recording fly.csv --run runs/<run folder>
     backend/.venv/bin/python scripts/toolkit.py compare --recording fly1.mat --recording fly2.mat --run runs/<a> --run runs/<b>
     backend/.venv/bin/python scripts/toolkit.py circuits
+    backend/.venv/bin/python scripts/toolkit.py partners --query DNa02 --direction upstream
+    backend/.venv/bin/python scripts/toolkit.py route --source LC10a --target DNa02 --mode strongest --level neuron
+    backend/.venv/bin/python scripts/toolkit.py influence --query LC10a --graph fafb783-steering
+    backend/.venv/bin/python scripts/toolkit.py neuroglancer --cell-type DNa02 --cell-type LC10a
 
 --set and --vary take dotted RunConfig names (for bias, ablation and paths: ConnectomeParameters names,
 with or without the "connectome_parameters." prefix). Values are read as JSON when they parse
@@ -33,6 +38,7 @@ sys.path.insert(0, str(ROOT / "backend/src"))
 from digitalfly import toolkit  # noqa: E402
 from digitalfly.api.models import ConnectomeParameters  # noqa: E402
 from digitalfly.neural.connectome import list_circuits, trace_paths  # noqa: E402
+from digitalfly import explore  # noqa: E402
 
 PREFIX = "connectome_parameters."
 # Settings that `trials` also builds from --seeds, --bearings and --distances.
@@ -382,6 +388,149 @@ def circuits(args):
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# The connectivity explorer (digitalfly.explore): the whole brain ("brain", the prepared archive) or any circuit.
+
+def explored(name, args, result, rows, graph):
+    report = {"command": name, **result, "graph_provenance": graph.provenance}
+    save(output_stem(name, args.out), rows, report, [] if graph.key == explore.BRAIN else [graph.key])
+
+
+def sign(value):
+    return {1: "+", -1: "−"}.get(int(value), "0")
+
+
+def partners(args):
+    graph = explore.load_graph(args.graph)
+    result = explore.partners(graph, args.query, args.direction, args.group, args.side, args.threshold, args.limit,
+                              args.other_transmitters)
+    q = result["query_neurons"]
+    print(f"{args.direction.capitalize()} partners of {', '.join(result['query'])} ({q['count']} neurons, "
+          f"{q['left']} left / {q['right']} right) in {graph.title}, connections ≥ {args.threshold} synapses: "
+          f"{result['total_synapses']:,} synapses from {result['groups']:,} {args.group.replace('_', ' ')}s.\n")
+    if args.group == "cell_type":
+        print("| Cell type | Super class | Transmitter | Partners (L/R) | Synapses | Fraction | Sign |\n| --- | --- | --- | --- | --- | --- | --- |")
+        for r in result["rows"]:
+            print(f"| {r['cell_type']} | {r['super_class']} | {r['transmitter']} | {r['partners']} ({r['left']}/{r['right']}) | "
+                  f"{r['synapses']:,} | {r['fraction']:.3f} | {sign(r['sign'])} |")
+    else:
+        print("| Neuron | Cell type | Side | Transmitter | Synapses | Fraction | Sign |\n| --- | --- | --- | --- | --- | --- | --- |")
+        for r in result["rows"]:
+            print(f"| {r['id']} | {r['cell_type']} | {r['side']} | {r['transmitter']} | {r['synapses']:,} | "
+                  f"{r['fraction']:.3f} | {sign(r['sign'])} |")
+    print(f"\n{result['rule']}")
+    explored("partners", args, result, [{k: v for k, v in r.items() if k != "in_running_circuit"} for r in result["rows"]],
+             graph)
+
+
+def route(args):
+    graph = explore.load_graph(args.graph)
+    result = explore.paths(graph, args.source, args.target, args.mode, args.level, args.threshold, args.limit,
+                           args.hops, args.source_side, args.target_side, args.other_transmitters)
+    print(f"{args.mode.capitalize()} {args.level.replace('_', '-')} paths from {', '.join(result['source'])} to "
+          f"{', '.join(result['target'])} in {graph.title} (connections ≥ {args.threshold} synapses):\n")
+    if not result["paths"]:
+        print(f"No path within {args.hops} steps.")
+    print("| Path | Steps | Strength | Net sign |\n| --- | --- | --- | --- |")
+    rows = []
+    for p in result["paths"]:
+        text = " → ".join(f"{n['cell_type']} {n['id']} ({n['side']})" for n in p["neurons"]) if args.level == "neuron" \
+            else " → ".join(p["cell_types"])
+        print(f"| {text} | {p['steps']} | {p['strength']:.4g} | {sign(p['net_sign'])} |")
+        rows.append({"path": text, "steps": p["steps"], "strength": p["strength"], "net_sign": p["net_sign"],
+                     "synapses": " ".join(str(e["synapses"]) for e in p["edges"])})
+    print(f"\n{result['rule']}")
+    explored("route", args, result, rows, graph)
+
+
+def influence(args):
+    graph = explore.load_graph(args.graph)
+    result = explore.influence(graph, args.query, args.direction, args.group, args.side, args.threshold, args.limit,
+                               not args.unsigned, args.other_transmitters)
+    m = result["model"]
+    what = "of stimulating" if args.direction == "from" else "on"
+    print(f"Steady-state influence {what} {', '.join(result['query'])} ({result['query_neurons']} neurons) in "
+          f"{graph.title}: λ = {m['lambda']:.4g} ({m['scale_rule']}), {m['solver']}, relative residual "
+          f"{m['relative_residual']:.1e}; {result['neurons_reached']:,} neurons with nonzero influence.\n")
+    if args.group == "cell_type":
+        print("| Cell type | Super class | Influence | log10 | Left | Right | Neurons reached |\n| --- | --- | --- | --- | --- | --- | --- |")
+        for r in result["rows"]:
+            print(f"| {r['cell_type']} | {r['super_class']} | {r['influence']:+.4g} | {r['log10']:.2f} | {r['left']:+.3g} | "
+                  f"{r['right']:+.3g} | {r['reached']}/{r['neurons']} |")
+    else:
+        print("| Neuron | Cell type | Side | Influence | log10 |\n| --- | --- | --- | --- | --- |")
+        for r in result["rows"]:
+            print(f"| {r['id']} | {r['cell_type']} | {r['side']} | {r['influence']:+.4g} | {r['log10']:.2f} |")
+    print(f"\n{result['rule']}")
+    explored("influence", args, result, [{k: v for k, v in r.items() if k != "in_running_circuit"} for r in result["rows"]],
+             graph)
+
+
+def neuroglancer(args):
+    groups = [{"label": t, "cell_type": t} for t in args.cell_type]
+    if args.ids:
+        groups.append({"label": "neurons", "ids": [i.strip() for i in args.ids.split(",") if i.strip()]})
+    if not groups and not args.circuit:
+        sys.exit("Give --cell-type, --ids or --circuit.")
+    request = explore.NeuroglancerRequest(graph=args.graph, groups=groups, circuit=args.circuit, limit=args.limit,
+                                          title=args.title)
+    result = explore.neuroglancer_request(request)
+    for g in result["groups"]:
+        print(f"{g['label']}: {g['neurons']} neurons ({g['color']})")
+    if result["truncated"]:
+        print(f"Only the first {args.limit} neurons are in the link (--limit).")
+    print(f"\n{result['url']}\n\n{result['note']}")
+    if args.out:
+        stem = output_stem("neuroglancer", args.out)
+        toolkit.with_ending(stem, ".json").write_text(json.dumps(result["state"], indent=1))
+        print(f"\nSaved the Neuroglancer state to {shown(stem)}.json (paste it into Neuroglancer's JSON state editor).")
+
+
+def add_explore_commands(commands):
+    p = commands.add_parser("partners", help="Upstream or downstream partners of cell types or neurons")
+    p.add_argument("--query", required=True, help="Cell types and/or FlyWire root IDs, comma-separated")
+    p.add_argument("--direction", choices=["upstream", "downstream"], default="upstream")
+    p.add_argument("--group", choices=["cell_type", "neuron"], default="cell_type")
+    p.add_argument("--side", choices=["both", "left", "right"], default="both", help="Only the query's neurons on this side")
+    p.add_argument("--limit", type=int, default=30)
+    p.set_defaults(handler=partners)
+    r = commands.add_parser("route", help="Strongest or shortest paths between cell types or neurons (exact, Dijkstra)")
+    r.add_argument("--source", required=True)
+    r.add_argument("--target", required=True)
+    r.add_argument("--mode", choices=["strongest", "shortest"], default="strongest")
+    r.add_argument("--level", choices=["cell_type", "neuron"], default="cell_type")
+    r.add_argument("--hops", type=int, default=10, help="Longest path, in steps (default 10)")
+    r.add_argument("--limit", type=int, default=10)
+    r.add_argument("--source-side", choices=["both", "left", "right"], default="both")
+    r.add_argument("--target-side", choices=["both", "left", "right"], default="both")
+    r.set_defaults(handler=route)
+    i = commands.add_parser("influence", help="Steady-state influence (BANC-style linear model) from or onto a query")
+    i.add_argument("--query", required=True, help="Cell types and/or FlyWire root IDs, comma-separated")
+    i.add_argument("--direction", choices=["from", "onto"], default="from",
+                   help="from: what stimulating the query reaches; onto: what reaches the query")
+    i.add_argument("--group", choices=["cell_type", "neuron"], default="cell_type")
+    i.add_argument("--side", choices=["both", "left", "right"], default="both")
+    i.add_argument("--unsigned", action="store_true", help="Count every connection as excitatory")
+    i.add_argument("--limit", type=int, default=30)
+    i.set_defaults(handler=influence)
+    n = commands.add_parser("neuroglancer", help="A Neuroglancer link for cell types, neurons or a whole circuit")
+    n.add_argument("--cell-type", action="append", default=[], help="A cell type to show (repeatable; one colour each)")
+    n.add_argument("--ids", help="FlyWire root IDs, comma-separated")
+    n.add_argument("--circuit", help="Show every neuron of this circuit (its seeds in their own colour)")
+    n.add_argument("--title", default="DigitalFly selection")
+    n.add_argument("--limit", type=int, default=5000, help="At most this many neurons in the link (default 5000)")
+    n.add_argument("--out", help="Also save the Neuroglancer state as JSON")
+    n.set_defaults(handler=neuroglancer)
+    for sub in (p, r, i, n):
+        sub.add_argument("--graph", default=explore.BRAIN,
+                         help='"brain" (default: the whole FlyWire v783 brain, from the prepared archive) or a circuit name')
+    for sub in (p, r, i):
+        sub.add_argument("--threshold", type=int, default=5, help="Keep connections of at least this many synapses (default 5)")
+        sub.add_argument("--other-transmitters", choices=["excluded", "excitatory"], default="excluded",
+                         help="Sign of dopamine, serotonin, octopamine and unknown transmitters (default: excluded, 0)")
+        sub.add_argument("--out", help="Output file stem (.csv and .json are written)")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # Assumption sensitivity (`robustness`) and the readout table (`readouts`), from digitalfly.robustness:
 #   scripts/toolkit.py readouts                                   # "What the circuits compute": DNa02 R − L at 0.6 s
 #   scripts/toolkit.py robustness --set circuit=fafb783-steering  # bias conclusions over sign rule, threshold, dynamics
@@ -587,12 +736,15 @@ def main():
         sub.add_argument("--out", help="Output file stem (.csv and .json are written)")
     j.add_argument("--out", help="Output file stem for the report (.json); the run itself goes to --export-dir")
     add_assumption_commands(commands)
+    add_explore_commands(commands)
     args = parser.parse_args()
     try:
         args.handler(args)
     except ValidationError as exc:  # a setting out of range, in one line per problem
         sys.exit("; ".join(f"Invalid setting {'.'.join(map(str, e['loc']))}: " * bool(e["loc"])
                            + e["msg"].removeprefix("Value error, ") for e in exc.errors()))
+    except explore.ExploreError as exc:
+        sys.exit(str(exc))
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         sys.exit(f"{type(exc).__name__}: {exc}")
 
