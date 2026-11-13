@@ -208,7 +208,8 @@ jobs:
           "$RUNNER_TEMP/audit/bin/pip-audit" --disable-pip --require-hashes --progress-spinner off \
             "${ignore[@]/#/--ignore-vuln=}" \
             -r backend/requirements.lock -r backend/requirements-data.lock \
-            -r backend/requirements-vision.lock -r backend/requirements-tools.lock
+            -r backend/requirements-vision.lock -r backend/requirements-tools.lock \
+            -r backend/requirements-nwb.lock
 
       - uses: actions/setup-node@v7
         with:

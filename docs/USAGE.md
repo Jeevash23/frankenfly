@@ -182,6 +182,42 @@ backend/.venv/bin/python scripts/benchmark.py --neural   # wall time per 1 ms ne
 backend/.venv/bin/python scripts/benchmark.py --flyvis   # FlyVis eyes, when FlyVis is installed
 ```
 
+## Provenance, methods and NWB export
+
+Each row of the run library has an export menu (the download arrow in **Files**):
+
+- **ZIP**: every file of the run, including its provenance manifest and methods draft (runs saved since v0.7).
+- **NWB**: the run as a Neurodata Without Borders file. It needs pynwb (`./scripts/setup.sh --with nwb`); without it the entry says so.
+- **Manifest**: the run's RO-Crate provenance manifest (`ro-crate-metadata.json`): versions, git commit, lock and data hashes, connectome sources, seed, model choices and the settings changed from the defaults. See [sharing](SHARING.md#provenance-and-standard-formats).
+- **Methods**: a methods paragraph drafted from the manifest, under the row, with **Copy**. A comparison's statistics panel has a **Methods draft** button for the whole comparison.
+
+The same from the API and the toolkit:
+
+```sh
+curl http://127.0.0.1:8000/api/runs/YOUR_RUN_FOLDER/manifest
+curl http://127.0.0.1:8000/api/runs/YOUR_RUN_FOLDER/methods            # {"markdown": "..."}
+curl http://127.0.0.1:8000/api/batches/COMPARISON_ID/methods
+curl -o run.nwb http://127.0.0.1:8000/api/runs/YOUR_RUN_FOLDER/nwb      # 503 until pynwb is installed
+backend/.venv/bin/python scripts/toolkit.py manifest runs/YOUR_RUN_FOLDER
+backend/.venv/bin/python scripts/toolkit.py methods runs/RUN_A runs/RUN_B   # one run, or a comparison
+backend/.venv/bin/python scripts/toolkit.py nwb runs/YOUR_RUN_FOLDER --out run.nwb   # also validates it
+```
+
+### NWB export
+
+`digitalfly.nwb.export_run(folder)` (and the commands above) writes NWB 2 with core types only, and the file passes pynwb's validator (`digitalfly.nwb.validate(path)` returns its problems, none when it conforms):
+
+| Where | What |
+| --- | --- |
+| `stimulus/target_position`, `stimulus/target_intensity` | The target, piecewise constant: each value holds from its timestamp (the step it was set in) until the next |
+| `processing/behavior` | `Position/body_position` (x, y, z) and `CompassDirection/heading` (yaw); `BehavioralTimeSeries`: `speed`, `motor_command` and, with the FlyGym body, `joint_position`, `ground_contact_force` and `cpg_phase` |
+| `processing/model` | `sensor_input` and `raw_sensor_input` (left, right); `readout_activity`, one column per telemetry rate column, with `readout_columns` naming each column's cell type, side and FlyWire root IDs; `cell_type_activity` and `cell_types` when the run recorded per-type activity |
+| `units` | Spiking runs since v0.7: every readout neuron's spike times, with `cell_type`, `side`, `root_id` and `neuron_index` |
+| `intervals/interventions` | One row per interval of constant interventions: `code` (as telemetry's `intervention_code`), the full `interventions` as JSON, and `source` (initial, manual or protocol) |
+| `scratch/digitalfly_manifest` | The run's provenance manifest |
+
+Lengths are stored in millimetres with `conversion` 0.001 (so data × conversion is in metres), forces in µN with conversion 1e-6. Spiking readout activity is firing rate ÷ `rate_scale_hz`, stored with `conversion` = `rate_scale_hz`, so it reads in Hz; rate-model activity is dimensionless (`n.a.`). The session description and `experiment_description` (the methods draft) say plainly that every signal is simulated. Runs saved before v0.7 convert too, without the spike times they never recorded.
+
 ## Scripting the app from Python
 
 `digitalfly.client` drives the running app with the same commands as the browser. It uses only the Python standard library (plus `websockets`, installed with the app, for live telemetry), so it also works from another environment such as a notebook's, when you copy `backend/src/digitalfly/client.py` there:

@@ -15,6 +15,8 @@ Usage: ./scripts/setup.sh [--backend-only] [--with builder,flyvis,recording] [--
                      flyvis     FlyVis with CPU-only PyTorch (backend/requirements-vision.lock, about
                                 261 MB), then its pretrained networks (3.4 MB)
                      recording  the recorded-fly data in data/recordings/downloads.json (71 MB)
+                     nwb        pynwb for NWB export of saved runs (backend/requirements-nwb.lock,
+                                about 20 MB)
   --check          run scripts/doctor.py at the end and fail if it finds a blocking problem
 
 Run it again after every git pull: it reinstalls only what the locks changed. See docs/INSTALL.md.
@@ -121,6 +123,10 @@ if wants flyvis; then
   echo "Installing FlyVis with CPU-only PyTorch and fetching its pretrained networks..."
   backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-vision.lock
   backend/.venv/bin/python scripts/fetch_flyvis.py
+fi
+if wants nwb; then
+  echo "Installing pynwb for NWB export..."
+  backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-nwb.lock
 fi
 if wants recording; then
   for name in $(backend/.venv/bin/python -c 'import json; print(" ".join(r["name"] for r in json.load(open("data/recordings/downloads.json"))))'); do

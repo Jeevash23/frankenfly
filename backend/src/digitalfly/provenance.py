@@ -25,7 +25,7 @@ MANIFEST_FILE = "ro-crate-metadata.json"
 METHODS_FILE = "methods.md"
 REPOSITORY = "https://github.com/Jeevash23/frankenfly"
 CONTEXT = ["https://w3id.org/ro/crate/1.1/context",
-           {"digitalfly": "https://github.com/Jeevash23/frankenfly/blob/main/docs/SHARING.md#provenance-manifest-terms-"}]
+           {"digitalfly": "https://github.com/Jeevash23/frankenfly/blob/main/docs/SHARING.md#"}]
 CC_BY_NC = "https://creativecommons.org/licenses/by-nc/4.0/"
 FORMATS = {".json": "application/json", ".csv": "text/csv", ".jsonl": "application/x-ndjson", ".npz": "application/zip",
            ".md": "text/markdown", ".nwb": "application/x-nwb"}
@@ -549,7 +549,7 @@ def _sentences(text: str) -> list[str]:
 def run_files(directory: Path) -> dict[str, Path]:
     """The run files a manifest lists, in a fixed order: every regular file of the folder except the manifest, the
     library's own notes and replay verdicts, and NWB files made later."""
-    skip = {MANIFEST_FILE, "annotations.json", "verification.json"}
+    skip = {MANIFEST_FILE, "annotations.json", "replay.json"}
     return {p.name: p for p in sorted(directory.iterdir())
             if p.is_file() and not p.is_symlink() and p.name not in skip and not p.name.startswith(".") and p.suffix != ".nwb"}
 
