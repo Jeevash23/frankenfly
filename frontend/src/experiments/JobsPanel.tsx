@@ -1,10 +1,10 @@
-import {Hammer, ShieldCheck, Square} from 'lucide-react';
+import {ClipboardCheck, Hammer, ShieldCheck, Square} from 'lucide-react';
 import type {Job} from '../types';
 import {jobActive, jobStatus} from '../jobs';
 
 const SHOWN = 6;
 
-// Circuit builds and replay checks running in their own processes, newest first.
+// Circuit builds, replay checks and scorecards running in their own processes, newest first.
 export function JobsPanel({jobs, cancel}: {jobs: Job[]; cancel: (id: string) => void}) {
   if (!jobs.length) return null;
   const shown = jobs.slice(0, SHOWN);
@@ -14,12 +14,20 @@ export function JobsPanel({jobs, cancel}: {jobs: Job[]; cancel: (id: string) => 
         <div>
           <h2>Background jobs</h2>
         </div>
-        <span className="subtle-label">Builds and replay checks, in their own processes</span>
+        <span className="subtle-label">
+          Builds, replay checks and scorecards, in their own processes
+        </span>
       </div>
       <ul>
         {shown.map((job) => (
           <li key={job.id} className={`job-row ${job.status}`}>
-            {job.kind === 'build' ? <Hammer size={14} /> : <ShieldCheck size={14} />}
+            {job.kind === 'build' ? (
+              <Hammer size={14} />
+            ) : job.kind === 'scorecard' ? (
+              <ClipboardCheck size={14} />
+            ) : (
+              <ShieldCheck size={14} />
+            )}
             <span className="job-label">
               {job.label}
               <small>

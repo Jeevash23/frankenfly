@@ -1637,3 +1637,128 @@ fieldset.condition-list {
   margin: 0;
   line-height: 1.5;
 }
+/* Validation scorecard. */
+.scorecard-panel {
+  margin-top: 20px;
+}
+.scorecard-body {
+  padding: 0 20px 16px;
+}
+.scorecard-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 16px;
+  margin: 12px 0;
+}
+.scorecard-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-min);
+  color: var(--ink-label);
+}
+.scorecard-summary {
+  font-size: 12px;
+  color: #4d6339;
+  margin: 10px 0;
+}
+.scorecard-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--text-min);
+  color: #4d6339;
+  font-variant-numeric: tabular-nums;
+}
+.scorecard-table th,
+.scorecard-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 12px 8px 0;
+  border-top: 1px solid #e4edd7;
+}
+.scorecard-table thead th {
+  font-weight: 400;
+  color: #62714e;
+  border-top: 0;
+}
+.scorecard-table td:first-child {
+  min-width: 220px;
+  max-width: 360px;
+}
+.scorecard-table summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.scorecard-table details p {
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+.scorecard-status {
+  display: inline-block;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 9px;
+  border: 1px solid #dfe1d6;
+  background: #f8f9f2;
+  font-weight: 500;
+}
+.scorecard-status.pass {
+  border-color: #b9d0a8;
+  background: #eef5e6;
+  color: #2f5a2a;
+}
+.scorecard-status.partial,
+.scorecard-status.inconclusive {
+  border-color: #e3cfa9;
+  background: #faf3e4;
+  color: #6b5126;
+}
+.scorecard-status.fail,
+.scorecard-status.error {
+  border-color: #e2bdb2;
+  background: #fbefeb;
+  color: var(--ink-error);
+}
+.scorecard-status.not_testable,
+.scorecard-status.blocked {
+  color: var(--ink-micro);
+}
+.by-construction {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-warning);
+}
+.scorecard-tests {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--text-min);
+  color: #4d6339;
+  line-height: 1.7;
+}
+@media (max-width: 640px) {
+  .scorecard-body {
+    padding: 0 16px 14px;
+  }
+  .scorecard-table thead {
+    display: none;
+  }
+  .scorecard-table,
+  .scorecard-table tbody,
+  .scorecard-table tr,
+  .scorecard-table td {
+    display: block;
+  }
+  .scorecard-table tr {
+    border-top: 1px solid #e4edd7;
+    padding: 8px 0;
+  }
+  .scorecard-table td {
+    border-top: 0;
+    padding: 3px 0;
+  }
+  .scorecard-table td:first-child {
+    min-width: 0;
+    max-width: none;
+  }
+}

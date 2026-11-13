@@ -280,7 +280,7 @@ def test_capabilities_report_the_eye_renderer_jobs_and_presets(client, monkeypat
     monkeypatch.setattr("digitalfly.main.select_gl", lambda: None)
     capabilities = client.get("/api/capabilities").json()
     assert capabilities["compound_eye_sensor"] is False
-    assert capabilities["jobs"] == {"available": True, "kinds": ["build", "replay"]} and capabilities["presets"]["available"]
+    assert capabilities["jobs"] == {"available": True, "kinds": ["build", "replay", "scorecard"]} and capabilities["presets"]["available"]
     monkeypatch.setattr("digitalfly.main.select_gl", lambda: "glfw")
     assert client.get("/api/capabilities").json()["compound_eye_sensor"] is True
 

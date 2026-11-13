@@ -3,7 +3,8 @@
 Each job runs one subprocess, started from an argument list (never a shell) in its own session, at a lower
 scheduling priority. Cancelling a job terminates its whole process group. One job of each kind runs at a time;
 later ones wait in a queue. Output is kept as a bounded log tail; a line "@progress F" (0 ≤ F ≤ 1) updates the
-job's progress instead of the log. Circuit builds (builds.py) and replay checks of saved runs are the two kinds.
+job's progress instead of the log. Circuit builds (builds.py), replay checks of saved runs and validation scorecards
+are the three kinds.
 """
 from collections import deque
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ import uuid
 import psutil
 
 ROOT = Path(__file__).resolve().parents[4]
-KINDS = ("build", "replay")
+KINDS = ("build", "replay", "scorecard")
 KEEP = 50  # jobs listed, newest first; waiting and running ones are never dropped
 LOG_LINES = 200
 QUEUE_LIMIT = 20  # waiting jobs per kind
@@ -274,6 +275,17 @@ def submit_replay(jobs: JobManager, directory: Path) -> Job:
                        env=lambda: replay_environment(engine), finish=verdict_result,
                        duplicate="A replay of this run is already waiting or running.")
 
+
+def submit_scorecard(jobs: JobManager, model: str, engine: str, circuit: str | None = None, dynamics: str = "rate",
+                     key: str | None = None, label: str | None = None) -> Job:
+    """Queue `scripts/toolkit.py scorecard` for one model; it publishes runs/scorecards/<key>.json when done."""
+    command = [sys.executable, str(ROOT / "scripts/toolkit.py"), "scorecard", "--model", model, "--engine", engine,
+               "--progress"]
+    if model == "connectome":
+        command += ["--circuit", circuit, "--set", f"dynamics={dynamics}"]
+    return jobs.submit("scorecard", label or f"Scorecard {key}", command, target=key,
+                       env=lambda: replay_environment(engine),
+                       duplicate="This model's scorecard is already waiting or running.")
 
 def _writer_alive(path: Path) -> bool:
     # The circuit builder names partial files .NAME.PID.part (scripts/build_circuit.py write_atomic).

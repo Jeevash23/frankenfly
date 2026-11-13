@@ -525,6 +525,16 @@ export interface RunPage {
   runs: RunItem[];
 }
 
+/**
+ * POST /api/scorecards/run: score one model in a background job (default circuit for the connectome model).
+ */
+export interface ScorecardRequest {
+  model?: 'engineered' | 'connectome';
+  circuit?: string | null;
+  dynamics?: 'rate' | 'spiking';
+  engine?: 'toy' | 'flygym';
+}
+
 export interface Shutdown {
   instance_id: string;
 }
@@ -580,6 +590,7 @@ export interface RequestBodies {
   'POST /api/run': StrictModel;
   'PATCH /api/runs/{key}': RunAnnotations;
   'POST /api/runs/{key}/replay': StrictModel;
+  'POST /api/scorecards/run': ScorecardRequest;
   'POST /api/shutdown': Shutdown;
   'POST /api/speed': Speed;
   'POST /api/step': StrictModel;
