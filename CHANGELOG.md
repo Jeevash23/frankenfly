@@ -9,6 +9,9 @@ Unless an entry says otherwise, a release keeps earlier runs replaying with the 
 ### Added
 
 - `docs/ROADMAP.md`: the plan from v0.7 to v1.0, with a survey of related tools and datasets.
+- **A connectivity explorer** (`digitalfly.explore`) over the whole FlyWire v783 brain, read from the prepared archive, or any circuit: upstream and downstream partners by cell type or neuron; the strongest (largest product of input fractions) and shortest (fewest steps) paths between cell types or neurons, exact by Dijkstra, with the best path through each other connection as alternatives; and a steady-state influence score after the BANC ConnectomeInfluenceCalculator (signed synapse counts rescaled so the largest real eigenvalue is 0.99, `r = (I − W̃)⁻¹ s`), labelled a linear approximation. Signs follow the model's transmitter rule. On the reference laptop the whole brain loads in about half a second and holds about 0.4 GB; queries take 0.01–1.4 s. It is exposed through `GET /api/explore/graphs`, `/lookup`, `/partners`, `/paths` and `/influence`, the Python client (`partners`, `paths`, `influence`, `neuroglancer`, `explore_graphs`) and `scripts/toolkit.py partners`, `route`, `influence` and `neuroglancer`.
+- **Connectivity explorer tab** in the Neural atlas (`#/atlas/explore`). Every result row silences or activates its cell type in the running circuit in one click, or opens **Build a circuit** with it as the seed; a path can seed a build as a whole.
+- **Neuroglancer links** for any selection, path or circuit (`POST /api/explore/neuroglancer`): one coloured layer per group in a brain outline, with the neurons streamed from FlyWire's public v783 segmentation, so nothing is downloaded beforehand. At most 5,000 neurons per link by default.
 
 ### Fixed
 
