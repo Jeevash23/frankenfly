@@ -1,4 +1,4 @@
-# DigitalFly — v0.6 status
+# DigitalFly — v0.7 status
 
 DigitalFly is a local research workspace for embodied sensorimotor experiments. See the [quick start](README.md#quick-start) for setup and shutdown, and [INSTALL](docs/INSTALL.md) for Docker, the dev container and headless servers. Changes by version are in the [changelog](CHANGELOG.md).
 
@@ -14,10 +14,34 @@ DigitalFly is a local research workspace for embodied sensorimotor experiments. 
 - Records: a run library with paging, filters, tags, notes and deletion; CSV/JSON/ZIP exports (schema 5, optionally share-safe and with per-cell-type activity) written off the simulation thread; exact replay from the command line or as a background job in the app, which also says whether the installed software still matches the run's.
 - Male/female anatomical surfaces and twelve published neuron skeletons, and a validated import of small connectivity graphs, which never drives the body.
 - One authoritative simulation worker that survives failing commands, builds a new configuration before replacing the running one, checks commands against the circuit actually loaded, pauses at its recording limits and shuts down gracefully (Quit, or Save current run & quit). A Python client and examples drive the running app from scripts.
-- Installation: `scripts/setup.sh` (with `--backend-only`, `--with builder,flyvis,recording` and `--check`), `scripts/doctor.py`, automatic OpenGL backend selection, Python 3.12 (recorded stack) or 3.13 and 3.14 without FlyVis, a Docker image with headless EGL, and a dev container.
+- Installation: `scripts/setup.sh` (with `--backend-only`, `--with builder,flyvis,recording,nwb,mcp,gpu` and `--check`), `scripts/doctor.py`, automatic OpenGL backend selection, Python 3.12 (recorded stack) or 3.13 and 3.14 without FlyVis, a Docker image with headless EGL, and a dev container.
+- **v0.7, the research-hub foundations** ([roadmap](docs/ROADMAP.md)):
+  - A validation scorecard (`scripts/toolkit.py scorecard`, the **Scorecard** page) that scores each model against published perturbation results, with rules fixed in advance ([results and caveats](docs/RESEARCH.md)).
+  - A connectivity explorer (the **Explorer** page and the toolkit) over the whole FlyWire v783 brain or any circuit: partners, shortest and strongest routes, a linear influence score and Neuroglancer links. Every result can be silenced, activated or used to seed a circuit.
+  - A provenance manifest (RO-Crate) and a drafted methods paragraph with every export (schema 6), and optional NWB export that passes pynwb's validator.
+  - An optional GPU brain backend (`connectome_parameters.backend = "torch"`, in its own environment, `./scripts/setup.sh --with gpu`), checked against the CPU backend by an agreement harness. Batched MuJoCo Warp worlds are benchmarked but not yet used by the toolkit.
+  - An MCP server (`scripts/mcp.py`) with 32 tools and an append-only audit log, so AI agents can drive the app; and a plugin API (version 1, [PLUGINS.md](docs/PLUGINS.md)) for sensors, stimulus programs, scorecard tests, metrics and toolkit commands.
+  - The app is reorganised as a hub: a sidebar, an Overview page, compact page headers, a Ctrl+K command palette, light and dark themes and a phone layout.
 - CI on every pull request: backend tests on Python 3.12–3.14, FlyGym physics tests under Xvfb, frontend checks on Node 22 and 24, browser end-to-end tests, a generated-type check and dependency audits; a Docker build and smoke test; a weekly download-link check.
 
 ## Validation summary
+
+### v0.7
+
+v0.7 was checked on the reference laptop (x86-64 Linux, CachyOS, Python 3.12, Node 26, an RTX 4050 Laptop GPU) with the prepared FlyWire archive and the FlyVis extra installed:
+
+| Check | v0.7 result |
+| --- | --- |
+| `./scripts/check.sh` | 442 backend tests passed, 8 skipped (FlyGym physics included); 119 frontend unit tests passed; formatting, TypeScript and the production build passed |
+| GPU backend (`backend/.venv-gpu`) | `backend/tests/test_gpu.py`: 17 passed. The agreement harness passes on all five circuits (rate: largest difference 6.1e-16; spiking: per-neuron rate correlation between the backends equal to that between CPU seeds) |
+| Browser end to end | 16 Playwright tests passed in headless Chromium, including the new sidebar, redirects, theme, palette and phone drawer |
+| MCP server | Started over stdio and drove a short run against a locally started app: tools listed with their annotations, a run reset with a plugin sensor, exported, read back with its manifest, and exported as NWB |
+
+**Speed** (`scripts/benchmark.py --neural --backend both`, measured while another job kept the GPU busy, so pessimistic): spiking dynamics run 3.7–4.8× faster on the GPU for the committed circuits and 14× for the whole brain (17.5 → 1.25 ms per 1 ms step); rate dynamics 7.9× for the whole brain (5.5 → 0.69 ms) and between no gain and 1.9× for the small circuits. Details are in the [research guide](docs/RESEARCH.md).
+
+**Not verified for v0.7:** GitHub Actions has not run on this repository since 13 October 2026, so the CI matrix (Python 3.13 and 3.14, Node 22 and 24, the Docker build, the dependency audits including the new MCP and GPU locks) was not exercised for v0.7; macOS and Docker were not re-run; the GPU environment's packages were reflink-copied from an existing installation, so pip did not hash-check them.
+
+### v0.6
 
 The v0.6 validation ran on x86-64 Linux with Python 3.12, Node 22.22 and the pinned dependencies, in a container without a display, libEGL or OSMesa: `./scripts/check.sh` therefore ran the physics under `xvfb-run` with `MUJOCO_GL=glfw`, and headless EGL was verified in the Docker image instead. The prepared FlyWire archive was present; the FlyVis install and the recorded fly could not be downloaded there. v0.2 was validated on macOS/ARM64; v0.3–v0.6 have not been re-run there. These describe tested platforms, not a required hardware model.
 

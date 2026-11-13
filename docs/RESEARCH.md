@@ -1,4 +1,4 @@
-# DigitalFly research workspace — v0.6
+# DigitalFly research workspace — v0.7
 
 This is an experimental sensorimotor workbench with explicit modeling assumptions. Its tests establish computational behavior and repeatability, not biological validity. See the [setup instructions](../README.md#quick-start) and [validation summary](../STATUS.md).
 

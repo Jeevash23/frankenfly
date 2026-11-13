@@ -6,6 +6,29 @@ Unless an entry says otherwise, a release keeps earlier runs replaying with the 
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-13
+
+Version-bump commit `2ec23c9`.
+
+The first release on the way to a research hub (plan: [docs/ROADMAP.md](docs/ROADMAP.md)), built as the roadmap's five v0.7 tracks and a redesign:
+
+- **A.** A validation scorecard that scores each model against published perturbation results.
+- **B.** A connectivity explorer, with Neuroglancer links.
+- **C.** A provenance manifest, a methods draft and NWB export for every run.
+- **D.** An optional GPU brain backend.
+- **E.** An MCP server for AI agents, and a plugin API.
+- **Redesign.** The app is reorganised as a hub with a sidebar, an Overview page, a command palette and a dark theme.
+
+Results remain properties of these models, not fly biology.
+
+**Replay compatibility.** Every new option is off by default: the torch backend, plugins, and per-run plugin choices, which are not even serialized when unset. So committed circuits and default parameters compute exactly what v0.6 did, and configuration hashes and exports of runs without the new options are unchanged. Exports move to schema 6 (they add the provenance manifest and methods draft), and runs saved by earlier versions still load, replay, and convert to NWB. No pin that changes replay numbers moved.
+
+**Intentional behavior changes:**
+
+- An empty or unknown address opens the Overview instead of the Workbench.
+- The old page addresses (`#/experiments`, `#/atlas/…`) redirect to their new pages.
+- Background jobs run with unbuffered output, so a failed job reports its real error.
+
 ### Added
 
 - `docs/ROADMAP.md`: the plan from v0.7 to v1.0, with a survey of related tools and datasets.
