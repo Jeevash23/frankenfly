@@ -1,7 +1,18 @@
 import {ArrowDownToLine, Check, CircleHelp, FlaskConical, Layers3, Unplug, X} from 'lucide-react';
 import type {State} from '../types';
+import {useNwbAvailable} from '../experiments/RunExports';
 
 export type Exported = {samples: number; download_url: string; path: string; share_safe?: boolean};
+
+// The saved run's NWB download, from its ZIP's URL (/api/exports/<run key>.zip).
+export function nwbUrl(downloadUrl: string): string {
+  const key =
+    downloadUrl
+      .split('/')
+      .pop()
+      ?.replace(/\.zip$/, '') ?? '';
+  return `/api/runs/${encodeURIComponent(key)}/nwb`;
+}
 
 export function Alerts({
   state,
@@ -20,6 +31,7 @@ export function Alerts({
   exported: Exported | null;
   dismissExport: () => void;
 }) {
+  const nwb = useNwbAvailable();
   return (
     <>
       {serverClosed && (
@@ -77,6 +89,11 @@ export function Alerts({
           <a href={exported.download_url} download>
             Download ZIP <ArrowDownToLine size={14} />
           </a>
+          {nwb && (
+            <a href={nwbUrl(exported.download_url)} download>
+              NWB <ArrowDownToLine size={14} />
+            </a>
+          )}
           <button
             className="icon-button"
             onClick={dismissExport}

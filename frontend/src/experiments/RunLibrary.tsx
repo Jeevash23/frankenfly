@@ -23,6 +23,7 @@ import {useCircuitList} from '../connectome/useCircuit';
 import {ComparisonSummary} from './ComparisonSummary';
 import {LibraryFilters} from './LibraryFilters';
 import {RunNotes} from './RunNotes';
+import {MethodsDraft, RunExports} from './RunExports';
 import {runTitle, SavedComparison} from './SavedComparison';
 
 const MAX_SELECTED = 4;
@@ -428,6 +429,7 @@ function RunRow({
   remove: () => void;
   keep: () => void;
 }) {
+  const [methods, setMethods] = useState(false);
   const tags = run.tags ?? [];
   return (
     <>
@@ -512,9 +514,12 @@ function RunRow({
           <ReplayCell run={run} job={job} verify={verify} cancel={cancel} />
         </td>
         <td>
-          <a href={run.download_url} download aria-label={`Download run ${run.key}`}>
-            <ArrowDownToLine size={15} />
-          </a>
+          <RunExports
+            runKey={run.key}
+            zipUrl={run.download_url}
+            methodsOpen={methods}
+            toggleMethods={() => setMethods(!methods)}
+          />
         </td>
         <td className="run-delete">
           {confirming ? (
@@ -544,6 +549,16 @@ function RunRow({
         <tr className="run-notes-row">
           <td colSpan={COLUMNS}>
             <RunNotes run={run} save={annotate} close={closeEditor} />
+          </td>
+        </tr>
+      )}
+      {methods && (
+        <tr className="run-notes-row">
+          <td colSpan={COLUMNS}>
+            <MethodsDraft
+              path={`/api/runs/${encodeURIComponent(run.key)}/methods`}
+              close={() => setMethods(false)}
+            />
           </td>
         </tr>
       )}

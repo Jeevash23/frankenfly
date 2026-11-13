@@ -1637,3 +1637,74 @@ fieldset.condition-list {
   margin: 0;
   line-height: 1.5;
 }
+
+/* A saved run's export menu (ZIP, NWB, provenance manifest, methods draft) and the methods draft panel. */
+.run-exports {
+  position: relative;
+}
+.run-exports > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 4px;
+}
+.run-exports > summary::-webkit-details-marker {
+  display: none;
+}
+.run-exports > summary:focus-visible {
+  outline: 2px solid var(--accent, #5b7047);
+}
+.run-exports-menu {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  display: grid;
+  gap: 2px;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--line, #d7e1c7);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.12);
+}
+.run-exports-menu > a,
+.run-exports-menu > button,
+.run-exports-off {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 6px;
+  text-align: left;
+  white-space: nowrap;
+}
+.run-exports-menu small,
+.methods-draft-head small {
+  color: var(--ink-micro);
+}
+.run-exports-off {
+  color: var(--ink-micro);
+  cursor: not-allowed;
+}
+.methods-draft {
+  display: grid;
+  gap: 6px;
+  max-width: 900px;
+}
+.methods-draft-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.methods-draft pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  line-height: 1.5;
+  max-height: 320px;
+  overflow: auto;
+}
+.methods-draft-error {
+  color: #a1442f;
+}
