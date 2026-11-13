@@ -132,6 +132,23 @@ When the real-time factor drops below 1×, a note under the controls says how lo
 
 Charts use simulated time and freeze during Pause. Sensor readouts can update while paused when you move the target. Active wall time excludes paused time, and the real-time factor is simulated time divided by active wall time, including rendering. These are measurements, not guarantees of real-time speed.
 
+## Validation scorecard
+
+The scorecard scores a model against published perturbation → behavior results: DNa02 and DNp09 activated on one side, DNa02 silenced on both sides, MDN activated, the Giant Fiber, the antennal grooming neurons, left-right symmetry and sugar taste neurons. Each test cites its source, manipulates cell types with the ordinary interventions on matched-seed trials, and gives **pass**, **partial** or **fail** by a rule written down before any model was scored. A test is **not testable** when the circuit lacks its cell types (or the model has none, like the engineered one) and **blocked** when it needs a sense or a motor program this fly does not have. Results marked *by construction* follow from the engineered readout, not from the wiring. The [research guide](RESEARCH.md#validation-scorecard) has the rules, the measured results and their caveats.
+
+In the app, the **Validation scorecard** panel on the Experiments page shows the latest scorecard of each model scored so far. **Score the Workbench model** scores the model, circuit and dynamics loaded on the Workbench as a background job, on the toy body (under a minute for rate dynamics) or the FlyGym body (several minutes); the panel updates when the job finishes, and the job appears under Background jobs. Open a test's title for its finding, citation, rule and caveats.
+
+From the command line:
+
+```sh
+backend/.venv/bin/python scripts/toolkit.py scorecard --list                     # the tests, sources and rules
+backend/.venv/bin/python scripts/toolkit.py scorecard --model engineered
+backend/.venv/bin/python scripts/toolkit.py scorecard --circuit fafb783-steering --set dynamics=spiking
+backend/.venv/bin/python scripts/toolkit.py scorecard --all --engine flygym --workers 3   # engineered + 4 circuits
+```
+
+The defaults are the toy body with seeds 1–3 and 3 s trials (FlyGym: seeds 1–2, 2 s). Each run prints a Markdown table, saves the scorecard and its per-trial rows under `runs/toolkit/` (JSON and CSV, with provenance), and replaces the app's latest card for that model in `runs/scorecards/` (`--no-publish` keeps it; a partial run with `--tests` never replaces it). Other connectome settings (`--set output_gain=2`) give the card a name of their own.
+
 ## Saved runs and replay
 
 Exports are written only inside `runs/`; the app never accepts a destination path. Every export includes the initial configuration, final state, dependency versions and the SHA-256 of each `backend/requirements*.lock`, neural weights, units, time steps, and every event stamped with its control step; FlyVis-eye runs add the FlyVis release, network and checkpoint hash, and the bridge file with its hash. An export is written into a hidden folder in `runs/` and renamed into place only when complete, so an interrupted export never appears in the run library.
