@@ -10,15 +10,18 @@ abstract: >-
   A local, inspectable sensorimotor workbench: a physics-simulated fruit fly
   (FlyGym / NeuroMechFly on MuJoCo) walks toward what it sees, steered by an
   engineered six-unit controller or by FlyWire v783 connectome circuits with
-  rate or spiking dynamics, with optional FlyVis eyes, per-side cell-type
-  interventions, matched-seed experiments, exact and verifiable replay, a
-  research toolkit with an assumption-sensitivity analysis and a
-  comparison with a recorded fly. Results describe these models, not
+  rate or spiking dynamics on the CPU or an optional GPU backend, with
+  optional FlyVis eyes, per-side cell-type interventions, matched-seed
+  experiments, exact and verifiable replay, a validation scorecard against
+  published perturbation results, a connectivity explorer with Neuroglancer
+  links, provenance manifests and NWB export, a research toolkit with an
+  assumption-sensitivity analysis, a comparison with a recorded fly, an MCP
+  server for AI agents and a plugin API. Results describe these models, not
   validated fly biology.
 authors:
   - alias: Jeevash23
-version: 0.6.0
-date-released: '2026-10-22'
+version: 0.7.0
+date-released: '2026-11-13'
 license: Apache-2.0
 repository-code: 'https://github.com/Jeevash23/frankenfly'
 keywords:
