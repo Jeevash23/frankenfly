@@ -25,6 +25,8 @@ dependencies = [
 test = ["pytest==9.1.1", "httpx==0.28.1"]
 # Build scripts only (scripts/build_circuit.py); the app never imports these.
 data = ["pyarrow==25.0.1"]
+# Optional NWB export of saved runs (digitalfly.nwb, scripts/toolkit.py nwb); the app runs without it.
+nwb = ["pynwb==4.2.0"]
 # Optional FlyVis vision front end. CPU-only PyTorch: the CUDA build is about 3 GB.
 # FlyVis 1.2.0 and its datamate dependency support Python 3.12 only.
 vision = [

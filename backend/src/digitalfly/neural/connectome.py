@@ -311,6 +311,8 @@ class SpikingState:
         # Interventions (see manipulate): none until the circuit applies some.
         self.manipulation, self.scale, self.scaled_weights = None, None, None
         self.activated, self.activation_chance = np.array([], dtype=np.int64), np.array([])
+        # Spike times kept for chosen neurons (record_spikes): a mask over neurons, and (substep, neurons) per hit.
+        self.record_mask, self.recorded, self.recorded_count = None, [], 0
         self.configure(active, signs, parameters)
         self.reset(0)
 
@@ -374,7 +376,7 @@ class SpikingState:
             chances = [np.minimum(1., p.input_gain * drive[targets] * p.spiking.input_rate_hz * LIF["dt_ms"] / 1000)]
         v, g, blocked = self.v, self.g, self.blocked
         weights = self.weights if self.scaled_weights is None else self.scaled_weights
-        activated = self.activated
+        activated, record = self.activated, self.record_mask
         total = 0
         for _ in range(self.substeps if substeps is None else substeps):
             np.subtract(blocked, 1, out=blocked, where=blocked > 0)
@@ -390,6 +392,11 @@ class SpikingState:
             g -= dg
             v[silenced], g[silenced] = LIF["v_reset_mv"], 0
             spikes = np.flatnonzero(free & (v > LIF["v_threshold_mv"]))
+            if record is not None and len(spikes):  # passive: the spike times of recorded neurons, at this substep
+                hit = spikes[record[spikes]]
+                if len(hit):
+                    self.recorded.append((self.step_index, hit))
+                    self.recorded_count += len(hit)
             slot = self.step_index % self.slots
             if len(spikes):
                 starts, ends = self.indptr[spikes], self.indptr[spikes + 1]
@@ -480,6 +487,9 @@ class ConnectomeCircuit:
             else:
                 self.spiking = SpikingState(data, active, signs, p, inputs)
                 self.spiking.reset(self._seed)
+                if state is not None:  # spike recording continues in the rebuilt network
+                    self.spiking.record_mask, self.spiking.recorded = state.record_mask, state.recorded
+                    self.spiking.recorded_count = state.recorded_count
             self.W = None
         else:
             self.spiking = None
@@ -602,6 +612,26 @@ class ConnectomeCircuit:
         self._advanced = False
         if self._history is not None:
             self._restart_motor_path()
+
+    def record_spikes(self, neurons: np.ndarray | None):
+        """Keep the spike time of every spike of these neurons (indices) from now on, or stop with None. Spiking
+        dynamics only; recording changes no number of the run. See spike_record()."""
+        if self.spiking is None:
+            raise ValueError("Spike times exist only with spiking dynamics.")
+        if neurons is None:
+            self.spiking.record_mask = None
+            return
+        mask = np.zeros(len(self.data.ids), dtype=bool)
+        mask[np.asarray(neurons, dtype=np.int64)] = True
+        self.spiking.record_mask = mask
+
+    def spike_record(self) -> tuple[list, int]:
+        """The recorded spikes as a list of (0.1 ms substep since the reset, neuron indices) and their count. A spike
+        at substep k happened at k × 0.1 ms, the start of the substep whose state update crossed the threshold (as
+        Brian2's SpikeMonitor stamps it). The list's items never change once added, so a copy of it is a snapshot."""
+        if self.spiking is None:
+            return [], 0
+        return list(self.spiking.recorded), self.spiking.recorded_count
 
     def restart_spiking(self):
         """Rebuild the spiking network at rest, its random generator seeded with the run's seed: what every live
