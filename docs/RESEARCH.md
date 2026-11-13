@@ -25,7 +25,7 @@ This is an experimental sensorimotor workbench with explicit modeling assumption
 5. **Run comparison** resets and runs one trial for each seed/condition pair. The target reverses halfway through each trial. Every finished trial saves automatically. Pause freezes the current trial; Cancel stops the remaining trials and saves the unfinished one, marked partial. When the comparison ends, the Workbench returns to the configuration it had before (model, controller, interventions and protocol), so neither it nor the next comparison inherits the last trial's settings.
 6. Select saved runs in **Run library** to compare their trajectories and measurements. Save ZIPs for analysis elsewhere. “Restore starting configuration” initializes a fresh paused experiment; it does not replay the old trajectory. The library lists the newest 100 runs and says how many there are; **Load more** shows older ones. The bin icon, then **Delete**, removes a run's folder and ZIP from `runs/`.
 
-**Set up the first experiment** on the Experiments page fills in steps 4 and 5 in one click: target reversal over 2 simulated seconds, seeds 42 and 43, and **Neural control** against **Descending units off** (or **Both DNa02 off** with a connectome circuit that contains DNa02). It keeps the current body and sensor, so switch to compound eyes on the Workbench first if you want step 2 as well.
+**Set up the first experiment** (on **Experiments → Protocols & comparisons**, or a quick action on the Overview) fills in steps 4 and 5 in one click: target reversal over 2 simulated seconds, seeds 42 and 43, and **Neural control** against **Descending units off** (or **Both DNa02 off** with a connectome circuit that contains DNa02). It keeps the current body and sensor, so switch to compound eyes on the Workbench first if you want step 2 as well.
 
 Longer runs are not automatically more biologically meaningful. The simple attraction controller can overshoot, circle, or leave the ±40 mm display area. The physics ground is unbounded.
 
@@ -174,11 +174,11 @@ backend/.venv/bin/python scripts/build_circuit.py build --name whole --seed DNa0
 - **Rebuilding** a name writes the new file in full to a hidden temporary file and then renames it into place, so a failed or cancelled build keeps the previous circuit. Only that name's other format (`NAME.json` or `NAME.npz`) is removed; other circuits such as `NAME.v2` and the FlyVis bridge `NAME.flyvis.json` are kept (a bridge built for the old file refuses to load until you rebuild it). Names ending in `.flyvis` are refused. The cap report's weakest kept path strength comes from the deepest hop that kept neurons, so it is reported whenever neurons were dropped.
 - **Options** such as `--hops`, `--threshold`, `--cap` and `--offline` work before or after the subcommand; given in both places, the subcommand's value wins.
 
-The same builder runs from **Neural atlas → Build a circuit**: type seeds with autocomplete from the catalog, set hops, threshold and cap, and follow the build log. One build runs at a time, as a separate process with validated arguments; nothing is downloaded. **Use this circuit** starts a fresh run on it.
+The same builder runs from **Connectome → Build a circuit**: type seeds with autocomplete from the catalog, set hops, threshold and cap, and follow the build log. One build runs at a time, as a separate process with validated arguments; nothing is downloaded. **Use this circuit** starts a fresh run on it.
 
 ### The connectivity explorer
 
-`digitalfly.explore` answers structural questions without simulating anything: who connects to a cell type, how two cell types are linked, and what a cell type reaches through many steps. It reads the whole brain from the prepared archive (`.cache/circuits/fafb783-connectome.npz`: 144,837 neurons with metadata and the 15,091,902 connections between them, 2,700,509 of them with at least 5 synapses) or any circuit file, and it is available in the app (**Neural atlas → Connectivity explorer**), over the API (`/api/explore/*`), from the Python client and as `scripts/toolkit.py partners`, `route`, `influence` and `neuroglancer` ([usage](USAGE.md#exploring-connectivity)). Every query first keeps the connections of at least a threshold of synapses (default 5, as in the circuits). The structure is data-derived; the signs are the model's assumption (acetylcholine +1, GABA and glutamate −1, the other transmitters 0 unless counted excitatory, as in [Signs](#signs)); the path weights and the influence model are engineered definitions, stated here.
+`digitalfly.explore` answers structural questions without simulating anything: who connects to a cell type, how two cell types are linked, and what a cell type reaches through many steps. It reads the whole brain from the prepared archive (`.cache/circuits/fafb783-connectome.npz`: 144,837 neurons with metadata and the 15,091,902 connections between them, 2,700,509 of them with at least 5 synapses) or any circuit file, and it is available in the app (**Connectome → Explorer**), over the API (`/api/explore/*`), from the Python client and as `scripts/toolkit.py partners`, `route`, `influence` and `neuroglancer` ([usage](USAGE.md#exploring-connectivity)). Every query first keeps the connections of at least a threshold of synapses (default 5, as in the circuits). The structure is data-derived; the signs are the model's assumption (acetylcholine +1, GABA and glutamate −1, the other transmitters 0 unless counted excitatory, as in [Signs](#signs)); the path weights and the influence model are engineered definitions, stated here.
 
 **Partners.** A query is one or more cell types or FlyWire root IDs, optionally one side. A partner row adds the synapses between the partner (a cell type, or a neuron) and the query neurons. Its share is those synapses ÷ every synapse onto the query (upstream) or from it (downstream) in the kept connections. Its sign is the presynaptic neuron's: the partner's for inputs, the query neuron's for outputs. For example, at 5 synapses the two DNa02 neurons receive 23,990 synapses from 285 cell types; the largest single share is PS049's (731 synapses, 3.0%, GABAergic).
 
@@ -261,7 +261,7 @@ motor = 1.4 × clip([forward + turn, forward − turn], 0, 1)    # [left legs, r
 - **Which amplitude turns which way.** FlyGym 2.1.0's `HybridTurningController.step` sets the first three CPG amplitudes (legs LF, LM, LH) from `descending_signal[0]` and the last three (RF, RM, RH) from `descending_signal[1]`. A larger left amplitude turns the body right: `[1.2, 0.4]` turns the FlyGym body 146° clockwise in 1 s, and the toy body turns the same way.
 - **Forward drive** is the tonic term. **Populations → Speed drive** adds the mean activity of named cell types (for example DNp09) × the speed gain. It is off by default.
 
-Readout, input and speed populations are set by cell type in **Neural atlas → Live circuit → Populations**. They decide which rates are recorded, so changing them starts a fresh run.
+Readout, input and speed populations are set by cell type in **Connectome → Live circuit → Populations**. They decide which rates are recorded, so changing them starts a fresh run.
 
 ### Interventions
 
@@ -287,7 +287,7 @@ An export's `metadata.neural.interventions` lists those in force at its end, wit
 
 ### Parameters and how the defaults were chosen
 
-Only global parameters exist: synapse threshold (1–1000, applied on top of the circuit's build threshold), global gain, input gain, output gain, tonic drive, τ, the transmitter switch, the speed gain and, for spiking, the weight per synapse, the input rate, the rate window and the rate scale. Edit them in **Neural atlas → Live circuit**; changes are recorded and replayed. The motor path's readout weights, pooling, delay and low-pass are set in the same place (under **Motor path**), through the API (`POST /api/connectome/parameters`) or with the toolkit (for example `--set connectome_parameters.motor_delay_ms=180`), and are live-editable and replayed in the same way. Circuit, dynamics and populations are fixed for a run.
+Only global parameters exist: synapse threshold (1–1000, applied on top of the circuit's build threshold), global gain, input gain, output gain, tonic drive, τ, the transmitter switch, the speed gain and, for spiking, the weight per synapse, the input rate, the rate window and the rate scale. Edit them in **Connectome → Live circuit**; changes are recorded and replayed. The motor path's readout weights, pooling, delay and low-pass are set in the same place (under **Motor path**), through the API (`POST /api/connectome/parameters`) or with the toolkit (for example `--set connectome_parameters.motor_delay_ms=180`), and are live-editable and replayed in the same way. Circuit, dynamics and populations are fixed for a run.
 
 | Parameter | Default | Choice |
 | --- | --- | --- |
@@ -533,7 +533,7 @@ With rate dynamics the transmitter rule changes these turn commands by at most 0
 
 ### Validation scorecard
 
-`scripts/toolkit.py scorecard` (and `digitalfly.scorecard`, and the **Validation scorecard** panel on the Experiments page) scores a model against published perturbation → behavior results. It is a standing test suite, not a fit: nothing is tuned to pass it. Each test cites its source, manipulates cell types with the ordinary [interventions](#interventions) on matched-seed closed-loop trials, measures the body's behavior and gives **pass**, **partial** or **fail** by a rule that was written down before any model was scored (`scorecard.TESTS`; the rules are listed with `scorecard --list`). Two further results keep a test on the list without a score: **not testable**, when the circuit has none of the needed cell types (or the model has no cell types at all, like the engineered six-unit model), and **blocked**, when the fly lacks the sense or the motor program the result needs. A result that follows from how the readout is wired rather than from the connectome is flagged **by construction**, with the reason.
+`scripts/toolkit.py scorecard` (and `digitalfly.scorecard`, and the **Validate → Scorecard** page) scores a model against published perturbation → behavior results. It is a standing test suite, not a fit: nothing is tuned to pass it. Each test cites its source, manipulates cell types with the ordinary [interventions](#interventions) on matched-seed closed-loop trials, measures the body's behavior and gives **pass**, **partial** or **fail** by a rule that was written down before any model was scored (`scorecard.TESTS`; the rules are listed with `scorecard --list`). Two further results keep a test on the list without a score: **not testable**, when the circuit has none of the needed cell types (or the model has no cell types at all, like the engineered six-unit model), and **blocked**, when the fly lacks the sense or the motor program the result needs. A result that follows from how the readout is wired rather than from the connectome is flagged **by construction**, with the reason.
 
 | Test | Source | Manipulation | Measure | Rule |
 | --- | --- | --- | --- | --- |
@@ -723,7 +723,7 @@ The atlas includes about 10.6 MB of retained upstream files plus approximately 6
 
 ## Connectivity import format
 
-Use **Neural atlas → Imported connectivity → Import connectivity JSON**. The downloadable format example is synthetic. Supply:
+Use **Anatomy → Imported connectivity → Import connectivity JSON**. The downloadable format example is synthetic. Supply:
 
 - Provenance: biological/synthetic kind, dataset, release, specimen, sex, source URL, license, coverage and weight assumption.
 - Nodes: strict string `id`, label, cell type and side.

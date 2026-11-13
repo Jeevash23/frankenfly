@@ -55,7 +55,7 @@ backend/.venv/bin/python -m pip install --no-deps -e path/to/my-fly-plugin
 backend/.venv/bin/python scripts/toolkit.py plugins          # what is installed, and any errors
 ```
 
-The app lists installed plugins on the Experiments page (**Plugins**), at `GET /api/plugins`, through `Client.plugins()`, and through the MCP tool `list_plugins`. Restart the app after installing or updating a plugin: each process discovers plugins once.
+The app lists installed plugins on its **Extend → Plugins** page, at `GET /api/plugins`, through `Client.plugins()`, and through the MCP tool `list_plugins`. Restart the app after installing or updating a plugin: each process discovers plugins once.
 
 ## `Plugin`
 
