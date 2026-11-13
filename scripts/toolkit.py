@@ -1,4 +1,5 @@
-"""DigitalFly research toolkit from the command line: trials, sweeps, bias curves, ablation scans and paths.
+"""DigitalFly research toolkit from the command line: trials, sweeps, bias curves, ablation scans, paths and the
+validation scorecard.
 
     backend/.venv/bin/python scripts/toolkit.py trials --set neural_model=connectome --vary connectome_parameters.dynamics=rate,spiking
     backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
@@ -8,6 +9,7 @@
     backend/.venv/bin/python scripts/toolkit.py compare --recording fly.csv --run runs/<run folder>
     backend/.venv/bin/python scripts/toolkit.py compare --recording fly1.mat --recording fly2.mat --run runs/<a> --run runs/<b>
     backend/.venv/bin/python scripts/toolkit.py circuits
+    backend/.venv/bin/python scripts/toolkit.py scorecard --all
 
 --set and --vary take dotted RunConfig names (for bias, ablation and paths: ConnectomeParameters names,
 with or without the "connectome_parameters." prefix). Values are read as JSON when they parse
@@ -511,6 +513,79 @@ def add_assumption_commands(commands):
     for sub in (r, o):
         sub.add_argument("--set", action="append", default=[], help="KEY=VALUE ConnectomeParameters setting (repeatable)")
         sub.add_argument("--out", help="Output file stem (.csv and .json are written)")
+
+
+# Validation scorecard (digitalfly/scorecard.py): published perturbation → behavior results, scored per model.
+#   scripts/toolkit.py scorecard --model engineered
+#   scripts/toolkit.py scorecard --circuit fafb783-dna02 --circuit fafb783-steering --set dynamics=spiking
+#   scripts/toolkit.py scorecard --all --engine flygym --workers 4
+#   scripts/toolkit.py scorecard --list                            # the tests, their sources and rules
+
+COMMITTED = ("fafb783-dna02", "fafb783-steering", "fafb783-dna02-balanced", "fafb783-steering-balanced")
+
+
+def scorecard(args):
+    from digitalfly import scorecard as sc
+    if args.list:
+        for test in sc.definitions():
+            print(f"{test['id']}: {test['title']}\n  Source: {test['source']['citation']} (doi:{test['source']['doi']})\n"
+                  f"  Finding: {test['source']['finding']}\n  Manipulation: {test['manipulation']}\n"
+                  f"  Measure: {test['measure']}\n  Rule: {test['rule']}\n")
+        return
+    fixed = {k.removeprefix(PREFIX): v for k, v in settings(args.set).items()}
+    dynamics = fixed.pop("dynamics", "rate")
+    circuits = list(COMMITTED) if args.all else list(args.circuit)
+    if "circuit" in fixed:
+        circuits.append(fixed.pop("circuit"))
+    if args.model == "engineered" and (circuits or fixed) and not args.all:
+        sys.exit("The engineered model has no circuit or connectome settings; leave out --circuit and --set.")
+    targets = ([sc.Target("engineered")] if args.model == "engineered" or args.all else []) + [
+        sc.Target("connectome", circuit=c, dynamics=dynamics, settings=fixed) for c in dict.fromkeys(circuits)]
+    if not targets:
+        targets = [sc.Target("connectome", dynamics=dynamics, settings=fixed)]
+    tests = [t for t in (args.tests or "").split(",") if t] or None
+    seeds = numbers(args.seeds, int) if args.seeds else None
+    total = len(targets)
+    cards = []
+    for k, target in enumerate(targets):
+        def progress(done, count, k=k):
+            if args.progress:
+                print(f"@progress {(k + done / count) / total:.3f}", flush=True)
+        card = sc.run(target, engine=args.engine, seeds=seeds, duration_s=args.duration, workers=args.workers,
+                      tests=tests, on_progress=progress)
+        card["provenance"] = toolkit.provenance([target.parameters().circuit] if target.model == "connectome" else [])
+        if not args.progress:
+            print(sc.markdown(card) + "\n")
+        stem = output_stem(f"scorecard-{card['key']}", args.out if total == 1 else None)
+        toolkit.with_ending(stem, ".json").write_text(json.dumps(card, indent=1, default=str))
+        write_csv(toolkit.with_ending(stem, ".csv"), card["trials"])
+        published = None if args.no_publish or tests else sc.publish(card, args.publish_dir)
+        if not args.progress:
+            print(f"Saved {shown(stem)}.json and .csv" + (f"; latest for the app: {shown(published)}" if published else
+                                                          " (not published to the app: --tests or --no-publish)"))
+        cards.append({"key": card["key"], "label": card["model"]["label"], "summary": card["summary"]["text"]})
+    if args.progress:  # background jobs read the last line as the result
+        print(json.dumps({"scorecards": cards}), flush=True)
+
+
+def add_scorecard_command(commands):
+    s = commands.add_parser("scorecard", help="Score a model against published perturbation → behavior results")
+    s.add_argument("--model", choices=["connectome", "engineered"], default="connectome")
+    s.add_argument("--circuit", action="append", default=[], help="Circuit to score (repeatable; default fafb783-dna02)")
+    s.add_argument("--all", action="store_true", help="The engineered model and the four committed circuits")
+    s.add_argument("--set", action="append", default=[],
+                   help="KEY=VALUE ConnectomeParameters setting, e.g. dynamics=spiking (repeatable)")
+    s.add_argument("--engine", choices=["toy", "flygym"], default="toy")
+    s.add_argument("--seeds", help="Seeds, e.g. 1-3 (default 1-3 on the toy body, 1-2 on FlyGym)")
+    s.add_argument("--duration", type=float, help="Simulated seconds per trial (default 3 toy, 2 FlyGym)")
+    s.add_argument("--tests", help="Comma-separated test ids (default all; a partial scorecard is not published)")
+    s.add_argument("--workers", type=int, default=1, help="Parallel processes (default 1)")
+    s.add_argument("--out", help="Output file stem for one model (.json and .csv); default runs/toolkit/")
+    s.add_argument("--no-publish", action="store_true", help="Do not replace the app's latest scorecard for the model")
+    s.add_argument("--publish-dir", help="Folder of the app's latest scorecards (default runs/scorecards)")
+    s.add_argument("--progress", action="store_true", help="Print @progress lines and a final JSON line (for the app)")
+    s.add_argument("--list", action="store_true", help="List the tests, their sources and rules, and exit")
+    s.set_defaults(handler=scorecard)
 # ---------------------------------------------------------------------------------------------------------------------
 
 
@@ -587,6 +662,7 @@ def main():
         sub.add_argument("--out", help="Output file stem (.csv and .json are written)")
     j.add_argument("--out", help="Output file stem for the report (.json); the run itself goes to --export-dir")
     add_assumption_commands(commands)
+    add_scorecard_command(commands)
     args = parser.parse_args()
     try:
         args.handler(args)

@@ -32,6 +32,7 @@ import {ComparisonSummary} from './ComparisonSummary';
 import {JobsPanel} from './JobsPanel';
 import {ProtocolEditor} from './ProtocolEditor';
 import {RunLibrary} from './RunLibrary';
+import {ScorecardPanel} from './Scorecard';
 
 export default function Experiments({
   state,
@@ -228,6 +229,7 @@ export default function Experiments({
         />
       )}
       {jobsError && <p className="microcopy">{jobsError}</p>}
+      <ScorecardPanel state={state} jobs={jobs} refreshJobs={refreshJobs} disabled={disabled} />
       <JobsPanel jobs={jobs} cancel={(id) => void cancelJob(id)} />
       <RunLibrary
         state={state}

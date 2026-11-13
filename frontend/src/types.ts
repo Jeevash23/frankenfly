@@ -103,10 +103,10 @@ export type CustomParameter =
 // `verified` is the latest replay check (POST /api/runs/{key}/replay), null when never checked.
 export type SavedRun = RunItem & {trajectory?: number[][]};
 export type Verification = ReplayVerdict;
-// A background job: a circuit build or a replay check, in its own process (GET /api/jobs).
+// A background job: a circuit build, a replay check or a scorecard, in its own process (GET /api/jobs).
 export type Job = {
   id: string;
-  kind: 'build' | 'replay';
+  kind: 'build' | 'replay' | 'scorecard';
   status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
   label: string;
   target: string | null;

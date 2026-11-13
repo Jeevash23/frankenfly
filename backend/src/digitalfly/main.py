@@ -19,6 +19,7 @@ from digitalfly.neural.connectome import circuit_summary, list_circuits, load_ci
 from digitalfly.neural.model import NAMES as ENGINEERED_UNITS, RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog, catalog_ready
 from digitalfly.data import jobs as background, presets
+from digitalfly import scorecard as scorecards
 from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION, RECORD_LIMIT
 from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
@@ -437,7 +438,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             raise HTTPException(404, "Connectivity format example is missing.")
         return FileResponse(path, media_type="application/json", filename="connectivity-example.json")
 
-    # Background jobs (circuit builds and replay checks, in their own processes) and named configurations.
+    # Background jobs (circuit builds, replay checks and scorecards, in their own processes) and named configurations.
     @app.get("/api/jobs")
     def job_list():
         return {"jobs": jobs.listing()}
@@ -448,6 +449,31 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             return {"job": jobs.cancel(job_id)}
         except KeyError as exc:
             raise HTTPException(404, "Job not found.") from exc
+
+    # Validation scorecards (digitalfly/scorecard.py): the tests, the latest card per model, and scoring as a job.
+    @app.get("/api/scorecards")
+    def scorecard_list():
+        return {"version": scorecards.SCORECARD_VERSION, "tests": scorecards.definitions(),
+                "scorecards": scorecards.latest()}
+
+    @app.post("/api/scorecards/run", status_code=202)
+    def scorecard_run(body: scorecards.ScorecardRequest):
+        target = body.target()
+        if body.model == "connectome":
+            try:
+                target.parameters().check_against_circuit()
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        key = target.key(body.engine)
+        try:
+            job = background.submit_scorecard(jobs, body.model, body.engine, target.parameters().circuit,
+                                              body.dynamics, key=key,
+                                              label=f"Scorecard: {scorecards.label_for(target)} ({body.engine})")
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(503, str(exc)) from exc
+        return {"job": jobs.describe(job)}
 
     @app.post("/api/runs/{key}/replay", status_code=202)
     def replay_saved_run(key: str, body: StrictModel):
