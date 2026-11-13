@@ -16,7 +16,7 @@ Brain models are not part of API 1 (see [Not yet pluggable](#not-yet-pluggable))
 
 ## The ground rules
 
-- **Nothing runs until it is named.** A plugin's code is imported when DigitalFly lists the installed plugins, but no contribution runs unless a run, a scorecard, a metric request or a command names it as `plugin:name`.
+- **Nothing runs until it is named.** A plugin's module is imported when DigitalFly discovers plugins (the app's plugin listing, every toolkit command, a configuration that names a plugin), but no contribution runs unless a run, a scorecard, a metric request or a command names it as `plugin:name`.
 - **Defaults never change.** Installing a plugin changes no default setting and no built-in scorecard test. It doesn't change the numbers, hashes, exports or replay of any run made without it.
   - `RunConfig.plugins` is left out of every serialized configuration when it is unset, so configuration hashes and exported metadata stay byte for byte the same.
   - Scorecards that include plugin tests are never published as the app's latest card for a model.
