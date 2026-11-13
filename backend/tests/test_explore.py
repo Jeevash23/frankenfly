@@ -60,6 +60,11 @@ def test_queries_explain_what_they_cannot_answer(toy):
                           ["gaba"] * 2, [0], [1], [5], {})
     with pytest.raises(explore.ExploreError, match="Did you mean Ab, AB"):
         explore.partners(twins, "ab")
+    commas = explore.Graph("c", "c", "circuit", [1, 2, 3], ["VES051,VES052", "LAL028, LAL029", "X"], [0, 1, 2],
+                           ["left"] * 3, ["x"] * 3, ["gaba"] * 3, [0, 1], [2, 2], [5, 5], {})
+    assert commas.tokens("VES051,VES052") == ["VES051,VES052"]  # names with commas stay whole
+    assert commas.tokens("X, LAL028, LAL029,VES051,VES052, 7") == ["X", "LAL028, LAL029", "VES051,VES052", "7"]
+    assert explore.partners(commas, "X")["groups"] == 2
     with pytest.raises(explore.ExploreError, match="no neurons on the right"):
         explore.partners(toy, "Solo", side="right")
     with pytest.raises(explore.ExploreError, match="not in"):

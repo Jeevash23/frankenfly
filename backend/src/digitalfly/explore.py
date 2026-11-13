@@ -161,9 +161,26 @@ class Graph:
         raise ExploreError(f"No cell type is named {name!r} in {self.title}." + (
             f" Did you mean {', '.join(folded)}?" if folded else " Names are case-sensitive; search for one first."))
 
+    def tokens(self, query: str) -> list[str]:
+        """Comma-separated names and IDs. Some cell-type names contain commas ("VES051,VES052", "LAL028, LAL029"):
+        at each position the longest run of parts that names a cell type is taken as one name."""
+        parts = str(query).split(",")
+        if len(parts) > 200:
+            raise ExploreError("Give at most 50 cell types or neuron IDs at once.")
+        out, i = [], 0
+        while i < len(parts):
+            j = len(parts)
+            while j > i + 1 and ",".join(parts[i:j]).strip() not in self.type_lookup:
+                j -= 1
+            token = ",".join(parts[i:j]).strip()
+            if token:
+                out.append(token)
+            i = j
+        return out
+
     def resolve(self, query: str, side: str = "both") -> tuple[np.ndarray, list[str]]:
         """Neuron indices of a query: comma-separated cell-type names and FlyWire root IDs, on one side or both."""
-        tokens = [token.strip() for token in str(query).split(",") if token.strip()]
+        tokens = self.tokens(query)
         if not tokens:
             raise ExploreError("Give a cell type or a FlyWire root ID.")
         if len(tokens) > 50:
@@ -653,7 +670,7 @@ def neuroglancer(graph: Graph | None, groups: list[dict], title: str = "DigitalF
              "dimensions": {"x": [4e-9, "m"], "y": [4e-9, "m"], "z": [4e-8, "m"]},
              "position": [130261.5, 55609.5, 930.5], "crossSectionScale": 1.2, "projectionScale": 105858.85,
              "layers": layers, "showSlices": False, "layout": "3d", "selectedLayer": {"visible": False}}
-    url = f"{NEUROGLANCER}/#!" + urllib.parse.quote(json.dumps(state, separators=(",", ":")), safe="")
+    url = f"{NEUROGLANCER}/#!" + urllib.parse.quote(json.dumps(state, separators=(",", ":"), ensure_ascii=False), safe="")
     return {"url": url, "state": state, "neurons": used, "truncated": truncated, "groups": summary,
             "host": NEUROGLANCER, "sources": NG_SOURCES, "url_length": len(url),
             "note": ("Neuroglancer streams the FlyWire v783 meshes from public Google Cloud buckets when you open the "

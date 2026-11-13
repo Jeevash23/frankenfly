@@ -9,6 +9,7 @@ import {CircuitPanel} from './ResearchPanels';
 import Experiments from './experiments/Experiments';
 import {ConnectomeCircuitView} from './connectome/CircuitView';
 import {BuildPanel} from './connectome/BuildPanel';
+import {ExplorePanel} from './connectome/ExplorePanel';
 import {modelPhrases, noInterventions} from './models';
 import {AppHeader} from './shell/AppHeader';
 import {ATLAS_VIEWS, parseHash, routeHash, type AtlasView, type Page} from './route';
@@ -24,6 +25,7 @@ const atlasNames: Record<AtlasView, string> = {
   anatomy: 'Male & female anatomy',
   circuit: 'Live circuit',
   build: 'Build a circuit',
+  explore: 'Connectivity explorer',
   connectivity: 'Imported connectivity',
 };
 const pageNames: Record<Page, string> = {
@@ -275,6 +277,14 @@ export default function App() {
                       pending={pending}
                       reset={reset}
                       disabled={editDisabled}
+                    />
+                  ) : atlasView === 'explore' ? (
+                    <ExplorePanel
+                      state={state}
+                      intervene={intervene}
+                      disabled={disabled}
+                      openBuild={() => setAtlasView('build')}
+                      openWorkbench={() => setPage('workbench')}
                     />
                   ) : (
                     <ConnectivityPanel command={command} disabled={disabled} />
