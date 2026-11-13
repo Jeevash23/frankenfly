@@ -24,10 +24,11 @@ Everything runs on your own computer, in your browser.</p>
 - **Score a model against published experiments.** A validation scorecard activates or silences the cell types that published experiments did (DNa02, DNp09, MDN and others), measures the fly's behavior and gives pass, partial or fail by rules fixed in advance, with each source cited; tests the model or the body cannot express yet are listed as not testable or blocked.
 - **Analyze at scale.** A research toolkit (Python and command line) runs batches of trials and parameter sweeps in parallel, survives failed trials and resumes interrupted ones, reports intervals, measures a circuit's left/right bias, manipulates every cell type in turn to find what drives it, traces pathways, and fits turning against readout activity in runs or recorded flies. A small Python client drives the running app from scripts and notebooks ([examples](examples/README.md)).
 - **Explore real anatomy.** Rotate male and female fly brains with twelve published neuron reconstructions, or import your own small wiring diagram to inspect.
+- **Find everything in one place.** An Overview of the live run, recent runs, the latest scorecards and background jobs; a sidebar that groups every page; a Ctrl+K command palette for pages, actions and cell types; light and dark themes ([navigation](docs/USAGE.md#pages-navigation-and-themes)).
 
 <img src="docs/images/workbench.jpg" alt="The workbench: a live MuJoCo render of the fly, stimulus controls, interventions and neural activity traces">
 
-**The default brain:** six engineered units, live, with every weight visible and editable. The connectome brain has its own live view, by cell type, in the same **Live circuit** tab.
+**The default brain:** six engineered units, live, with every weight visible and editable. The connectome brain has its own live view, by cell type, on the same **Connectome → Live circuit** page.
 
 <img src="docs/images/circuit.jpg" alt="The live six-unit circuit: sensory, steering and descending units with their weights and current activity">
 

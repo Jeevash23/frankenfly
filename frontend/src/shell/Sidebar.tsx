@@ -1,22 +1,25 @@
 import {useEffect, useRef, type KeyboardEvent} from 'react';
 import {PanelLeftClose, PanelLeftOpen} from 'lucide-react';
 import {GROUPS, ROUTES, type RouteId} from '../route';
+import {tabTarget} from '../keys';
 import {ROUTE_ICONS} from './icons';
 
-// Arrow keys move between the links of the sidebar; Tab still walks through them in order.
+// Arrow keys (down and up, as in a vertical list), Home and End move between the links of the
+// sidebar; Tab still walks through them in order.
+const VERTICAL: Record<string, string> = {
+  ArrowDown: 'ArrowRight',
+  ArrowUp: 'ArrowLeft',
+  Home: 'Home',
+  End: 'End',
+};
 function linkKeys(e: KeyboardEvent<HTMLElement>) {
-  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
   const links = [...e.currentTarget.querySelectorAll<HTMLAnchorElement>('a.nav-link')];
-  const i = links.indexOf(document.activeElement as HTMLAnchorElement);
-  if (i < 0) return;
+  const current = document.activeElement as HTMLAnchorElement;
+  if (!(e.key in VERTICAL) || !links.includes(current)) return;
+  const next = tabTarget(links, current, VERTICAL[e.key]);
+  if (!next) return;
   e.preventDefault();
-  const next =
-    e.key === 'Home'
-      ? 0
-      : e.key === 'End'
-        ? links.length - 1
-        : (i + (e.key === 'ArrowDown' ? 1 : -1) + links.length) % links.length;
-  links[next].focus();
+  next.focus();
 }
 
 // The grouped page navigation: a rail beside the page that collapses to icons, and on phones a
