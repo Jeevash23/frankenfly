@@ -38,7 +38,8 @@ vision = [
 ]
 # Optional GPU brain backend (connectome_parameters.backend = "torch") and FlyGym's MuJoCo Warp extra for
 # batched worlds: Linux x86-64 with an NVIDIA GPU, in its own environment (backend/.venv-gpu). PyPI's Linux
-# torch 2.13.0 is the CUDA 13.0 build; it and its NVIDIA libraries are a few GB (docs/DEPENDENCIES.md).
+# torch 2.13.0 is the CUDA 13.0 build; with its NVIDIA libraries and Warp the lock adds about 2.9 GB of
+# downloads (docs/DEPENDENCIES.md).
 gpu = [
   "torch==2.13.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
   "flygym[warp]==2.1.0; sys_platform == 'linux' and platform_machine == 'x86_64'",

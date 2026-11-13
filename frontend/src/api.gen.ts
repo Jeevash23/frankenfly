@@ -116,6 +116,7 @@ export interface ConnectomeLive {
 export interface ConnectomeParameters {
   circuit: string;
   dynamics: 'rate' | 'spiking';
+  backend: 'cpu' | 'torch';
   synapse_threshold: number;
   global_gain: number;
   input_gain: number;
@@ -358,6 +359,7 @@ export interface ConnectivityGraph {
 export interface ConnectomeParametersInput {
   circuit?: string;
   dynamics?: 'rate' | 'spiking';
+  backend?: 'cpu' | 'torch';
   synapse_threshold?: number;
   global_gain?: number;
   input_gain?: number;

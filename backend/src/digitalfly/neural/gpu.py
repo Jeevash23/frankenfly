@@ -34,11 +34,20 @@ def _status() -> tuple[bool, str, str | None]:
     if importlib.util.find_spec("torch") is None:
         return False, ("PyTorch is not installed in this environment. Install the GPU environment "
                        "(./scripts/setup.sh --with gpu) and start the app with it (./scripts/start.sh --gpu)."), None
+    forced = os.environ.get(DEVICE_VARIABLE)
+    if not forced:  # a CPU-only build (the FlyVis lock's) is known from its version, without importing it
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            build = version("torch")
+        except PackageNotFoundError:
+            build = ""
+        if build.endswith("+cpu"):
+            return False, (f"PyTorch {build} is a CPU-only build. The torch backend needs an NVIDIA GPU and the GPU "
+                           "environment (./scripts/setup.sh --with gpu, then ./scripts/start.sh --gpu)."), None
     try:
         import torch
     except Exception as exc:  # a broken install must not break the app
         return False, f"PyTorch failed to import: {type(exc).__name__}: {exc}", None
-    forced = os.environ.get(DEVICE_VARIABLE)
     if forced:
         return True, f"PyTorch {torch.__version__} on {forced} ({DEVICE_VARIABLE})", forced
     if not torch.cuda.is_available():
@@ -79,7 +88,9 @@ def _csr(torch, matrix: sparse.spmatrix, torch_device):
     matrix = sparse.csr_matrix(matrix)
     matrix.sum_duplicates()
     matrix.sort_indices()
-    with torch.sparse.check_sparse_tensor_invariants(enable=False):
+    import warnings
+    with torch.sparse.check_sparse_tensor_invariants(enable=False), warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "Sparse CSR tensor support is in beta")
         return torch.sparse_csr_tensor(torch.from_numpy(matrix.indptr.astype(np.int64)),
                                        torch.from_numpy(matrix.indices.astype(np.int64)),
                                        torch.from_numpy(matrix.data.astype(np.float64)), size=matrix.shape,

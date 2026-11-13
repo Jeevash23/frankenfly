@@ -23,6 +23,7 @@ from digitalfly import scorecard as scorecards
 from digitalfly import explore
 from digitalfly import nwb as nwb_export, provenance
 from digitalfly.vision.flyvis_eyes import available as flyvis_available
+from digitalfly.neural.gpu import available as torch_backend_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION, RECORD_LIMIT
 from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
     run_detail, delete_run)
@@ -197,6 +198,9 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 "connectome_circuit": circuit, "connectome_circuits_available": len(list_circuits()),
                 "circuit_builder_ready": catalog_ready(),
                 "flyvis": dict(zip(["available", "reason"], flyvis_available())),
+                # The connectome model's compute backends; "torch" needs CUDA PyTorch (./scripts/start.sh --gpu).
+                "connectome_backends": list(get_args(ConnectomeParameters.model_fields["backend"].annotation)),
+                "torch_backend": dict(zip(["available", "reason"], torch_backend_available())),
                 "body_morphology_sex": "female", "male_body_available": False,
                 "shutdown_available": app.state.shutdown_callback is not None,
                 "neural_units": len(ENGINEERED_UNITS) if model == "engineered" else circuit.get("neurons"),

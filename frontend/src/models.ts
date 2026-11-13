@@ -1,4 +1,5 @@
 import type {
+  Backend,
   Condition,
   Config,
   ConnectomeParameters,
@@ -35,6 +36,13 @@ export function normalizeModel(model: string | undefined): NeuralModel {
 export const dynamicsNames: Record<Dynamics, string> = {
   rate: 'Rate units (engineered)',
   spiking: 'Spiking (Shiu et al. 2024 neuron model)',
+};
+
+// Where the connectome dynamics run. Rate dynamics agree within float rounding; spiking dynamics in
+// distribution only (other random numbers), so a run's numbers depend on the backend it ran on.
+export const backendNames: Record<Backend, string> = {
+  cpu: 'CPU (NumPy)',
+  torch: 'GPU (PyTorch CUDA)',
 };
 
 export const dynamicsLabels: Record<Dynamics, string> = {
