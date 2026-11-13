@@ -511,3 +511,30 @@
     flex-wrap: wrap;
   }
 }
+/* The validation scorecard stacks each test's cells on phones. */
+@media (max-width: 640px) {
+  .scorecard-body {
+    padding: 0 16px 14px;
+  }
+  .scorecard-table thead {
+    display: none;
+  }
+  .scorecard-table,
+  .scorecard-table tbody,
+  .scorecard-table tr,
+  .scorecard-table td {
+    display: block;
+  }
+  .scorecard-table tr {
+    border-top: 1px solid #e4edd7;
+    padding: 8px 0;
+  }
+  .scorecard-table td {
+    border-top: 0;
+    padding: 3px 0;
+  }
+  .scorecard-table td:first-child {
+    min-width: 0;
+    max-width: none;
+  }
+}
