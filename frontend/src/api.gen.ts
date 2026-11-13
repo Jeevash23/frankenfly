@@ -166,6 +166,16 @@ export interface NeuralParameters {
   time_scale: number;
 }
 
+/**
+ * Plugin contributions a run uses (digitalfly.plugins), each as "plugin:name". Leaving `RunConfig.plugins` out, its
+ * default, keeps the run exactly as it is without plugins (the field is not even written).
+ */
+export interface PluginChoices {
+  sensor: string | null;
+  stimulus: string | null;
+  stimulus_parameters: Record<string, string | boolean | number>;
+}
+
 export interface Pose {
   x: number;
   y: number;
@@ -216,6 +226,7 @@ export interface RunConfig {
   initial_interventions: Interventions;
   protocol: Protocol | null;
   record_activity: 'none' | 'types';
+  plugins?: PluginChoices | null;
 }
 
 /**
@@ -470,6 +481,16 @@ export interface PairedDifference {
   n_pairs: number;
 }
 
+/**
+ * Plugin contributions a run uses (digitalfly.plugins), each as "plugin:name". Leaving `RunConfig.plugins` out, its
+ * default, keeps the run exactly as it is without plugins (the field is not even written).
+ */
+export interface PluginChoicesInput {
+  sensor?: string | null;
+  stimulus?: string | null;
+  stimulus_parameters?: Record<string, string | boolean | number>;
+}
+
 export interface PresetRequest {
   name: string;
   description?: string;
@@ -523,6 +544,7 @@ export interface RunConfigInput {
   initial_interventions?: InterventionsInput;
   protocol?: ProtocolInput | null;
   record_activity?: 'none' | 'types';
+  plugins?: PluginChoicesInput | null;
 }
 
 /** A saved run in the library. Older runs may lack configuration fields and metrics added since. */

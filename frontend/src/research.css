@@ -1802,3 +1802,45 @@ fieldset.condition-list {
 .methods-draft-error {
   color: #a1442f;
 }
+/* Installed plugins (GET /api/plugins). */
+.plugins-panel {
+  margin-top: 20px;
+}
+.plugins-panel ul {
+  list-style: none;
+  margin: 0;
+  padding: 0 20px;
+}
+.plugin-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid #edf0e6;
+  font-size: var(--text-min);
+  color: #4d6339;
+}
+.plugin-row > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #5f7a4b;
+}
+.plugin-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.plugin-label small {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-micro);
+  font-size: var(--text-min);
+}
+.plugin-row.error .plugin-label small,
+.plugin-row.incompatible .plugin-label small {
+  color: var(--ink-error);
+}
+.plugins-empty,
+.plugins-note {
+  padding: 0 20px 14px;
+}

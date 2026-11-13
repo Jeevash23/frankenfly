@@ -27,6 +27,8 @@ test = ["pytest==9.1.1", "httpx==0.28.1"]
 data = ["pyarrow==25.0.1"]
 # Optional NWB export of saved runs (digitalfly.nwb, scripts/toolkit.py nwb); the app runs without it.
 nwb = ["pynwb==4.2.0"]
+# Optional MCP server (digitalfly.mcp, scripts/mcp.py) for agents such as Claude Code; the app runs without it.
+mcp = ["mcp==2.3.0"]
 # Optional FlyVis vision front end. CPU-only PyTorch: the CUDA build is about 3 GB.
 # FlyVis 1.2.0 and its datamate dependency support Python 3.12 only.
 vision = [
@@ -36,6 +38,10 @@ vision = [
   "torchvision==0.29.1+cpu; sys_platform == 'linux' and python_version < '3.13'",
   "torchvision==0.29.1; sys_platform == 'darwin' and python_version < '3.13'",
 ]
+
+[project.scripts]
+# The MCP server over a running app's API (needs the mcp extra: ./scripts/setup.sh --with mcp).
+digitalfly-mcp = "digitalfly.mcp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -51,3 +51,6 @@ __pycache__/
 /docs/evidence/*
 !/docs/evidence/README.md
 *.log
+
+# The MCP server's audit log (digitalfly.mcp): tool calls and their arguments stay on this machine.
+/audit/

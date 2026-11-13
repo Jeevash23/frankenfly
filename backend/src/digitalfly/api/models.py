@@ -293,6 +293,21 @@ class Protocol(StrictModel):
         return self
 
 
+PluginReference = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_.-]{0,63}:[a-z0-9][a-z0-9_.-]{0,63}$")]
+PluginParameter = Annotated[str, Field(max_length=200)] | bool | int | float
+
+
+class PluginChoices(StrictModel):
+    """Plugin contributions a run uses (digitalfly.plugins), each as "plugin:name". Leaving `RunConfig.plugins` out, its
+    default, keeps the run exactly as it is without plugins (the field is not even written)."""
+    # Replaces the geometric encoder's two values (geometric sensor model only); runs that use it need the plugin.
+    sensor: PluginReference | None = None
+    # The stimulus program that wrote `protocol`, recorded for provenance; replay uses the protocol, not the program.
+    stimulus: PluginReference | None = None
+    stimulus_parameters: dict[Annotated[str, Field(max_length=64)], PluginParameter] = Field(
+        default_factory=dict, max_length=32)
+
+
 class RunConfig(StrictModel):
     engine: Literal["flygym", "toy"] = "flygym"
     seed: int = Field(default=42, ge=0, le=2147483647)
@@ -308,6 +323,9 @@ class RunConfig(StrictModel):
     protocol: Protocol | None = None
     # "types": connectome runs also export activity_types.npz, every cell type's mean activity per control step.
     record_activity: Literal["none", "types"] = "none"
+    # Plugin contributions (see PluginChoices). Not serialized when unset, so configurations, their hashes and exports
+    # without plugins are byte for byte what they were before plugins existed.
+    plugins: PluginChoices | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @field_validator("neural_model", mode="before")
     @classmethod
@@ -334,7 +352,25 @@ class RunConfig(StrictModel):
             self.connectome_parameters.check_against_circuit(flyvis=self.sensor_model == "flyvis")
             for interventions in [self.initial_interventions] + scheduled:
                 check_interventions(interventions, self.connectome_parameters.circuit)
+        if self.plugins is not None:
+            self.check_plugins()
         return self
+
+    def check_plugins(self):
+        choices = self.plugins
+        if choices.sensor and self.sensor_model != "geometric":
+            raise ValueError("A plugin sensor replaces the geometric encoder; choose the geometric sensor model.")
+        if choices.stimulus and self.protocol is None:
+            raise ValueError("plugins.stimulus records the program that wrote the protocol; this configuration has none. "
+                             "Build the protocol with digitalfly.plugins.stimulus_protocol.")
+        if choices.stimulus_parameters and not choices.stimulus:
+            raise ValueError("plugins.stimulus_parameters belong to a stimulus program; name it in plugins.stimulus.")
+        if choices.sensor and not reads_files_later():  # the worker checks again, off the event loop
+            from digitalfly import plugins
+            try:
+                plugins.sensor(choices.sensor)
+            except plugins.PluginError as exc:
+                raise ValueError(str(exc)) from None
 
 
 Condition = Literal["control", "left_sensor_off", "descending_off", "baseline",

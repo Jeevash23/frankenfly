@@ -188,6 +188,102 @@ class Client:
         body = {"graph": graph, "groups": list(groups or []), **({"circuit": circuit} if circuit else {}), **options}
         return self._post("/api/explore/neuroglancer", body)
 
+    # Circuits, background jobs and the scorecard
+    def circuits(self) -> dict:
+        """Committed and local circuits ({"circuits": [...], "active": name})."""
+        return self._get("/api/connectome/circuits")
+
+    def build_circuit(self, name: str, seeds, **options) -> dict:
+        """Start building a circuit in a background job (seed cell types; options: hops, threshold, cap, whole_brain,
+        balance_sides). A second build is refused while one runs. Follow it with build_status() or jobs()."""
+        return self._post("/api/connectome/build", {"name": name, "seeds": list(seeds), **options})
+
+    def build_status(self) -> dict:
+        return self._get("/api/connectome/build")
+
+    def jobs(self) -> dict:
+        """Background jobs (circuit builds, replay checks, scorecards): {"jobs": [...]}, newest first."""
+        return self._get("/api/jobs")
+
+    def cancel_job(self, job_id: str) -> dict:
+        return self._post(f"/api/jobs/{urllib.parse.quote(job_id)}/cancel")
+
+    def scorecards(self) -> dict:
+        """The scorecard's tests and the latest card for each model scored."""
+        return self._get("/api/scorecards")
+
+    def run_scorecard(self, model: str = "connectome", circuit: str | None = None, dynamics: str = "rate",
+                      engine: str = "toy") -> dict:
+        """Score a model in a background job ({"job": ...}); the card then appears in scorecards()."""
+        return self._post("/api/scorecards/run", {"model": model, "dynamics": dynamics, "engine": engine,
+                                                  **({"circuit": circuit} if circuit else {})})
+
+    # Comparisons (matched-seed trials run by the app, saved to the run library)
+    def start_comparison(self, config, conditions=("control",), seeds=(42, 43), custom_conditions=(),
+                         cell_type: str | None = None, max_speed: bool = False) -> dict:
+        """Run each condition for each seed with `config` (which needs a protocol), saving every trial."""
+        return self._post("/api/batch/start", {"config": _plain(config), "conditions": list(conditions),
+                                               "seeds": list(seeds), "custom_conditions": [_plain(c) for c in custom_conditions],
+                                               "max_speed": max_speed, **({"cell_type": cell_type} if cell_type else {})})
+
+    def cancel_comparison(self) -> dict:
+        return self._post("/api/batch/cancel")
+
+    def comparison_summary(self, batch_id: str) -> dict:
+        """Per-condition statistics and matched-seed differences of a comparison's saved trials."""
+        return self._get(f"/api/batches/{urllib.parse.quote(batch_id)}/summary")
+
+    def comparison_methods(self, batch_id: str) -> str:
+        return self._get(f"/api/batches/{urllib.parse.quote(batch_id)}/methods")["markdown"]
+
+    # Saved runs: provenance, methods, NWB, replay checks and plugin metrics
+    def manifest(self, key: str) -> dict:
+        """A saved run's RO-Crate provenance manifest."""
+        return self._get(f"/api/runs/{urllib.parse.quote(key)}/manifest")
+
+    def methods(self, key: str) -> str:
+        """A methods paragraph drafted from a saved run's manifest (Markdown); review it before use."""
+        return self._get(f"/api/runs/{urllib.parse.quote(key)}/methods")["markdown"]
+
+    def replay_check(self, key: str) -> dict:
+        """Replay a saved run in a background job and compare it with the recording ({"job": ...})."""
+        return self._post(f"/api/runs/{urllib.parse.quote(key)}/replay")
+
+    def run_metrics(self, key: str, metrics=None) -> dict:
+        """Installed plugins' metrics computed on a saved run (all of them, or the named plugin:metric ones)."""
+        return self.request("GET", f"/api/runs/{urllib.parse.quote(key)}/metrics",
+                            query=[("metric", m) for m in metrics or []] or None)[0]
+
+    def plugins(self) -> dict:
+        """Installed plugins, their status and contributions."""
+        return self._get("/api/plugins")
+
+    def download(self, path: str, destination) -> dict:
+        """Save a binary API response (an NWB file, a run's ZIP) to `destination`: {path, bytes}."""
+        from pathlib import Path
+        request = urllib.request.Request(self.url + path, headers={"Accept": "*/*"})
+        destination = Path(destination)
+        try:
+            with self._opener.open(request, timeout=max(self.timeout, 120)) as response:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                partial = destination.with_name(f".{destination.name}.part")
+                with partial.open("wb") as output:
+                    while chunk := response.read(1 << 20):
+                        output.write(chunk)
+                partial.replace(destination)
+        except urllib.error.HTTPError as exc:
+            text = exc.read()
+            try:
+                detail = json.loads(text).get("detail", text.decode(errors="replace"))
+            except (ValueError, AttributeError):
+                detail = text.decode(errors="replace") or exc.reason
+            raise ClientError(exc.code, detail) from None
+        return {"path": str(destination), "bytes": destination.stat().st_size}
+
+    def nwb(self, key: str, destination=None) -> dict:
+        """Write a saved run as NWB on the server (needs pynwb there) and save the file (default ./KEY.nwb)."""
+        return self.download(f"/api/runs/{urllib.parse.quote(key)}/nwb", destination or f"{key}.nwb")
+
     # Waiting and watching
     def wait_until(self, predicate, timeout: float = 60.0, interval: float = 0.1) -> dict:
         """Poll the state until predicate(state) is true and return that state. Raises TimeoutError, or

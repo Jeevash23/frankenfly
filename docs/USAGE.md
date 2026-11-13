@@ -288,6 +288,128 @@ Every call returns the server's JSON; commands return the new state, the same ob
 
 The app runs a single experiment, so the browser shows what the script does, and a command from either changes it for both. For many trials, use the [research toolkit](RESEARCH.md#the-research-toolkit) instead: it runs without the app, in parallel. [`examples/`](../examples/README.md) has a script for each: a short protocol driven through the client, and a batch over seeds with the toolkit.
 
+## Agents and the MCP server
+
+DigitalFly includes an [MCP](https://modelcontextprotocol.io) server. With it, an AI agent such as Claude Code can drive the running app:
+
+- run, pause and step the live experiment, and change its target, interventions and connectome parameters;
+- start comparisons, toolkit trials and sweeps;
+- score models on the validation scorecard;
+- query the connectivity explorer;
+- read saved runs with their provenance manifest and methods draft, and export them as NWB.
+
+It works through the same local API and Python client as your scripts, so the app's own validation and refusals apply.
+
+### Setup
+
+```sh
+./scripts/setup.sh --with mcp            # the official MCP Python SDK, from backend/requirements-mcp.lock (1-7 MB)
+./scripts/start.sh                       # the app; the server talks to it at http://127.0.0.1:8000
+backend/.venv/bin/python scripts/mcp.py --list-tools
+```
+
+### Adding it to Claude Code
+
+Use absolute paths, so the server starts from any folder:
+
+```sh
+claude mcp add digitalfly -- /path/to/frankenfly/backend/.venv/bin/python /path/to/frankenfly/scripts/mcp.py
+```
+
+Other ways to add it:
+
+- **Shared with everyone working in the repository:** add `--scope project`, which writes `.mcp.json`.
+- **The app on another port:** append `--url http://127.0.0.1:8001` after `scripts/mcp.py`, or add `-e DIGITALFLY_URL=http://127.0.0.1:8001` before `--`.
+- **The installed command:** `backend/.venv/bin/digitalfly-mcp` does the same as `scripts/mcp.py`.
+
+`claude mcp list` shows whether the server connects. The tools appear as `mcp__digitalfly__status`, `mcp__digitalfly__reset_run` and so on.
+
+### Other MCP clients
+
+Claude Desktop, Cursor, VS Code and other MCP clients start the same stdio command. Most take a JSON entry like this one; some name the key `servers` instead of `mcpServers`.
+
+```json
+{"mcpServers": {"digitalfly": {"command": "/path/to/frankenfly/backend/.venv/bin/python",
+                                "args": ["/path/to/frankenfly/scripts/mcp.py", "--url", "http://127.0.0.1:8000"]}}}
+```
+
+### Next to Virtual Fly Brain
+
+The [Virtual Fly Brain MCP server](https://www.virtualflybrain.org/docs/tutorials/vfb-mcp-guide/) is hosted and needs no account. It answers anatomy, cell-type, expression and literature questions:
+
+```sh
+claude mcp add --transport http virtual-fly-brain https://vfb3-mcp.virtualflybrain.org
+```
+
+With both servers added, an agent can look up a neuron in VFB, then silence or activate it in DigitalFly and measure the behaviour. Each server's tools keep their own prefix, so the two never clash. Both use FlyWire cell-type names such as `DNa02`. The explorer's partners, routes and influence describe the FlyWire v783 wiring that DigitalFly simulates, so for a connectivity question that feeds a simulation, prefer them to another dataset.
+
+### The tools
+
+Tools marked read-only carry the MCP `readOnlyHint` and start their description with `[read-only]`.
+
+| Tool | What it does | Kind |
+| --- | --- | --- |
+| `status` | Live run: status, time, configuration, interventions, latest sample, metrics, events (optionally the installation's capabilities) | read-only |
+| `list_circuits`, `list_jobs`, `list_presets` | Circuits and explorer graphs; background jobs; presets | read-only |
+| `get_scorecards` | Scorecard tests with sources and rules, and the latest card per model (or one card in full) | read-only |
+| `explore_partners`, `explore_route`, `explore_influence`, `neuroglancer_link` | The connectivity explorer, on the whole brain or a circuit | read-only |
+| `list_runs`, `get_run`, `comparison_summary` | The run library; a run with its trajectory, RO-Crate manifest and methods draft; a comparison's statistics and methods draft | read-only |
+| `list_plugins`, `run_metrics` | Installed plugins; plugin metrics of a saved run | read-only |
+| `reset_run`, `start_comparison` | Start a new live run or a matched-seed comparison; they replace a recorded live run only with `discard_current: true` | changes the live run (guarded) |
+| `start_run`, `pause_run`, `step_run`, `run_for` | Run control; `run_for` runs a number of simulated seconds and stops on the 10 ms control interval | changes the live run |
+| `set_stimulus`, `set_interventions`, `set_connectome_parameters` | Live changes, recorded and replayed like the browser's | changes the live run |
+| `export_run`, `export_nwb`, `replay_check` | Save the live run; write a saved run as NWB (a copy goes to `runs/downloads/`); check a run replays | writes files |
+| `build_circuit`, `run_scorecard`, `cancel_job`, `cancel_comparison` | Background jobs in the app | starts or stops jobs |
+| `run_trials`, `run_toolkit` | Trials and sweeps, or one toolkit command (bias, ablation, robustness, readouts, scorecard, compare, metrics, explorer, plugin commands), in a separate process; results go to `runs/toolkit/mcp/` | writes files |
+
+**Limits on the toolkit tools.**
+
+- At most 4 workers, one command at a time, and a timeout (default 15 minutes, at most an hour).
+- The server chooses where results are written, so `--out` and similar options are refused.
+- Toolkit scorecards are never published as the app's latest card.
+
+**What no tool can do.** Nothing deletes or overwrites saved runs, presets or circuits. The only tools that can lose data, `reset_run` and `start_comparison`, refuse while the live run has recorded samples unless the call says `discard_current: true`. Export first to keep the run.
+
+### Audit log
+
+Every tool call is appended to `audit/mcp.jsonl` in the repository. The folder is ignored by git, and the file is created with mode 0600. Choose another file with `--audit-log` or `DIGITALFLY_MCP_AUDIT`.
+
+Each call writes two lines:
+
+- before it runs, a `call` line with the time, the server session, the tool, whether it is read-only, and the arguments (arguments over 64 KB are truncated);
+- after it runs, a `result` line with the outcome, the error if any, the duration and a short summary (run id, status, simulated time, job, path).
+
+The server also writes a `start` line when it starts. A call whose line cannot be written is refused. The log is only ever appended to; to read it:
+
+```sh
+tail -f audit/mcp.jsonl
+jq -c 'select(.event == "call" and .read_only == false) | {time, tool, arguments}' audit/mcp.jsonl
+```
+
+The server keeps no other state. The app runs one experiment for every client, so the browser shows what the agent does.
+
+## Plugins
+
+Plugins are Python packages that add sensors, stimulus programs, scorecard tests, metrics on saved runs, and toolkit commands. Installed plugins are listed on the Experiments page (**Plugins**), by `scripts/toolkit.py plugins` and at `GET /api/plugins`.
+
+A plugin's contribution runs only when it is named as `plugin:name`:
+
+- a sensor: `RunConfig.plugins.sensor`;
+- scorecard tests: `scorecard --plugin-tests`;
+- metrics: `scripts/toolkit.py metrics` or `GET /api/runs/KEY/metrics`;
+- a command: `scripts/toolkit.py plugin:command`.
+
+Runs made without plugins are unchanged. A run that uses one records it in its manifest.
+
+[PLUGINS.md](PLUGINS.md) is the API reference, and [`examples/plugins/`](../examples/plugins/digitalfly-example-plugin) holds an example. To try the example:
+
+```sh
+backend/.venv/bin/python -m pip install --no-deps -e examples/plugins/digitalfly-example-plugin
+backend/.venv/bin/python scripts/toolkit.py plugins
+backend/.venv/bin/python scripts/toolkit.py metrics runs/<run folder>
+backend/.venv/bin/python scripts/toolkit.py scorecard --model engineered --tests none --plugin-tests example:target_side
+```
+
 ## Troubleshooting
 
 **Not sure what is wrong:** run `python3 scripts/doctor.py`. It checks Python and the project environment, that installed packages match `backend/requirements.lock`, Node and npm against `frontend/package.json`, whether the built interface is current, which OpenGL backends render, the optional FlyVis and circuit-builder installs, the cache folders, free disk space and port 8000. It prints one line per check with the command that fixes it, and changes nothing. After `./scripts/setup.sh --backend-only`, add `--backend-only` so that it does not expect Node.js or the interface; inside the Docker image it points its fixes at rebuilding the image. For install and update problems, see [INSTALL](INSTALL.md#install-problems).

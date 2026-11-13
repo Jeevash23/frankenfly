@@ -17,6 +17,8 @@ validation scorecard and the connectivity explorer (partners, route, influence, 
     backend/.venv/bin/python scripts/toolkit.py nwb runs/<run folder> [--out run.nwb]
     backend/.venv/bin/python scripts/toolkit.py manifest runs/<run folder>
     backend/.venv/bin/python scripts/toolkit.py methods runs/<a> [runs/<b> ...]
+    backend/.venv/bin/python scripts/toolkit.py plugins
+    backend/.venv/bin/python scripts/toolkit.py metrics runs/<run folder> [--metric plugin:name]
 
 --set and --vary take dotted RunConfig names (for bias, ablation and paths: ConnectomeParameters names,
 with or without the "connectome_parameters." prefix). Values are read as JSON when they parse
@@ -735,6 +737,9 @@ def scorecard(args):
     if not targets:
         targets = [sc.Target("connectome", dynamics=dynamics, settings=fixed)]
     tests = [t for t in (args.tests or "").split(",") if t] or None
+    if tests == ["none"]:  # with --plugin-tests: only the plugin tests
+        tests = []
+    plugin_tests = [t for t in (args.plugin_tests or "").split(",") if t] or None
     seeds = numbers(args.seeds, int) if args.seeds else None
     total = len(targets)
     cards = []
@@ -743,17 +748,19 @@ def scorecard(args):
             if args.progress:
                 print(f"@progress {(k + done / count) / total:.3f}", flush=True)
         card = sc.run(target, engine=args.engine, seeds=seeds, duration_s=args.duration, workers=args.workers,
-                      tests=tests, on_progress=progress)
+                      tests=tests, on_progress=progress, plugins=plugin_tests)
         card["provenance"] = toolkit.provenance([target.parameters().circuit] if target.model == "connectome" else [])
         if not args.progress:
             print(sc.markdown(card) + "\n")
         stem = output_stem(f"scorecard-{card['key']}", args.out if total == 1 else None)
         toolkit.with_ending(stem, ".json").write_text(json.dumps(card, indent=1, default=str))
         write_csv(toolkit.with_ending(stem, ".csv"), card["trials"])
-        published = None if args.no_publish or tests else sc.publish(card, args.publish_dir)
+        # Partial cards and cards with plugin tests never replace the app's latest (default) scorecard.
+        published = None if args.no_publish or tests is not None or plugin_tests else sc.publish(card, args.publish_dir)
         if not args.progress:
             print(f"Saved {shown(stem)}.json and .csv" + (f"; latest for the app: {shown(published)}" if published else
-                                                          " (not published to the app: --tests or --no-publish)"))
+                                                          " (not published to the app: --tests, --plugin-tests or "
+                                                          "--no-publish)"))
         cards.append({"key": card["key"], "label": card["model"]["label"], "summary": card["summary"]["text"]})
     if args.progress:  # background jobs read the last line as the result
         print(json.dumps({"scorecards": cards}), flush=True)
@@ -769,14 +776,69 @@ def add_scorecard_command(commands):
     s.add_argument("--engine", choices=["toy", "flygym"], default="toy")
     s.add_argument("--seeds", help="Seeds, e.g. 1-3 (default 1-3 on the toy body, 1-2 on FlyGym)")
     s.add_argument("--duration", type=float, help="Simulated seconds per trial (default 3 toy, 2 FlyGym)")
-    s.add_argument("--tests", help="Comma-separated test ids (default all; a partial scorecard is not published)")
+    s.add_argument("--tests", help="Comma-separated test ids, or none (default all; a partial scorecard is not published)")
     s.add_argument("--workers", type=int, default=1, help="Parallel processes (default 1)")
     s.add_argument("--out", help="Output file stem for one model (.json and .csv); default runs/toolkit/")
     s.add_argument("--no-publish", action="store_true", help="Do not replace the app's latest scorecard for the model")
     s.add_argument("--publish-dir", help="Folder of the app's latest scorecards (default runs/scorecards)")
+    s.add_argument("--plugin-tests", help="Also run tests from installed plugins: plugin:test names, comma-separated, "
+                                          "or all (the card is then not published to the app)")
     s.add_argument("--progress", action="store_true", help="Print @progress lines and a final JSON line (for the app)")
     s.add_argument("--list", action="store_true", help="List the tests, their sources and rules, and exit")
     s.set_defaults(handler=scorecard)
+# ---------------------------------------------------------------------------------------------------------------------
+# Plugins (digitalfly.plugins): list them, compute their metrics on saved runs, and run their commands.
+
+def plugin_list(args):
+    from digitalfly import plugins
+    listing = plugins.describe()
+    if args.json:
+        print(json.dumps(listing, indent=1))
+        return
+    if not listing["enabled"]:
+        print("Plugins are turned off (DIGITALFLY_PLUGINS=0).")
+    if not listing["plugins"]:
+        print(f"No plugins installed (entry point group {plugins.GROUP}; see docs/PLUGINS.md).")
+    for item in listing["plugins"]:
+        print(f"{item['name']} {item['version'] or ''} ({item['distribution'] or 'unknown distribution'}): "
+              f"{item['status']}" + (f": {item['error']}" if item["error"] else ""))
+        for kind, entries in item["contributions"].items():
+            for entry in entries:
+                print(f"  {kind}: {item['name']}:{entry['name']}  {entry['title']}")
+
+
+def metrics(args):
+    from digitalfly import plugins
+    names = [n for n in (args.metric or "").split(",") if n] or None
+    report = {"runs": [plugins.run_metrics(_run_folder(run), names) for run in args.runs]}
+    for result in report["runs"]:
+        print(f"\n{result['run']}")
+        if not result["metrics"]:
+            print("  No plugin metrics are installed.")
+        for m in result["metrics"]:
+            print(f"  {m['metric']}: " + (f"error: {m['error']}" if m.get("error") else
+                                          f"{json.dumps(m['value'])} {m['unit']}".rstrip()))
+    rows = [{"run": r["run"], **{m["metric"]: json.dumps(m["value"]) if isinstance(m["value"], dict) else m["value"]
+                                 for m in r["metrics"]}} for r in report["runs"]]
+    save(output_stem("metrics", args.out), rows, {"command": "metrics", **report})
+
+
+def add_plugin_commands(commands):
+    i = commands.add_parser("plugins", help="List installed plugins and what they contribute")
+    i.add_argument("--json", action="store_true", help="Print the listing as JSON")
+    i.set_defaults(handler=plugin_list)
+    m = commands.add_parser("metrics", help="Compute installed plugins' metrics on saved runs")
+    m.add_argument("runs", nargs="+", help="Saved run folders (runs/<id>)")
+    m.add_argument("--metric", help="Only these plugin:metric names, comma-separated (default: every installed metric)")
+    m.add_argument("--out", help="Output file stem (.json and .csv are written)")
+    m.set_defaults(handler=metrics)
+    from digitalfly import plugins
+    for item, command in plugins.commands():
+        # Always "plugin:command", so a plugin can never replace or shadow a built-in command.
+        c = commands.add_parser(f"{item.name}:{command.name}", help=f"{command.help} (plugin {item.name} {item.version})")
+        if command.add_arguments:
+            command.add_arguments(c)
+        c.set_defaults(handler=command.run)
 # ---------------------------------------------------------------------------------------------------------------------
 
 
@@ -865,6 +927,7 @@ def main():
     add_assumption_commands(commands)
     add_scorecard_command(commands)
     add_explore_commands(commands)
+    add_plugin_commands(commands)
     args = parser.parse_args()
     try:
         args.handler(args)

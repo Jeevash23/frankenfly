@@ -22,6 +22,7 @@ from digitalfly.data import jobs as background, presets
 from digitalfly import scorecard as scorecards
 from digitalfly import explore
 from digitalfly import nwb as nwb_export, provenance
+from digitalfly import plugins as plugin_registry
 from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION, RECORD_LIMIT
 from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
@@ -487,6 +488,20 @@ def create_app(config: RunConfig | None = None, render: bool = True):
         except (OSError, ValueError, KeyError) as exc:
             raise HTTPException(500, f"The NWB file could not be written: {exc}") from exc
         return FileResponse(path, filename=f"{key}.nwb", media_type="application/x-nwb")
+
+    # Plugins (digitalfly/plugins.py): what is installed, and their metrics on a saved run (only when asked for).
+    @app.get("/api/plugins")
+    def plugin_list():
+        return plugin_registry.describe()
+
+    @app.get("/api/runs/{key}/metrics")
+    def run_plugin_metrics(key: str, metric: list[str] = Query(default=[], max_length=50)):
+        try:
+            return plugin_registry.run_metrics(run_folder(key), metric or None)
+        except plugin_registry.PluginError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (OSError, ValueError, KeyError) as exc:
+            raise HTTPException(404, "Saved run not found or unreadable.") from exc
 
     @app.get("/api/batches/{batch_id}/methods", responses={200: {"model": MethodsText}})
     def comparison_methods(batch_id: str):
