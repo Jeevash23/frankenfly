@@ -160,6 +160,9 @@ class JobManager:
         code = None
         try:
             env = job.env() if callable(job.env) else job.env
+            # stdout and stderr share one pipe: unbuffered output keeps them in order, so a crash message is the
+            # last line read and becomes the job's error instead of output that was still waiting in a buffer
+            env = {**(os.environ if env is None else env), "PYTHONUNBUFFERED": "1"}
             with self.lock:
                 if not job.cancel_requested:
                     job.process = subprocess.Popen(job.command, cwd=self.cwd, env=env, stdin=subprocess.DEVNULL,

@@ -6,6 +6,14 @@ Unless an entry says otherwise, a release keeps earlier runs replaying with the 
 
 ## [Unreleased]
 
+### Added
+
+- `docs/ROADMAP.md`: the plan from v0.7 to v1.0, with a survey of related tools and datasets.
+
+### Fixed
+
+- A background job that failed after printing reported its last printed line as the error instead of its error message: Python buffered the job's output, so the error arrived first. Jobs now run unbuffered.
+
 ## [0.6.0] - 2026-10-22
 
 Version-bump commit `ccca791`.
