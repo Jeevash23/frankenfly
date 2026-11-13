@@ -268,6 +268,17 @@ def build_manifest(meta: dict, files: dict[str, Path | None], key: str | None = 
                       "sha256": bridge.get("sha256"), "description": "FlyVis → circuit input bridge (FlyWire v783 synapse counts)"})
         run_objects.append({"@id": "#flyvis-bridge"})
 
+    # Plugin contributions the run used (digitalfly.plugins); a run without plugins has none and lists none.
+    for use in meta.get("plugins") or []:
+        entity = {"@id": f"#plugin-{use.get('plugin')}-{use.get('kind')}-{use.get('contribution')}",
+                  "@type": "SoftwareApplication", "name": f"{use.get('plugin')}:{use.get('contribution')}",
+                  "description": f"DigitalFly plugin contribution ({use.get('kind')})",
+                  "version": use.get("version") or "not recorded",
+                  "digitalfly:distribution": use.get("distribution") or "not recorded",
+                  "digitalfly:pluginApi": use.get("api_version"), "digitalfly:kind": use.get("kind")}
+        graph.append(entity)
+        run_objects.append({"@id": entity["@id"]})
+
     status = meta.get("status")
     action = {"@id": "#run", "@type": "CreateAction", "name": f"DigitalFly closed-loop run {meta.get('run_id')}",
               "identifier": meta.get("run_id"), "startTime": meta.get("created_utc"), "endTime": meta.get("exported_utc"),
@@ -381,7 +392,8 @@ def methods_facts(manifest: dict) -> dict:
             "changed": changed, "schedule": schedule, "models": models, "connectome": nodes.get("#connectome"),
             "circuit_node": nodes.get("#circuit"), "sources": [nodes[p["@id"]] for p in nodes.get("#connectome", {}).get("hasPart", [])
                                                                if p["@id"] in nodes],
-            "flyvis": nodes.get("#flyvis"), "license": nodes.get(root.get("license", {}).get("@id"), {}),
+            "flyvis": nodes.get("#flyvis"), "plugins": [n for k, n in nodes.items() if k.startswith("#plugin-")],
+            "license": nodes.get(root.get("license", {}).get("@id"), {}),
             "status": nodes.get("#run", {}).get("actionStatus", {}).get("@id", "").rsplit("/", 1)[-1]}
 
 
@@ -451,6 +463,10 @@ def methods_paragraph(manifest: dict) -> str:
         sentences.append(f"The neural model was {_strip(_model_text(f['models'], 'neural_model') or 'the engineered circuit')}.")
     if f["controller"] == "baseline":
         sentences.append("This was a controller-only baseline: neural output was bypassed.")
+    if f["plugins"]:
+        used = "; ".join(f"{n['name']} ({n.get('digitalfly:kind')}, {n.get('digitalfly:distribution')} {n.get('version')})"
+                         for n in f["plugins"])
+        sentences.append(f"The run used DigitalFly plugin contributions: {used}.")
     steps = f["steps"]
     timing = ", ".join(f"{name} {value * 1000:g} ms" for name, value in steps.items() if isinstance(value, (int, float)))
     stimulus = f["stimulus"]

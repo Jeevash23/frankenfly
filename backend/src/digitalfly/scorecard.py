@@ -279,7 +279,39 @@ def plan(test, target: Target, data) -> dict:
         conditions = [("dark", DARK, Interventions()), (f"dark, {name} activated", DARK, _act(name, "both", dynamics))]
     elif test["kind"] == "symmetry":
         conditions = [(f"target {b:+g}°", _lateral(b), Interventions()) for b in LATERAL]
+    elif test["kind"] == "plugin":
+        # A plugin test's own conditions, labelled with its id so they never merge with another test's.
+        conditions = [(f"{test['id']}: {label}", Stimulus.model_validate(_plain(stimulus)),
+                       Interventions.model_validate(_plain(interventions)))
+                      for label, stimulus, interventions in test["conditions"](names, dynamics)]
+        if not conditions:
+            raise ValueError(f"The plugin test {test['id']} planned no trials.")
     return {"status": "planned", "conditions": conditions, "names": names}
+
+
+def _plain(value):
+    return value.model_dump() if hasattr(value, "model_dump") else value
+
+
+def plugin_tests(references=None) -> list[dict]:
+    """Scorecard tests from installed plugins (digitalfly.plugins) in the form of TESTS, id "plugin:test". They run
+    only when asked for; the built-in tests and their rules never change because a plugin is installed."""
+    from digitalfly import plugins
+    tests = []
+    for item, test in plugins.scorecard_tests(references):
+        test_id = f"{item.name}:{test.id}"
+
+        def score(own, names, trials, test=test, prefix=f"{test_id}: "):
+            status, measured = test.score(names, [{**r, "condition": r["condition"].removeprefix(prefix)} for r in trials])
+            if status not in ("pass", "partial", "fail", "inconclusive"):
+                raise ValueError(f"The plugin test {own['id']} gave the status {status!r}.")
+            return status, measured
+        tests.append({"id": test_id, "kind": "plugin", "title": test.title, "source": dict(test.source),
+                      "manipulation": test.manipulation, "measure": test.measure, "rule": test.rule,
+                      "caveats": list(test.caveats), "cell_types": [list(g) for g in test.cell_types],
+                      "needs": list(test.needs), "conditions": test.conditions, "score": score,
+                      "plugin": item.record("scorecard_tests", test.id)})
+    return tests
 
 
 def _config(target: Target, engine: str, seed: int, stimulus: Stimulus, interventions: Interventions) -> RunConfig:
@@ -415,9 +447,10 @@ def by_construction(test, target: Target, names, readout) -> str | None:
 # ---------------------------------------------------------------------------------------------------------------------
 
 def run(target: Target, engine: str = "toy", seeds=None, duration_s: float | None = None, workers: int = 1,
-        tests=None, on_progress=None) -> dict:
+        tests=None, on_progress=None, plugins=None) -> dict:
     """Score `target` on `engine`: plan every test, run the trials they need once each (matched seeds), score them.
-    `tests` limits the run to some test ids; `on_progress(done, total)` follows the trials."""
+    `tests` limits the run to some built-in test ids (None: all of them); `on_progress(done, total)` follows the trials. `plugins` adds tests from
+    installed plugins: a list of "plugin:test" names, or ["all"] for every one (none by default)."""
     if target.model not in ("engineered", "connectome"):
         raise ValueError("Choose the engineered or the connectome model.")
     if engine not in DEFAULT_SEEDS:
@@ -429,7 +462,9 @@ def run(target: Target, engine: str = "toy", seeds=None, duration_s: float | Non
     unknown = sorted(set(tests or []) - set(TEST_IDS))
     if unknown:
         raise ValueError(f"No scorecard test {', '.join(unknown)}; the tests are {', '.join(TEST_IDS)}.")
-    chosen = [t for t in TESTS if not tests or t["id"] in tests]
+    chosen = [t for t in TESTS if tests is None or t["id"] in tests]  # tests=[] with plugins: plugin tests only
+    if plugins:
+        chosen += plugin_tests(None if list(plugins) == ["all"] else list(plugins))
     data = None
     if target.model == "connectome":
         from digitalfly.neural.connectome import load_circuit
@@ -477,7 +512,7 @@ def run(target: Target, engine: str = "toy", seeds=None, duration_s: float | Non
             results.append({**entry, "status": "error", "reasons": [f"{len(failed)} of {len(own)} trials failed: "
                                                                      f"{failed[0]['error']}"]})
             continue
-        status, measured = SCORERS[test["kind"]](test, p["names"], own)
+        status, measured = (test.get("score") or SCORERS[test["kind"]])(test, p["names"], own)
         if test["kind"] == "symmetry" and target.model == "connectome":
             # Not scored: the open-loop turn command with both sensors at 0.5, as `toolkit.py bias` reports it.
             spiking = target.dynamics == "spiking"
@@ -486,6 +521,9 @@ def run(target: Target, engine: str = "toy", seeds=None, duration_s: float | Non
             measured["open_loop_note"] = ("Turn command with both sensors held at 0.5 for 500 ms (positive = rightward), "
                                           "for comparison with the research guide's bias tables; not scored.")
         results.append({**entry, "status": status, "measured": measured, "trials": len(own)})
+    for test, result in zip(chosen, results):
+        if test.get("plugin"):
+            result["plugin"] = test["plugin"]
     counts = {s: sum(r["status"] == s for r in results) for s in STATUSES}
     scored = counts["pass"] + counts["partial"] + counts["fail"]
     p = target.parameters() if target.model == "connectome" else None
@@ -501,6 +539,7 @@ def run(target: Target, engine: str = "toy", seeds=None, duration_s: float | Non
                                 + (f", {counts['inconclusive']} inconclusive" if counts["inconclusive"] else "")
                                 + (f", {counts['error']} failed to run" if counts["error"] else "")},
             "tests": results, "trials": trials,
+            **({"plugins": [t["plugin"] for t in chosen if t.get("plugin")]} if any(t.get("plugin") for t in chosen) else {}),
             "methods": {"window_s": WINDOW_S, "symmetry_window_s": [WINDOW_S, EARLY_END_S],
                         "rotation_bin_s": ROTATION_BIN_S,
                         "activation": ACTIVATION if target.model == "connectome" else None,

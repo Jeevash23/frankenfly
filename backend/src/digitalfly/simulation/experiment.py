@@ -19,7 +19,7 @@ from digitalfly import __version__ as APPLICATION_VERSION
 from digitalfly.api.models import ConnectomeParameters, Event, Interventions, RunConfig, Sample, Stimulus, NeuralParameters
 from digitalfly.neural.connectome import LIF, TRACE_TYPES, ConnectomeCircuit, load_circuit
 from digitalfly.neural.model import RateCircuit
-from digitalfly import provenance as provenance_module
+from digitalfly import plugins, provenance as provenance_module
 from digitalfly.simulation.engines import FlyGymBody, ToyBody, CONTROL_DT, PHYSICS_DT, NEURAL_DT, ROOT
 
 LIF_DT_S = LIF["dt_ms"] / 1000
@@ -268,10 +268,13 @@ class Experiment:
             scheduled = [e.interventions for e in config.protocol.events if e.interventions] if config.protocol else []
             for interventions in [config.initial_interventions] + scheduled:
                 circuit.manipulation(interventions)  # a cell type or side this circuit lacks fails here, before anything changes
+        # A plugin sensor (RunConfig.plugins) is found before anything changes; without one nothing plugin-related runs.
+        sensor_plugin = plugins.sensor(config.plugins.sensor)[1] if config.plugins and config.plugins.sensor else None
         reuse = self.body is not None and self.body.name == config.engine and self.body.sensor_model == config.sensor_model
         body = self.body if reuse else (FlyGymBody if config.engine == "flygym" else ToyBody)(
             config.seed, self.render_enabled, config.sensor_model)
         previous, self.circuit, self.body = self.body, circuit, body
+        self.sensor_plugin = sensor_plugin
         self._new_run(config)
         try:
             if reuse:
@@ -372,6 +375,8 @@ class Experiment:
     def sense(self):
         """Sensor values for this interval; with FlyVis eyes, the circuit's visual drive too."""
         sensors = self.body.sensors(self.config.stimulus, self.interventions)
+        if getattr(self, "sensor_plugin", None) is not None:
+            sensors = self.plugin_sensors(sensors)
         if getattr(self.body, "flyvis", None) is not None and self.circuit.kind == "connectome":
             responses = self.body.flyvis.responses.copy()
             responses[0] *= not self.interventions.zero_left
@@ -381,6 +386,18 @@ class Experiment:
         elif getattr(self.circuit, "visual", None) is not None:
             self.circuit.set_visual(None)
         return sensors
+
+    def plugin_sensors(self, geometric):
+        """The plugin sensor's values in place of the geometric encoder's; input interventions still apply."""
+        pose, stimulus = self.body.pose(legs=False), self.config.stimulus
+        reading = plugins.SensorReading(
+            t=self.t, step=self.step_index, x=pose.x, y=pose.y, yaw=pose.yaw, velocity=pose.velocity,
+            target_x=stimulus.x, target_y=stimulus.y, intensity=stimulus.intensity, geometric_left=geometric.raw_left,
+            geometric_right=geometric.raw_right, bearing_rad=geometric.bearing_rad, distance_mm=geometric.distance_mm)
+        left, right = plugins.encode(self.sensor_plugin, reading)
+        return geometric.model_copy(update={"left": 0 if self.interventions.zero_left else left,
+                                            "right": 0 if self.interventions.zero_right else right,
+                                            "raw_left": left, "raw_right": right})
 
     def observe(self):
         self.circuit.apply_silencing(self.interventions)
@@ -705,6 +722,7 @@ class Experiment:
             "performance": {"active_wall_s": self.wall_s, "compute_s": self.compute_s},
             "neural": neural, "metrics": self.metrics, "trial": self.trial, "activity": activity, "spikes": spikes,
             "connectome_sources": connectome_sources,
+            **({"plugins": used} if (used := plugins.used_by(self.initial_config)) else {}),
             "parameter_diff": provenance_module.parameter_diff(self.initial_config.model_dump(mode="json")),
             "body_joint_order": [str(dof) for dof in self.body.fly.get_jointdofs_order()] if self.body is not None and self.config.engine == "flygym" else [],
             "vision": self.vision_provenance(),

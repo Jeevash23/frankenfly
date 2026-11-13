@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "digitalfly-example-plugin"
+version = "0.1.0"
+description = "An example DigitalFly plugin: a metric, a scorecard test, a sensor, a stimulus program and a command"
+requires-python = ">=3.12"
+license = "MIT"
+# DigitalFly itself is not declared: the plugin runs inside DigitalFly's own environment.
+dependencies = []
+
+# The one line that makes this a DigitalFly plugin: the entry point names the Plugin object.
+[project.entry-points."digitalfly.plugins"]
+example = "digitalfly_example_plugin:plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
