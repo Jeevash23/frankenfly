@@ -15,7 +15,7 @@ const engineeredNames = [
 ];
 // The v0.3 connectome units, for states sent before unit names were included.
 const connectomeNames = ['DNa02 L', 'DNa02 R', 'Visual input L', 'Visual input R', 'Circuit mean'];
-const typeColors = ['#416a55', '#bc9452', '#7f7fae', '#a26e67', '#5f8f8a'];
+const typeColors = ['var(--series-a)', 'var(--series-b)', '#7f7fae', '#a26e67', '#5f8f8a'];
 const typeDashes = [undefined, '6 4', '2 3', '8 3 2 3', '1 4'];
 
 // Left is a solid line, right a dashed one, so the two never differ by color alone.
@@ -101,11 +101,11 @@ export function Signals({state}: {state: State | null}) {
             ) : (
               <>
                 <span>
-                  <LineKey color="#416a55" />
+                  <LineKey color="var(--series-a)" />
                   Left
                 </span>
                 <span>
-                  <LineKey color="#bc9452" dash="6 4" />
+                  <LineKey color="var(--series-b)" dash="6 4" />
                   Right
                 </span>
               </>
@@ -126,7 +126,7 @@ export function Signals({state}: {state: State | null}) {
             >
               <path
                 d="M0 1H600M0 55H600M0 109H600"
-                stroke="#e3e5de"
+                stroke="var(--chart-grid)"
                 strokeWidth="1"
                 strokeDasharray="3 4"
               />
@@ -147,14 +147,14 @@ export function Signals({state}: {state: State | null}) {
                   <path
                     d={trace(history, (s) => s.rates[index] ?? 0, 600, 110, scale)}
                     fill="none"
-                    stroke="#416a55"
+                    stroke="var(--series-a)"
                     strokeWidth="2"
                     vectorEffect="non-scaling-stroke"
                   />
                   <path
                     d={trace(history, (s) => s.rates[index + 1] ?? 0, 600, 110, scale)}
                     fill="none"
-                    stroke="#bc9452"
+                    stroke="var(--series-b)"
                     strokeWidth="2"
                     strokeDasharray="6 4"
                     vectorEffect="non-scaling-stroke"
@@ -180,7 +180,7 @@ export function Signals({state}: {state: State | null}) {
                 <span
                   style={{
                     width: `${Math.min(1, state?.sample?.rates[i] ?? 0) * 100}%`,
-                    background: label.endsWith('R') ? '#bc9452' : '#416a55',
+                    background: label.endsWith('R') ? 'var(--series-b)' : 'var(--series-a)',
                   }}
                 />
               </div>

@@ -2,11 +2,20 @@ import {ClipboardCheck, Hammer, ShieldCheck, Square} from 'lucide-react';
 import type {Job} from '../types';
 import {jobActive, jobStatus} from '../jobs';
 
-const SHOWN = 6;
+const SHOWN = 50;
 
 // Circuit builds, replay checks and scorecards running in their own processes, newest first.
 export function JobsPanel({jobs, cancel}: {jobs: Job[]; cancel: (id: string) => void}) {
-  if (!jobs.length) return null;
+  if (!jobs.length)
+    return (
+      <section className="panel empty-research" aria-label="Background jobs">
+        <h3>No background jobs.</h3>
+        <p>
+          Circuit builds, replay checks and scorecards run in their own processes and are listed
+          here while they run and after they finish.
+        </p>
+      </section>
+    );
   const shown = jobs.slice(0, SHOWN);
   return (
     <section className="panel jobs-panel" aria-label="Background jobs">
@@ -56,9 +65,7 @@ export function JobsPanel({jobs, cancel}: {jobs: Job[]; cancel: (id: string) => 
         ))}
       </ul>
       {jobs.length > SHOWN && (
-        <p className="microcopy jobs-more">
-          {jobs.length - SHOWN} older jobs are not shown; GET /api/jobs lists the last 50.
-        </p>
+        <p className="microcopy jobs-more">{jobs.length - SHOWN} older jobs are not shown.</p>
       )}
     </section>
   );

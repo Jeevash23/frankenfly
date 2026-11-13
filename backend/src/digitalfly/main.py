@@ -756,7 +756,8 @@ def create_app(config: RunConfig | None = None, render: bool = True):
     def frontend(path: str):
         if path == "api" or path.startswith("api/"):
             raise HTTPException(404, "Unknown API endpoint.")
-        if path == "favicon.svg" and (dist / path).is_file():
+        # The icon, and the script that applies the stored light or dark theme before the first paint.
+        if path in {"favicon.svg", "theme-init.js"} and (dist / path).is_file():
             return FileResponse(dist / path)
         if not (dist / "index.html").is_file():
             raise HTTPException(503, "Frontend build missing. Run ./scripts/setup.sh first, or use the development server.")

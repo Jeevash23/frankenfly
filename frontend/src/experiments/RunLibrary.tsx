@@ -1,3 +1,4 @@
+import {PageActions} from '../shell/PageHeader';
 import {useEffect, useRef, useState} from 'react';
 import {ArrowDownToLine, BarChart3, RotateCcw, Square, Trash2} from 'lucide-react';
 import type {Command, Job, RunAnnotations, SavedRun, State} from '../types';
@@ -231,11 +232,8 @@ export function RunLibrary({
   const shownRuns = runs.filter((run) => includeEmpty || run.samples > 1);
   return (
     <section className="run-library" ref={library}>
-      <div className="session-heading">
-        <div>
-          <span className="eyebrow">LOCAL EXPERIMENT RECORDS</span>
-          <h2>Run library</h2>
-        </div>
+      <h2 className="visually-hidden">Saved runs</h2>
+      <PageActions>
         <button
           ref={refreshButton}
           className="secondary-button"
@@ -247,7 +245,7 @@ export function RunLibrary({
           <RotateCcw size={13} />
           Refresh
         </button>
-      </div>
+      </PageActions>
       {(error || notice) && (
         <div
           className={`alert ${error ? 'error-alert' : 'export-alert'}`}

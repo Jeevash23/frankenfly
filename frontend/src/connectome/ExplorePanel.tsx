@@ -169,12 +169,18 @@ export function ExplorePanel({
   disabled,
   openBuild,
   openWorkbench,
+  focus = null,
+  focusDone,
 }: {
   state: State | null;
   intervene: (change: InterventionChange) => Promise<unknown>;
   disabled: boolean;
   openBuild: () => void;
   openWorkbench: () => void;
+  // A cell type to look up (from the command palette or the Overview): its partners are queried
+  // once the graphs are listed, then focusDone clears it.
+  focus?: string | null;
+  focusDone?: () => void;
 }) {
   const [graphs, setGraphs] = useState<GraphInfo[] | null>(null);
   const [running, setRunning] = useState<string | null>(null);
@@ -221,22 +227,31 @@ export function ExplorePanel({
   }, [state?.config.connectome_parameters.circuit, state?.config.neural_model]);
 
   const graph = graphs?.find((g) => g.key === form.graph);
-  const run = async () => {
-    if (problem || loading) return;
+  const run = async (k: Query = kind, f: ExploreForm = form) => {
+    if (formProblem(k, f) || loading) return;
     setLoading(true);
     setError(null);
     setNotice(null);
     setLink(null);
     const started = performance.now();
     try {
-      const data = await getJson(queryUrl(kind, form));
-      setResult({kind, data, seconds: (performance.now() - started) / 1000});
+      const data = await getJson(queryUrl(k, f));
+      setResult({kind: k, data, seconds: (performance.now() - started) / 1000});
     } catch (e) {
       setError(e instanceof Error ? e.message : 'The query failed.');
     } finally {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!focus || !graphs) return;
+    focusDone?.();
+    const next = {...remembered.form, query: focus};
+    setFormState((remembered.form = next));
+    setKind('partners');
+    void run('partners', next);
+  }, [focus, !!graphs]);
 
   const act = async (cellType: string, side: Side, mode: 'silence' | 'activate') => {
     const entry = rowManipulation(cellType, side, mode, dynamics);

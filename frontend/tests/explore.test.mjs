@@ -138,7 +138,13 @@ test('numbers and signs for the tables', () => {
   assert.equal(compact(Number.NaN), '—');
 });
 
-test('the explorer has its own address', () => {
-  assert.deepEqual(parseHash('#/atlas/explore'), {page: 'atlas', atlas: 'explore'});
-  assert.equal(routeHash('atlas', 'explore'), '#/atlas/explore');
+test('the explorer has its own address, and the old one redirects to it', () => {
+  assert.equal(routeHash('explorer'), '#/connectome/explorer');
+  assert.equal(parseHash('#/connectome/explorer').redirect, null);
+  const old = parseHash('#/atlas/explore');
+  assert.equal(old.route, 'explorer');
+  assert.equal(old.redirect, '#/connectome/explorer');
+  // A cell type to open travels as a parameter.
+  assert.equal(routeHash('explorer', {type: 'DNa02'}), '#/connectome/explorer?type=DNa02');
+  assert.equal(parseHash('#/connectome/explorer?type=DNa02').params.get('type'), 'DNa02');
 });

@@ -148,8 +148,9 @@ test('top partners are ranked by synapse count with their sign', () => {
 });
 
 test('activity colours run from pale at rest to deep green and clamp', () => {
-  assert.equal(activityColor(0), 'rgb(238,240,232)');
-  assert.equal(activityColor(1), 'rgb(43,86,63)');
+  assert.equal(activityColor(0), 'color-mix(in srgb, var(--node-hot) 0%, var(--node-rest))');
+  assert.equal(activityColor(1), 'color-mix(in srgb, var(--node-hot) 100%, var(--node-rest))');
+  assert.equal(activityColor(0.25), 'color-mix(in srgb, var(--node-hot) 25%, var(--node-rest))');
   assert.equal(activityColor(5), activityColor(1));
   assert.equal(activityColor(-1), activityColor(0));
 });
