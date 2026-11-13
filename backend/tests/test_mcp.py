@@ -78,8 +78,10 @@ def test_an_agent_drives_a_short_run_and_reads_it_back(toolbox, tmp_path):
     toolbox.call("set_interventions", {"interventions": {"silence_dna02": "left"}})
     assert toolbox.call("status")["interventions"]["silence_dna02"] == "left"
     toolbox.call("set_connectome_parameters", {"parameters": {"output_gain": 2}})
-    ran = toolbox.call("run_for", {"seconds": .3, "timeout_s": 60})
-    assert ran["status"] == "paused" and ran["t"] >= .3
+    ran = toolbox.call("run_for", {"seconds": .2, "timeout_s": 60})  # short: stepped
+    assert ran["status"] == "paused" and ran["t"] == pytest.approx(.23)
+    ran = toolbox.call("run_for", {"seconds": 1, "timeout_s": 60})  # run, paused near the end, then stepped
+    assert ran["status"] == "paused" and ran["t"] == pytest.approx(1.23)
     saved = toolbox.call("export_run", {"share_safe": True})
     assert saved["samples"] > 30 and saved["key"] == Path(saved["path"]).name
     listing = toolbox.call("list_runs", {"limit": 5})

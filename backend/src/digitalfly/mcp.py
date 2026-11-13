@@ -49,7 +49,8 @@ TOOLKIT_COMMANDS = {"trials", "bias", "ablation", "paths", "robustness", "readou
 WRITES_OUT = TOOLKIT_COMMANDS - {"circuits", "plugins", "neuroglancer"}
 REFUSED_OPTIONS = ("--out", "--export-dir", "--publish-dir", "--save-recording", "--resume")
 MAX_WORKERS = 4
-SUMMARY_KEYS = ("run_id", "status", "key", "path", "bytes", "job", "id", "batch_id", "total", "returncode", "url",
+RUN_MARGIN_S = .3  # run_for pauses this much simulated time before its end and steps the rest
+SUMMARY_KEYS = ("run_id", "status", "t", "key", "path", "bytes", "job", "id", "batch_id", "total", "returncode", "url",
                 "error")
 
 INSTRUCTIONS = """DigitalFly is a local closed-loop simulation of an embodied fruit fly: a FlyGym body (or a fast toy \
@@ -433,18 +434,29 @@ class Toolbox:
     @tool("Run for a while")
     def run_for(self, seconds: Annotated[float, Field(gt=0, le=120, description="Simulated seconds to add")],
                 timeout_s: Annotated[float, Field(gt=0, le=1800)] = 300) -> dict:
-        """Run the live experiment for this many more simulated seconds, then pause, and return the state. Stops early
-        at a protocol's end or the recording limit."""
+        """Run the live experiment for this many more simulated seconds (to the 10 ms control interval), then pause,
+        and return the state. Stops early at a protocol's end or the recording limit."""
+        def now(state):
+            return (state.get("sample") or {}).get("t") or 0
         state = self.client.status()
-        start = (state.get("sample") or {}).get("t") or 0
-        self.client.run()
-        try:
-            done = self.client.wait_until(lambda s: (s.get("sample") or {}).get("t", 0) >= start + seconds - 1e-9
-                                          or s.get("status") != "running", timeout=timeout_s, interval=.2)
-        finally:
-            if self.client.status().get("status") == "running":
-                self.client.pause()
-        return self._compact(self.client.status() if done.get("status") == "running" else done)
+        end = now(state) + seconds - 1e-9
+        # Run until close to the end (the display pace is at most 2× real time, about 0.1 s between polls), pause,
+        # then step the last control intervals, so the run stops at the requested time.
+        if seconds > RUN_MARGIN_S:
+            self.client.run()
+            try:
+                state = self.client.wait_until(lambda s: now(s) >= end - RUN_MARGIN_S or s.get("status") != "running",
+                                               timeout=timeout_s, interval=.05)
+            finally:
+                state = self.client.pause() if self.client.status().get("status") == "running" else self.client.status()
+        while now(state) < end and state.get("status") == "paused":
+            try:
+                state = self.client.step(1)
+            except ClientError as exc:
+                if exc.status == 409:  # a protocol's end or the recording limit
+                    break
+                raise
+        return self._compact(state)
 
     @tool("Move the target")
     def set_stimulus(self, x: Annotated[float, Field(ge=-40, le=40, description="mm")],
