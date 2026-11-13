@@ -99,7 +99,7 @@ def variants(base: ConnectomeParameters, axes: dict | None = None, seed: int = 0
 def variant_hash(variant: dict, analyses, settings: dict) -> str:
     """A short identity of one variant's computation, including the circuit file's SHA-256 (for --resume)."""
     p = variant["parameters"]
-    text = json.dumps({"parameters": p.model_dump(mode="json"), "seed": variant["seed"],
+    text = json.dumps({"parameters": toolkit.hashable(p.model_dump(mode="json")), "seed": variant["seed"],
                        "seed_axis": variant["seed_axis"], "analyses": sorted(analyses), "settings": settings,
                        "circuit_sha256": toolkit.circuit_sha256(p.circuit)}, sort_keys=True, default=str)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
