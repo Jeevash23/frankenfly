@@ -95,7 +95,7 @@ def version(name):
         return None
 from digitalfly.vision.flyvis_eyes import available
 ok, reason = available()
-print(json.dumps({"flyvis": version("flyvis"), "torch": version("torch"), "pyarrow": version("pyarrow"),
+print(json.dumps({"flyvis": version("flyvis"), "torch": version("torch"), "pyarrow": version("pyarrow"), "mcp": version("mcp"),
                   "flyvis_ready": ok, "flyvis_reason": reason}))
 """
 
@@ -222,6 +222,11 @@ def check_extras():
     else:
         report("info", "FlyVis eyes", "not installed (optional)", "rebuild the image with --build-arg EXTRAS=flyvis"
                if IMAGE else f"{SETUP} --with flyvis (the vision lock, then scripts/fetch_flyvis.py)")
+    if extras.get("mcp"):
+        report("ok", "MCP server", f"mcp {extras['mcp']} installed: backend/.venv/bin/python scripts/mcp.py")
+    else:
+        report("info", "MCP server", "the MCP SDK is not installed (optional; for agents such as Claude Code)",
+               f"{SETUP} --with mcp")
     prepared = (ROOT / ".cache/circuits/fafb783-catalog.json").is_file() and (ROOT / ".cache/circuits/fafb783-connectome.npz").is_file()
     if prepared:
         report("ok", "Circuit builder", "FlyWire archive prepared in .cache/circuits/" + (f"; pyarrow {extras['pyarrow']}" if extras["pyarrow"] else ""))

@@ -4,7 +4,7 @@ PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$PROJECT_ROOT"
 usage() {
   cat <<'EOF'
-Usage: ./scripts/setup.sh [--backend-only] [--with builder,flyvis,recording] [--check]
+Usage: ./scripts/setup.sh [--backend-only] [--with builder,flyvis,recording,nwb,mcp] [--check]
 
   (no options)     Python environment from the hashed locks, then the web interface (needs Node.js)
   --backend-only   skip Node.js and the web interface: the toolkit, replay and tests still work
@@ -17,6 +17,8 @@ Usage: ./scripts/setup.sh [--backend-only] [--with builder,flyvis,recording] [--
                      recording  the recorded-fly data in data/recordings/downloads.json (71 MB)
                      nwb        pynwb for NWB export of saved runs (backend/requirements-nwb.lock,
                                 about 20 MB)
+                     mcp        the MCP Python SDK for scripts/mcp.py, the server agents such as Claude
+                                Code use (backend/requirements-mcp.lock, about 2 MB)
   --check          run scripts/doctor.py at the end and fail if it finds a blocking problem
 
 Run it again after every git pull: it reinstalls only what the locks changed. See docs/INSTALL.md.
@@ -42,8 +44,8 @@ done
 EXTRAS=$(echo "$EXTRAS" | tr ',' ' ')
 for extra in $EXTRAS; do
   case "$extra" in
-    builder|flyvis|recording) ;;
-    *) echo "Unknown --with part: $extra (choose from builder, flyvis, recording)"; exit 2 ;;
+    builder|flyvis|recording|nwb|mcp) ;;
+    *) echo "Unknown --with part: $extra (choose from builder, flyvis, recording, nwb, mcp)"; exit 2 ;;
   esac
 done
 wants() {
@@ -127,6 +129,10 @@ fi
 if wants nwb; then
   echo "Installing pynwb for NWB export..."
   backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-nwb.lock
+fi
+if wants mcp; then
+  echo "Installing the MCP Python SDK for scripts/mcp.py..."
+  backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-mcp.lock
 fi
 if wants recording; then
   for name in $(backend/.venv/bin/python -c 'import json; print(" ".join(r["name"] for r in json.load(open("data/recordings/downloads.json"))))'); do
