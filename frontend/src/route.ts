@@ -2,9 +2,15 @@
 // #/experiments), so Back, Forward and reloading keep your place.
 
 export type Page = 'workbench' | 'atlas' | 'experiments';
-export type AtlasView = 'anatomy' | 'circuit' | 'build' | 'connectivity';
+export type AtlasView = 'anatomy' | 'circuit' | 'build' | 'explore' | 'connectivity';
 export const PAGES: readonly Page[] = ['workbench', 'atlas', 'experiments'];
-export const ATLAS_VIEWS: readonly AtlasView[] = ['anatomy', 'circuit', 'build', 'connectivity'];
+export const ATLAS_VIEWS: readonly AtlasView[] = [
+  'anatomy',
+  'circuit',
+  'build',
+  'explore',
+  'connectivity',
+];
 
 // The page and, on the atlas page, its tab. An unknown or empty hash is the Workbench.
 export function parseHash(hash: string): {page: Page; atlas: AtlasView | null} {

@@ -97,6 +97,20 @@ The page and the Neural atlas tab are part of the address (`#/workbench`, `#/atl
 
 The builder needs the FlyWire data prepared once (see [the research guide](RESEARCH.md#building-your-own-circuits)); until then the tab shows the command to run. Building never downloads anything. The same builder runs from the command line as `scripts/build_circuit.py build`. Rebuilding a name replaces only that circuit (its file is written in full before it replaces the old one), never other circuits whose names start the same way.
 
+## Exploring connectivity
+
+**Neural atlas → Connectivity explorer** (`#/atlas/explore`) answers wiring questions about the whole FlyWire v783 brain or any circuit, choosing it under **Graph**. The whole brain reads the prepared FlyWire archive, the same one the builder uses (until it is prepared, the graph is marked "not prepared" and the circuits still work). **Synapse threshold** keeps connections of at least that many synapses (default 5). Names come with suggestions as you type; several cell types or FlyWire root IDs can be given at once, separated by commas (names that contain commas, such as `VES051,VES052`, are recognised whole).
+
+- **Partners**: the upstream (inputs) or downstream (outputs) partners of the query, by cell type or by neuron, with their synapses, their share of the query's input or output, their predicted transmitter and the sign the model would give the connection. **Query side** restricts the query to its left or right neurons.
+- **Paths**: from one cell type or neuron to another. **Strongest** finds the path whose steps carry the largest product of input fractions; **Fewest steps** the shortest path, ties broken by strength. The first row is the exact optimum; the next are the best paths through other connections. Each step shows its sign and synapses; hover for its share of the input. **Between neurons** uses each neuron's own input, and sides apply there.
+- **Influence**: a linear steady-state score after the BANC influence calculator. **Onto the query** ranks what most influences it (summing over a cell type's neurons); **From the query** ranks what stimulating it reaches. Signed by default; untick it to count every connection as excitatory. See [the research guide](RESEARCH.md#the-connectivity-explorer) for what the number means and what it does not.
+
+Each row has three buttons. **Silence** and **Activate** apply that manipulation to the row's cell type in the running circuit at once (a neuron row acts on its own side), at the Workbench's default activation (rate 0.6 or 80 Hz); a line then confirms it, with a link to the Workbench. They are disabled, with the reason on hover, when the engineered model is running or the running circuit lacks that type or side. **Build** opens **Build a circuit** with the row as the seed (a path row: **Build around this path**, every step a seed), keeping the other settings of an unsent build form.
+
+**Neuroglancer**: **Query and rows in Neuroglancer**, a path's **Neuroglancer** and **Running circuit in Neuroglancer** open a [Neuroglancer](https://neuroglancer-demo.appspot.com) view in a new browser tab, one coloured layer per group inside a faint brain outline. The neurons stream from FlyWire's public v783 segmentation (`gs://flywire_v141_m783`) when you open the link; nothing is downloaded beforehand, and the EM layer is off. Links hold at most 5,000 neurons (the first ones are kept and the link says so); the explorer also shows the link to copy. Opening a large circuit makes Neuroglancer stream many meshes, which takes time and data.
+
+The whole brain loads once per app session in about half a second and then holds about 0.4 GB of memory; on the reference laptop, partner queries take under 0.05 s, paths 0.1–0.4 s and influence 0.4–1.4 s (the first influence query also computes the eigenvalue). The same queries run from Python and the command line ([below](#scripting-the-app-from-python), [toolkit](#batch-experiments-and-analysis)).
+
 ## FlyVis eyes
 
 With the optional FlyVis install (`./scripts/setup.sh --with flyvis`; see [dependencies](DEPENDENCIES.md#v05-optional-flyvis-vision-and-recorded-fly-data)), **Sensor model → FlyVis eyes** runs the rendered eye images through FlyVis, a connectome-constrained network of the fly's optic lobe, and lets its cell types drive the circuit's visual neurons through FlyWire wiring. It needs the FlyGym body and the connectome model, and the circuit needs a FlyVis bridge: the committed circuits have one; for a circuit you build, run `backend/.venv/bin/python scripts/build_circuit.py flyvis-bridge --circuit NAME`. The bridge reaches only visual projection neurons, so a sensor input of other cell types is refused with FlyVis eyes. The first start builds FlyVis's network cache (about 10 seconds). Runs are slow, about 0.1–0.15× real time, and replay exactly. **Through the eyes** then shows the luminance FlyVis receives.
@@ -111,7 +125,13 @@ backend/.venv/bin/python scripts/toolkit.py bias --set circuit=fafb783-steering
 backend/.venv/bin/python scripts/toolkit.py ablation --workers 8
 backend/.venv/bin/python scripts/toolkit.py jump --set neural_model=connectome --duration 60
 backend/.venv/bin/python scripts/toolkit.py compare --run runs/YOUR_RUN_FOLDER
+backend/.venv/bin/python scripts/toolkit.py partners --query DNa02 --direction upstream
+backend/.venv/bin/python scripts/toolkit.py route --source LC10a --target DNa02 --level neuron
+backend/.venv/bin/python scripts/toolkit.py influence --query DNa02 --direction onto --graph fafb783-steering
+backend/.venv/bin/python scripts/toolkit.py neuroglancer --cell-type DNa02 --cell-type LC10a
 ```
+
+`partners`, `route`, `influence` and `neuroglancer` are the connectivity explorer's queries, on the whole brain (`--graph brain`, the default) or a circuit by name; they print a Markdown table and save CSV and JSON with provenance (`neuroglancer` prints the link and, with `--out`, saves the Neuroglancer state as JSON).
 
 `trials` writes each trial to a `.jsonl` file and the CSV as soon as it finishes. A trial that fails (for example a FlyGym body that becomes numerically unstable) is saved as a row with an `error` column and the others carry on; the command then exits with an error. A worker process that dies (for example out of memory) costs no trials: the ones it took down run again on their own. Rerun the same command with `--resume` and the same `--out` to run only the trials that are missing or failed; it warns when saved trials were computed by another version of the code. Trials keep no per-sample recording, so `--duration` has no 300-second limit. Every saved report records the git commit, the command line, the circuits with their SHA-256 and the package versions.
 
@@ -217,6 +237,15 @@ for state in fly.stream(10):               # live telemetry, about 10 states a s
 fly.pause()
 saved = fly.export(share_safe=True)        # {run_id, samples, path, download_url}
 print(fly.runs(limit=5)["total"])
+```
+
+The connectivity explorer has its own calls, which read and change nothing in the running experiment:
+
+```python
+fly.partners("DNa02", direction="upstream", group="cell_type", threshold=5)   # graph="brain" by default
+fly.paths("LC10a", "DNa02", mode="strongest", level="neuron", graph="fafb783-steering")
+fly.influence("DNa02", direction="onto", limit=20, signed=True)
+link = fly.neuroglancer([{"label": "DNa02", "cell_type": "DNa02"}], circuit="fafb783-dna02")["url"]
 ```
 
 Every call returns the server's JSON; commands return the new state, the same object as `fly.status()`. `reset()` without a configuration restarts from the current one, and `reset(seed=4, **{"connectome_parameters.dynamics": "spiking"})` changes single values. `step(n)` advances n control intervals while paused. A refused command raises `ClientError` with the HTTP status and the server's reason, for example 409 for Step while running or 422 for an unknown cell type. Requests carry the `Origin` header of the app's own address, which the server accepts (a foreign origin gets 403), and never go through a proxy.

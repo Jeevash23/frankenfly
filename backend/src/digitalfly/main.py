@@ -20,6 +20,7 @@ from digitalfly.neural.model import NAMES as ENGINEERED_UNITS, RateCircuit
 from digitalfly.data.builds import BuildManager, BuildRequest, catalog, catalog_ready
 from digitalfly.data import jobs as background, presets
 from digitalfly import scorecard as scorecards
+from digitalfly import explore
 from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION, RECORD_LIMIT
 from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
@@ -30,7 +31,7 @@ from digitalfly.simulation.engines import CONTROL_DT, NEURAL_DT, PHYSICS_DT, ROO
 from digitalfly.simulation.worker import PUBLISH_INTERVAL, Invalid, Rejected, SimulationWorker, WorkerStopped
 
 # Request bodies are at most 16 KB, except these. A preset holds a configuration, so all three take the same size.
-BODY_LIMITS = {"/api/connectivity/import": 2_000_000, "/api/reset": CONFIG_SIZE_LIMIT,
+BODY_LIMITS = {"/api/connectivity/import": 2_000_000, "/api/explore/neuroglancer": 1_000_000, "/api/reset": CONFIG_SIZE_LIMIT,
                "/api/batch/start": CONFIG_SIZE_LIMIT, "/api/configs": CONFIG_SIZE_LIMIT}
 
 
@@ -320,6 +321,80 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
+
+    # Connectivity explorer (digitalfly/explore.py): the whole brain from the prepared archive, or any circuit.
+    def explore_call(function, graph: str, **arguments):
+        state = worker.get_snapshot()["config"]
+        running = state["connectome_parameters"]["circuit"] if state["neural_model"] == "connectome" else None
+        try:
+            return function(explore.load_graph(graph), running=explore.running_view(running), **arguments)
+        except explore.Unavailable as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    Graph = Query(explore.BRAIN, pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$",
+                  description='"brain" (the prepared FlyWire v783 archive) or a circuit name')
+    Side = Literal["both", "left", "right"]
+    Others = Literal["excluded", "excitatory"]
+
+    @app.get("/api/explore/graphs")
+    def explore_graphs():
+        config = worker.get_snapshot()["config"]
+        brain = {"key": explore.BRAIN, "title": "Whole brain (FlyWire v783)", "available": explore.brain_available(),
+                 **({} if explore.brain_available() else {"reason": "Prepare the FlyWire archive first: "
+                     "backend/.venv/bin/python scripts/build_circuit.py prepare"})}
+        return {"graphs": [brain, *({"key": c["name"], "title": c.get("title", c["name"]), "available": "error" not in c,
+                                     "neurons": c.get("neurons"), "connections": c.get("connections"),
+                                     "committed": c.get("committed")} for c in list_circuits())],
+                "running": config["connectome_parameters"]["circuit"] if config["neural_model"] == "connectome" else None,
+                "neuroglancer": {"host": explore.NEUROGLANCER, "sources": explore.NG_SOURCES}}
+
+    @app.get("/api/explore/lookup")
+    def explore_lookup(q: str = Query(..., max_length=200), graph: str = Graph, limit: int = Query(20, ge=1, le=100)):
+        try:
+            return explore.lookup(explore.load_graph(graph), q, limit)
+        except explore.Unavailable as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/explore/partners")
+    def explore_partners(query: str = Query(..., max_length=2000), graph: str = Graph,
+                         direction: Literal["upstream", "downstream"] = "upstream",
+                         group: Literal["cell_type", "neuron"] = "cell_type", side: Side = "both",
+                         threshold: int = Query(5, ge=1, le=1000), limit: int = Query(50, ge=1, le=500),
+                         other_transmitters: Others = "excluded"):
+        return explore_call(explore.partners, graph, query=query, direction=direction, group=group, side=side,
+                            threshold=threshold, limit=limit, other_transmitters=other_transmitters)
+
+    @app.get("/api/explore/paths")
+    def explore_paths(source: str = Query(..., max_length=2000), target: str = Query(..., max_length=2000),
+                      graph: str = Graph, mode: Literal["strongest", "shortest"] = "strongest",
+                      level: Literal["cell_type", "neuron"] = "cell_type", threshold: int = Query(5, ge=1, le=1000),
+                      limit: int = Query(10, ge=1, le=50), max_hops: int = Query(10, ge=1, le=20),
+                      source_side: Side = "both", target_side: Side = "both", other_transmitters: Others = "excluded"):
+        return explore_call(explore.paths, graph, source=source, target=target, mode=mode, level=level,
+                            threshold=threshold, limit=limit, max_hops=max_hops, source_side=source_side,
+                            target_side=target_side, other_transmitters=other_transmitters)
+
+    @app.get("/api/explore/influence")
+    def explore_influence(query: str = Query(..., max_length=2000), graph: str = Graph,
+                          direction: Literal["from", "onto"] = "from", group: Literal["cell_type", "neuron"] = "cell_type",
+                          side: Side = "both", threshold: int = Query(5, ge=1, le=1000),
+                          limit: int = Query(50, ge=1, le=500), signed: bool = True,
+                          other_transmitters: Others = "excluded"):
+        return explore_call(explore.influence, graph, query=query, direction=direction, group=group, side=side,
+                            threshold=threshold, limit=limit, signed=signed, other_transmitters=other_transmitters)
+
+    @app.post("/api/explore/neuroglancer")
+    def explore_neuroglancer(body: explore.NeuroglancerRequest):
+        try:
+            return explore.neuroglancer_request(body)
+        except explore.Unavailable as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (ValueError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/batch/start")
     async def batch_start(body: BatchRequest):
