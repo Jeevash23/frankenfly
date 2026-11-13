@@ -195,6 +195,9 @@ class ConnectomeParameters(StrictModel):
     """Settings of the connectome model. All are global: nothing addresses a single neuron or synapse."""
     circuit: CircuitName = DEFAULT_CIRCUIT
     dynamics: Literal["rate", "spiking"] = "rate"
+    # Where the dynamics run: NumPy/SciPy on the CPU (default), or PyTorch on a CUDA GPU (neural/gpu.py). Rate dynamics
+    # agree within float rounding, spiking dynamics in distribution (other random numbers); fixed for a run.
+    backend: Literal["cpu", "torch"] = "cpu"
     synapse_threshold: int = Field(default=5, ge=1, le=1000)
     global_gain: float = Field(default=.001, ge=0, le=1)
     input_gain: float = Field(default=1, ge=0, le=10)
@@ -224,8 +227,12 @@ class ConnectomeParameters(StrictModel):
     def check_against_circuit(self, data=None, flyvis: bool = False):
         """Raise ValueError unless the circuit exists and every population works in it: readout and input neurons on
         both sides (the default visual input too) and, with FlyVis eyes, input neurons that the circuit's FlyVis
-        bridge reaches on both sides. `data` checks a loaded CircuitData instead of the file on disk."""
+        bridge reaches on both sides, and that the torch backend can run here. `data` checks a loaded CircuitData
+        instead of the file on disk."""
         import numpy as np
+        if self.backend == "torch":
+            from digitalfly.neural.gpu import device
+            device()  # a ValueError saying why the GPU backend is unavailable
         from digitalfly.neural.connectome import INPUT_SUPER_CLASS, bridge_path, load_bridge, load_circuit
         if data is None:
             try:
@@ -380,7 +387,7 @@ ENGINEERED_ONLY = {"descending_off"}
 CONNECTOME_ONLY = {"dna02_left_off", "dna02_right_off", "dna02_both_off", "cell_type_off"}
 MAX_CONDITIONS = 6  # built-in and custom together
 # Connectome parameters a run can change live (POST /api/connectome/parameters); the rest need a reset.
-FIXED_CONNECTOME_FIELDS = ("circuit", "dynamics", "readout_types", "input_types", "speed_types")
+FIXED_CONNECTOME_FIELDS = ("circuit", "dynamics", "backend", "readout_types", "input_types", "speed_types")
 LIVE_CONNECTOME_FIELDS = tuple(k for k in ConnectomeParameters.model_fields if k not in FIXED_CONNECTOME_FIELDS)
 ConditionLabel = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=40,
                                                   pattern=r"^[^\x00-\x1f\x7f]+$")]

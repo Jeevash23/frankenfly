@@ -115,6 +115,16 @@ def circuit_sha256(circuit: str) -> str:
     return _info(str(path), path.stat().st_mtime_ns)["sha256"]
 
 
+def hashable(dumped: dict) -> dict:
+    """A dumped RunConfig or ConnectomeParameters as hashes see it: the default CPU backend is left out, so trials
+    and variants keep the hashes they had before the backend setting existed (--resume still skips them)."""
+    connectome = dumped.get("connectome_parameters", dumped)
+    if connectome.get("backend") == "cpu":
+        connectome = {k: v for k, v in connectome.items() if k != "backend"}
+        return {**dumped, "connectome_parameters": connectome} if "connectome_parameters" in dumped else connectome
+    return dumped
+
+
 def config_hash(config: RunConfig | dict, **kwargs) -> str:
     """A short identity for one trial: its validated configuration, run_trial's settings (defaults filled in)
     and, for the connectome model, the circuit file's hash. `--resume` skips trials whose hash is saved."""
@@ -125,8 +135,8 @@ def config_hash(config: RunConfig | dict, **kwargs) -> str:
     # duration_s=10 and duration_s=10.0 are the same trial.
     settings = {k: float(v) if isinstance(TRIAL_SETTINGS[k], float) else v for k, v in {**TRIAL_SETTINGS, **kwargs}.items()}
     circuit = circuit_sha256(config.connectome_parameters.circuit) if config.neural_model == "connectome" else None
-    text = json.dumps({"config": config.model_dump(mode="json"), "settings": settings, "circuit_sha256": circuit},
-                      sort_keys=True, default=str)
+    text = json.dumps({"config": hashable(config.model_dump(mode="json")), "settings": settings,
+                       "circuit_sha256": circuit}, sort_keys=True, default=str)
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 

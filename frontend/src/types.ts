@@ -51,6 +51,7 @@ export type StimulusChange = Partial<Stimulus> | ((current: Stimulus) => Partial
 export type InterventionChange =
   Partial<Intervention> | ((current: Intervention) => Partial<Intervention>);
 export type Dynamics = ConnectomeParameters['dynamics'];
+export type Backend = ConnectomeParameters['backend'];
 export type Metrics = RunMetrics;
 export type Condition = NonNullable<BatchRequest['conditions']>[number];
 export type RunEvent = Event;

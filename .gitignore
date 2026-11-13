@@ -1,5 +1,6 @@
 # Local environments and generated builds
 backend/.venv/
+backend/.venv-gpu/
 .venv/
 venv/
 node_modules/

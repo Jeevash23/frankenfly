@@ -1,6 +1,6 @@
 import {ChevronDown, Crosshair} from 'lucide-react';
-import type {Config, Dynamics, NeuralModel, Sample, State, StimulusChange} from '../types';
-import {configForCircuit, dynamicsNames, modelNames, modelSwitch} from '../models';
+import type {Backend, Config, Dynamics, NeuralModel, Sample, State, StimulusChange} from '../types';
+import {backendNames, configForCircuit, dynamicsNames, modelNames, modelSwitch} from '../models';
 import {fmt} from '../format';
 import {throttled} from '../draft';
 import {useEffect, useRef, useState} from 'react';
@@ -33,6 +33,26 @@ function useFlyVis(circuit: string | undefined): FlyVisStatus | null {
 }
 import {Arena} from './Arena';
 
+type TorchStatus = {available: boolean; reason: string};
+
+// Whether this server can run the torch (GPU) brain backend; from /api/capabilities, checked once.
+function useTorchBackend(): TorchStatus | null {
+  const [status, setStatus] = useState<TorchStatus | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/capabilities')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.torch_backend) setStatus(data.torch_backend);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return status;
+}
+
 // Circuit and dynamics of the connectome model. Either change starts a fresh run.
 function CircuitSelect({
   state,
@@ -49,10 +69,17 @@ function CircuitSelect({
   const listed = usable.some((c) => c.name === current.circuit)
     ? usable
     : [{name: current.circuit}, ...usable];
+  const torch = useTorchBackend();
   const choose = (circuit: string, dynamics: Dynamics) => {
     const next = configForCircuit(state.config, circuit, dynamics);
     reset({neural_model: 'connectome', connectome_parameters: next.connectome_parameters});
   };
+  const chooseBackend = (backend: Backend) =>
+    reset({
+      neural_model: 'connectome',
+      connectome_parameters: {...state.config.connectome_parameters, backend},
+    });
+  const backend = current.backend ?? 'cpu';
   return (
     <>
       <label className="field-label sensory-select">
@@ -88,6 +115,36 @@ function CircuitSelect({
             {(Object.keys(dynamicsNames) as Dynamics[]).map((d) => (
               <option key={d} value={d}>
                 {dynamicsNames[d]}
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={14} />
+        </div>
+      </label>
+      <label
+        className="field-label sensory-select"
+        title={
+          torch && !torch.available
+            ? torch.reason
+            : 'GPU: rate dynamics match the CPU within float rounding; spiking dynamics agree in distribution'
+        }
+      >
+        Brain backend
+        <div className="select-wrap">
+          <select
+            aria-label="Brain backend"
+            disabled={disabled}
+            value={backend}
+            onChange={(e) => chooseBackend(e.target.value as Backend)}
+          >
+            {(Object.keys(backendNames) as Backend[]).map((b) => (
+              <option
+                key={b}
+                value={b}
+                disabled={b === 'torch' && b !== backend && !torch?.available}
+              >
+                {backendNames[b]}
+                {b === 'torch' && torch && !torch.available ? ' · unavailable' : ''}
               </option>
             ))}
           </select>

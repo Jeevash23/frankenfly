@@ -545,10 +545,10 @@ class Experiment:
         if self.circuit.kind != "connectome":
             raise ValueError("Connectome parameters apply when the connectome model is selected.")
         current = self.config.connectome_parameters
-        fixed = ["circuit", "dynamics", "readout_types", "input_types", "speed_types"]
+        fixed = ["circuit", "dynamics", "backend", "readout_types", "input_types", "speed_types"]
         if [getattr(parameters, k) for k in fixed] != [getattr(current, k) for k in fixed]:
-            # These change what is recorded (the rate columns), so they belong to a new run.
-            raise ValueError("Changing the circuit, dynamics or populations starts a fresh run: "
+            # These change what is recorded (the rate columns) or how it is computed, so they belong to a new run.
+            raise ValueError("Changing the circuit, dynamics, backend or populations starts a fresh run: "
                              "use Reset with the new settings.")
         data = self.circuit.data
         try:

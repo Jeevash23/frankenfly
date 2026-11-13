@@ -4,7 +4,7 @@ PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$PROJECT_ROOT"
 usage() {
   cat <<'EOF'
-Usage: ./scripts/setup.sh [--backend-only] [--with builder,flyvis,recording,nwb,mcp] [--check]
+Usage: ./scripts/setup.sh [--backend-only] [--with builder,flyvis,recording,nwb,mcp,gpu] [--check]
 
   (no options)     Python environment from the hashed locks, then the web interface (needs Node.js)
   --backend-only   skip Node.js and the web interface: the toolkit, replay and tests still work
@@ -19,6 +19,10 @@ Usage: ./scripts/setup.sh [--backend-only] [--with builder,flyvis,recording,nwb,
                                 about 20 MB)
                      mcp        the MCP Python SDK for scripts/mcp.py, the server agents such as Claude
                                 Code use (backend/requirements-mcp.lock, 1-7 MB)
+                     gpu        a second environment, backend/.venv-gpu, with CUDA PyTorch and MuJoCo Warp
+                                (backend/requirements-gpu.lock; Linux x86-64 with an NVIDIA GPU; about
+                                2.9 GB of downloads) for the torch brain backend and batched worlds; start
+                                the app with it through ./scripts/start.sh --gpu
   --check          run scripts/doctor.py at the end and fail if it finds a blocking problem
 
 Run it again after every git pull: it reinstalls only what the locks changed. See docs/INSTALL.md.
@@ -44,8 +48,8 @@ done
 EXTRAS=$(echo "$EXTRAS" | tr ',' ' ')
 for extra in $EXTRAS; do
   case "$extra" in
-    builder|flyvis|recording|nwb|mcp) ;;
-    *) echo "Unknown --with part: $extra (choose from builder, flyvis, recording, nwb, mcp)"; exit 2 ;;
+    builder|flyvis|recording|nwb|mcp|gpu) ;;
+    *) echo "Unknown --with part: $extra (choose from builder, flyvis, recording, nwb, mcp, gpu)"; exit 2 ;;
   esac
 done
 wants() {
@@ -133,6 +137,22 @@ fi
 if wants mcp; then
   echo "Installing the MCP Python SDK for scripts/mcp.py..."
   backend/.venv/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-mcp.lock
+fi
+if wants gpu; then
+  # Its own environment, so the CPU-only PyTorch of the FlyVis lock and the app's own environment stay as they are.
+  if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
+    echo "--with gpu needs Linux on x86-64 with an NVIDIA GPU (CUDA PyTorch and MuJoCo Warp)."
+    exit 1
+  fi
+  echo "Installing the GPU environment backend/.venv-gpu (CUDA PyTorch, MuJoCo Warp; about 2.9 GB of downloads)..."
+  if [ ! -x backend/.venv-gpu/bin/python ]; then
+    "$(backend/.venv/bin/python -c 'import sys; print(sys._base_executable)')" -m venv backend/.venv-gpu
+  fi
+  backend/.venv-gpu/bin/python -c 'import sys; assert sys.version_info[:2] == (3,12), "The GPU lock is resolved for Python 3.12"'
+  backend/.venv-gpu/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-tools.lock
+  backend/.venv-gpu/bin/python -m pip install --disable-pip-version-check --require-hashes -r backend/requirements-gpu.lock
+  backend/.venv-gpu/bin/python -m pip install --disable-pip-version-check --no-deps --no-build-isolation -e backend
+  backend/.venv-gpu/bin/python -c 'import sys; sys.path.insert(0, "backend/src"); from digitalfly.neural.gpu import available; print("Torch brain backend:", available()[1])'
 fi
 if wants recording; then
   for name in $(backend/.venv/bin/python -c 'import json; print(" ".join(r["name"] for r in json.load(open("data/recordings/downloads.json"))))'); do

@@ -361,6 +361,14 @@ class SpikingState:
         self.step_index = 0
         self.rng = np.random.default_rng([int(seed), 0x5B1])
 
+    def rest(self, neurons: np.ndarray):
+        """Silenced neurons to rest at once (ConnectomeCircuit.apply_silencing): v = v_reset, g = 0, rate 0."""
+        self.v[neurons], self.g[neurons], self.rate_hz[neurons] = LIF["v_reset_mv"], 0, 0
+
+    def quiet(self, neurons: np.ndarray):
+        """Silenced neurons' firing rate reads 0 after a step."""
+        self.rate_hz[neurons] = 0
+
     def advance(self, left: float, right: float, silenced: np.ndarray, drive: np.ndarray | None = None,
                 substeps: int | None = None):
         """One neural step of `substeps` 0.1 ms substeps (by default ten: 1 ms). Returns the number of spikes. With
@@ -431,6 +439,7 @@ class ConnectomeCircuit:
         self.path = path  # an explicit file (tests); otherwise parameters.circuit names one
         self.data = None
         self.spiking = None
+        self._torch_rate = None  # rate dynamics on the torch backend (neural/gpu.py); self.rates is then unused
         self._seed = 0
         self._manipulation_key = self._manipulation = None
         self._applied = None  # the Manipulation last applied: scaled output shows in the activity
@@ -450,7 +459,14 @@ class ConnectomeCircuit:
         if self.visual is not None:  # FlyVis drives the circuit: its input neurons must be reachable
             check_flyvis_inputs(data, parameters.input_types)
         self._visual_checked = self.visual is not None
-        if data is not self.data:
+        torch_device = None
+        if parameters.backend == "torch":
+            from digitalfly.neural.gpu import device
+            torch_device = device()  # ValueError when PyTorch or the GPU is missing, before anything changes
+        if self._torch_rate is not None:  # bring the host copy up to date: the device state may go below
+            self.rates = self._torch_rate.values().copy()
+        fresh = data is not self.data
+        if fresh:
             self.data = data
             self.rates = np.zeros(len(data.ids))
             self._manipulation_key = self._applied = None
@@ -482,21 +498,36 @@ class ConnectomeCircuit:
         n = len(data.ids)
         if p.dynamics == "spiking":
             inputs, state = (self.input_left, self.input_right), self.spiking
-            if state is not None and state.data is data and all(map(np.array_equal, state.inputs, inputs)):
+            if torch_device is None:
+                kind, build = SpikingState, lambda: SpikingState(data, active, signs, p, inputs)
+            else:
+                from digitalfly.neural.gpu import TorchSpikingState
+                kind, build = TorchSpikingState, lambda: TorchSpikingState(data, active, signs, p, inputs, torch_device)
+            if state is not None and type(state) is kind and state.data is data \
+                    and all(map(np.array_equal, state.inputs, inputs)):
                 state.configure(active, signs, p)
             else:
-                self.spiking = SpikingState(data, active, signs, p, inputs)
+                self.spiking = build()
                 self.spiking.reset(self._seed)
                 if state is not None:  # spike recording continues in the rebuilt network
                     self.spiking.record_mask, self.spiking.recorded = state.record_mask, state.recorded
                     self.spiking.recorded_count = state.recorded_count
             self.W = None
+            self._torch_rate = None
         else:
             self.spiking = None
             weights = signs[data.pre[active]] * data.synapses[active] * p.global_gain
             self.W = sparse.csr_matrix((weights, (data.post[active], data.pre[active])), shape=(n, n))
             self.W.sum_duplicates()
             self.W.sort_indices()
+            if torch_device is None:
+                self._torch_rate = None
+            else:  # the rates carry over a live edit, as on the CPU
+                from digitalfly.neural.gpu import TorchRate
+                if self._torch_rate is None or fresh:
+                    self._torch_rate = TorchRate(n, torch_device)
+                    self._torch_rate.load(self.rates)
+                self._torch_rate.configure(self.W, self.input_left, self.input_right)
         self.tau = p.tau_ms / 1000
         self.counts = {
             "connections_total": int(len(data.synapses)),
@@ -577,7 +608,7 @@ class ConnectomeCircuit:
         if self.spiking is not None:
             activity = self.spiking.rate_hz / self.parameters.spiking.rate_scale_hz
         else:
-            activity = self.rates
+            activity = self.rates if self._torch_rate is None else self._torch_rate.values()
         scale = self._output_scale
         return activity if scale is None else activity * scale
 
@@ -586,7 +617,7 @@ class ConnectomeCircuit:
         if self.spiking is not None:
             activity = self.spiking.rate_hz[neurons] / self.parameters.spiking.rate_scale_hz
         else:
-            activity = self.rates[neurons]
+            activity = (self.rates if self._torch_rate is None else self._torch_rate.values())[neurons]
         scale = self._output_scale
         return activity if scale is None else activity * scale[neurons]
 
@@ -596,7 +627,9 @@ class ConnectomeCircuit:
         m = self._applied = self.manipulation(interventions)
         silenced = m.silenced
         if self.spiking is not None:
-            self.spiking.v[silenced], self.spiking.g[silenced], self.spiking.rate_hz[silenced] = LIF["v_reset_mv"], 0, 0
+            self.spiking.rest(silenced)
+        elif self._torch_rate is not None:
+            self._torch_rate.clamp(silenced, m.activated, m.activation)
         else:
             self.rates[silenced] = 0
             if len(m.activated):
@@ -606,6 +639,8 @@ class ConnectomeCircuit:
         if seed is not None:
             self._seed = int(seed)
         self.rates.fill(0)
+        if self._torch_rate is not None:
+            self._torch_rate.zero()
         if self.spiking is not None:
             self.spiking.reset(self._seed)
         self._motor_steps = self._motor_clipped = 0
@@ -669,7 +704,10 @@ class ConnectomeCircuit:
                 raise ValueError(f"Spiking dynamics step in multiples of {LIF['dt_ms']:g} ms, not {dt * 1000:g} ms.")
             self.spiking.manipulate(m)
             self.spiking.advance(sensors.left, sensors.right, silenced, visual, round(substeps))
-            self.spiking.rate_hz[silenced] = 0
+            self.spiking.quiet(silenced)
+        elif self._torch_rate is not None:
+            self._torch_rate.advance(sensors.left, sensors.right, visual, silenced, m.activated, m.activation, m.scale,
+                                     self.parameters.input_gain, dt / self.tau)
         else:
             rates, clamped = self.rates, len(m.activated) > 0
             rates[silenced] = 0
@@ -757,6 +795,11 @@ class ConnectomeCircuit:
         sums = np.bincount(self.data.type_index, weights=self.activity, minlength=len(self.data.type_names))
         return sums / np.maximum(self.data.type_counts, 1)
 
+    @staticmethod
+    def _device_description() -> str:
+        from digitalfly.neural.gpu import available
+        return available()[1]
+
     def description(self):
         data, p = self.data, self.parameters
         prov = data.provenance
@@ -792,6 +835,10 @@ class ConnectomeCircuit:
                                  "left": int(len(self.input_left)), "right": int(len(self.input_right))},
             "speed_population": p.speed_types or None,
             "dynamics": p.dynamics,
+            **({"backend": {"name": "torch", "device": self._device_description(),
+                            "agreement": "rate dynamics: the CPU path's numbers within float rounding; spiking dynamics: "
+                                         "the same model with other random numbers, so equal in distribution only"}}
+               if p.backend == "torch" else {}),
             "readout_units": "firing rate (spikes/s) ÷ rate scale" if spiking else "dimensionless rate",
             "equation": ("Shiu et al. 2024 LIF: dv/dt = (v_rest − v + g)/tau_m, dg/dt = −g/tau_s; spike → g_post += sign × synapses × w_syn after 1.8 ms"
                          if spiking else "r += dt/tau * (clip(W @ r + input, 0, 1) - r); W_ij = sign(j) * synapses(j->i) * global_gain"),

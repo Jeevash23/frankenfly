@@ -241,7 +241,42 @@ spike when v > v_th: v → v_reset, g → 0; 1.8 ms later each target gets g += 
 
 Each 1 ms neural step runs ten 0.1 ms forward-Euler substeps in Brian2's schedule order, which Shiu et al.'s code uses: state update, threshold, delayed synaptic and Poisson input, reset. A neuron is frozen until 22 substeps after its spike, as in Brian2. The sensor input is engineered: each sensor value × input gain × 150 Hz (Shiu et al.'s default rate) is the Poisson rate of every input neuron on its side, and those neurons have no refractory period, as Poisson targets in Shiu et al.'s code. The readout is each neuron's firing rate, an exponential average over 50 ms, divided by a rate scale of 100 Hz, so 100 spikes/s count like a rate-model activity of 1. Spike trains depend on the run's seed, so a spiking run repeats exactly for its seed and replays with error 0. A parameter edit during a run takes effect from the next step on the running network: membrane potentials, conductances, spikes in transit, rates and the random generator carry over (in v0.5 every edit restarted the network from rest and replayed the run's first input noise; `scripts/replay.py` does the same for runs exported by v0.5 or earlier, schema 3, so they still replay exactly).
 
-Speed on the reference laptop: the 3,000-neuron circuit spends about 0.3 ms of wall time per 1 ms neural step (about 3× faster than real time for the neural part) and the 134,180-neuron whole brain about 6.7 ms (0.15×). With rate dynamics the same circuits take 0.05 ms and 3.2 ms. The FlyGym body adds its own cost.
+Speed on the reference laptop: the 3,000-neuron circuit spends about 0.3 ms of wall time per 1 ms neural step (about 3× faster than real time for the neural part) and the 134,180-neuron whole brain about 6.7 ms (0.15×). With rate dynamics the same circuits take 0.05 ms and 3.2 ms. The FlyGym body adds its own cost. The [GPU backend](#gpu-backend) runs the whole brain at about 1.25 ms per step with spiking dynamics and 0.7 ms with rate dynamics.
+
+### GPU backend
+
+**Brain backend → GPU (PyTorch CUDA)** in the Workbench, or `connectome_parameters.backend = "torch"` in a configuration, runs the connectome model's rate or spiking dynamics on an NVIDIA GPU (`neural/gpu.py`; how it works: [ARCHITECTURE](ARCHITECTURE.md#gpu-brain-backend-and-batched-worlds-roadmap-track-d)). The default stays **CPU (NumPy)**, which computes exactly what it did before, so defaults and recorded runs replay bit for bit. The GPU backend needs the separate GPU environment (`./scripts/setup.sh --with gpu`, then `./scripts/start.sh --gpu` or `backend/.venv-gpu/bin/python` for scripts); elsewhere choosing it is refused with the reason. It is fixed for a run, like the dynamics, and exports record it.
+
+**What agrees with the CPU path.** Rate dynamics are the same arithmetic in the same order except for the order of terms in each sparse sum, so every neuron's rate matches within float rounding. Spiking dynamics are the same model, constants and substep schedule, but the Poisson input comes from another random generator, so spike trains differ for the same seed and only their statistics can be compared. `neural/agreement.py` (`scripts/benchmark.py --check`) does both, in the style of the Eon Systems fly-brain harness, which checks each of its simulator backends against Brian2:
+
+- rate: both backends side by side through a changing input, with a readout type's left side scaled by 0.5 from the middle on; the largest difference in any neuron's rate or readout must be below 10⁻⁹;
+- spiking: eight seeds per backend, 2 s at constant input (left 0.6, right 0.4). The correlation across neurons of the per-neuron firing rates between a CPU run and a GPU run must reach that between two CPU runs with different seeds, less 0.03; the mean firing rate of all neurons and of the recurrent ones (not driven by the sensors, so their rates follow the weights), and each readout type's spike count per side, must agree between the backends within Welch's t (99.9 %, two-sided) times the standard error over seeds, plus 1 %.
+
+Measured on the reference laptop (RTX 4050 Laptop GPU, 6 GB), all circuits pass:
+
+| Circuit | Neurons | Rate: largest \|GPU − CPU\| | Spiking: rate correlation, CPU–CPU / CPU–GPU | Mean rate, all neurons (Hz), CPU / GPU | Recurrent neurons (Hz), CPU / GPU (bound) | Readout spike counts within bounds |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| fafb783-dna02 | 3,000 | 3.3 × 10⁻¹⁶ | 0.9935 / 0.9939 | 18.09 / 18.06 | 7.029 / 7.034 (±0.195) | 2 of 2 (DNa02 L 395.5 / 392.0, R 250.5 / 250.6) |
+| fafb783-dna02-balanced | 3,000 | 3.3 × 10⁻¹⁶ | 0.9938 / 0.9940 | 20.29 / 20.28 | 7.856 / 7.872 (±0.213) | 2 of 2 |
+| fafb783-steering | 4,000 | 3.3 × 10⁻¹⁶ | 0.9949 / 0.9948 | 20.62 / 20.59 | 9.437 / 9.414 (±0.280) | 6 of 6 |
+| fafb783-steering-balanced | 3,999 | 2.2 × 10⁻¹⁶ | 0.9953 / 0.9953 | 21.71 / 21.62 | 10.430 / 10.342 (±0.346) | 6 of 6 |
+| whole brain (local build) | 134,180 | 6.1 × 10⁻¹⁶ | 0.9959 / 0.9959 | 6.076 / 6.076 | 1.826 / 1.829 (±0.029) | 2 of 2 (DNa02 L 483.5 / 486.2, R 1.2 / 1.6) |
+
+The harness is sensitive enough to matter: on the DNa02 circuit, a weight per synapse 5 % too large in the GPU runs fails (the recurrent rate rises by 0.34 Hz against a bound of 0.20 Hz), while 2 % too large passes (+0.15 Hz); the population and readout tests alone miss both, because the input neurons' rates follow the Poisson drive. A first version with four seeds per backend failed a correct backend once in five circuits (the balanced steering circuit, 10.50 vs 10.31 Hz); twenty seeds each gave 10.41 ± 0.02 and 10.37 ± 0.03 Hz, so the default is now eight seeds and a t bound. A GPU spiking run repeats exactly for its seed on the same GPU and software (its delay queue sums in fixed point and its random numbers are counter-based), and a GPU run exported from the app replays on the GPU: spiking with error 0, rate within replay's tolerance.
+
+**Speed.** Wall time per 1 ms neural step, `scripts/benchmark.py --neural --backend both`, 1,000 steps after 100 warm-up steps, both sensors at 0.5, seed 0. The GPU time includes waiting for the device at the end, as the app reads the readouts once per 10 ms:
+
+| Circuit | Neurons | Rate, CPU | Rate, GPU | Spiking, CPU | Spiking, GPU | Spiking speed-up |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fafb783-dna02 | 3,000 | 0.116 ms | 0.117 ms | 0.860 ms | 0.216 ms | 4.0× |
+| fafb783-dna02-balanced | 3,000 | 0.104 ms | 0.119 ms | 0.841 ms | 0.226 ms | 3.7× |
+| fafb783-steering | 4,000 | 0.223 ms | 0.115 ms | 0.942 ms | 0.197 ms | 4.8× |
+| fafb783-steering-balanced | 3,999 | 0.158 ms | 0.116 ms | 1.030 ms | 0.247 ms | 4.2× |
+| whole brain (local build) | 134,180 | 5.455 ms | 0.692 ms | 17.472 ms | 1.252 ms | 14.0× |
+
+These were measured while another project's training job kept the GPU at 100 % and other work loaded the CPU (the CPU numbers are slower than the 0.3 ms and 6.7 ms measured for the spiking circuits on an idle laptop), so both columns are conservative and the ratios approximate. On a 3,000–4,000-neuron circuit, GPU rate dynamics are no faster (launching the kernels costs as much as the CPU's whole step), while spiking dynamics run about four times faster. On the whole brain the GPU is about 8× faster for rate dynamics (0.69 ms, faster than real time) and about 14× for spiking dynamics (1.25 ms per ms: the whole brain at 0.8× real time). Device memory stays small: at most 92 MB of tensors for the whole brain with spiking dynamics (49 MB with rate dynamics), plus the CUDA context (about 0.3–0.5 GB), well inside the 6 GB of a laptop GPU. The FlyGym body, at about 7,000–9,000 physics steps per second on one CPU core, then dominates a closed-loop run.
+
+**Limits.** The GPU environment does not include FlyVis, so FlyVis eyes need the CPU environment. Sweeps and scans work with `--set connectome_parameters.backend=torch` (trials) or `--set backend=torch` (bias, ablation), from `backend/.venv-gpu/bin/python`; keep `--workers` at 1–2, because each worker process opens its own CUDA context on the one GPU. A non-finite network state stops a GPU run at the next readout (at most 100 steps later) rather than at the step that produced it.
 
 ### Input mapping
 
@@ -498,6 +533,23 @@ Parallel workers use separate processes (`spawn`), so call the Python functions 
 **Long trials.** Trials keep no per-sample recording (`Experiment(config, render=False, record=False)` from `digitalfly.simulation.experiment`), so they have no length limit: the app's recording limit (30,000 samples, 300 simulated seconds) does not apply. Recording does not feed back into the simulation, so the numbers are identical to a recorded run's. An experiment you pass to `run_trial` yourself keeps its own setting, and a recording one is checked against the limit before the trial starts. `jumping_target_run` (and `jump`) exports its run, so it needs the recording: it accepts at most 299.99 s and says so before running.
 
 **Motor clipping.** Connectome trial rows carry `motor_clipped_fraction`, the fraction of control intervals whose motor command left [0, 1] and was clipped (an engineered diagnostic; see [Output mapping](#output-mapping)). `trials` prints its mean over the connectome trials. A clipped command no longer follows the readout, so a large fraction means the output gain or the spiking calibration saturates the body's turning.
+
+### Batched worlds (experimental)
+
+FlyGym 2.1 can step many copies of a world at once on a GPU with MuJoCo Warp (`flygym.warp.GPUSimulation`, the `flygym[warp]` extra, installed by the GPU environment). `digitalfly.simulation.batched` builds the app's own FlyGym body in it (the same fly, adhesion, flat ground and tibia/tarsus contacts as `FlyGymBody`) and `scripts/benchmark.py --worlds` measures it. Because the closed loop cannot run there yet (below), it records 0.5 s of the app's body walking under a constant command (descending command [1.2, 1.0], a right turn; 6.5 mm of path), then replays the recorded joint targets and adhesion step by step: in CPU MuJoCo (FlyGym's `Simulation`, the app's engine) and in N MuJoCo Warp worlds, each 10 ms of 100 physics steps captured once as a CUDA graph. The CPU replay ends within 4 × 10⁻⁷ mm of the closed-loop run it came from, so replaying commands is faithful on the CPU.
+
+| Engine | Worlds | Wall time for 0.5 s | World steps per second | World 0's thorax vs CPU at 0.5 s | GPU memory (Warp pool) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CPU MuJoCo, one core | 1 | 0.45 s | 11,107 | — | — |
+| MuJoCo Warp | 1 | 7.7 s | 651 | 0.061 mm | 5 MB |
+| MuJoCo Warp | 16 | 11.2 s | 7,131 | 0.059 mm | 9 MB |
+| MuJoCo Warp | 64 | 17.3 s | 18,467 | 0.075 mm | 20 MB |
+| MuJoCo Warp | 256 | 43.4 s | 29,485 | 0.065 mm | 63 MB |
+| MuJoCo Warp | 1,024 | 155.2 s | 32,997 | 0.061 mm | 235 MB |
+
+Measured on the reference laptop (RTX 4050 Laptop GPU; 12 CPU threads) while another project's training job kept the GPU at 100 %, so the GPU rows are pessimistic. Even so, the conclusion is clear for this hardware: 1,024 worlds give about three CPU cores' worth of physics steps, which the toolkit's process pool already uses, and one world is 17× slower than the CPU. Every world received the same commands; MuJoCo Warp's trajectory differs from CPU MuJoCo's by about 0.06 mm (1 % of the path) after 0.5 s, from float32 arithmetic and the noslip solver it lacks (FlyGym switches noslip off for it; the CPU model uses 5 iterations).
+
+**Why the toolkit's trials do not use it.** Every DigitalFly trial is a closed loop at 10 kHz: at each physics step FlyGym's hybrid turning controller reads the legs' ground-contact forces (its stumbling and retraction corrections), the tarsus heights and the heading, and every 10 ms the brain reads the body. `GPUSimulation` gives joint, body and actuator state as GPU arrays but no contact forces, and the controller (a CPG network with per-leg corrections) exists only per world in Python on the CPU, so a closed loop would copy every world's state to the CPU and back 10,000 times per simulated second, slower than the CPU engine. Its trajectories also differ from the CPU engine's, on which recorded runs, replay and the scorecard's thresholds depend, so batched results would not be comparable with saved ones. Making it useful needs the contact readout and the hybrid controller ported to batched GPU arrays, and a check of how far the drift moves the toolkit's measures (reaching, turning, final distance); until then it stays a measurement.
 
 ### How sensitive is a result to the modelling assumptions?
 
