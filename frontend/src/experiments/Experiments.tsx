@@ -33,6 +33,7 @@ import {JobsPanel} from './JobsPanel';
 import {ProtocolEditor} from './ProtocolEditor';
 import {RunLibrary} from './RunLibrary';
 import {ScorecardPanel} from './Scorecard';
+import {PluginsPanel} from './PluginsPanel';
 
 export default function Experiments({
   state,
@@ -231,6 +232,7 @@ export default function Experiments({
       {jobsError && <p className="microcopy">{jobsError}</p>}
       <ScorecardPanel state={state} jobs={jobs} refreshJobs={refreshJobs} disabled={disabled} />
       <JobsPanel jobs={jobs} cancel={(id) => void cancelJob(id)} />
+      <PluginsPanel />
       <RunLibrary
         state={state}
         command={command}
