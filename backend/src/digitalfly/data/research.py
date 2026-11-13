@@ -148,6 +148,15 @@ def annotations(directory: Path) -> dict:
     return _annotations(str(path), stat.st_mtime_ns, stat.st_size, stat.st_ino)
 
 
+class MethodsText(StrictModel):
+    markdown: str  # a methods paragraph drafted from the provenance manifest(s); review before use
+
+
+def saved_run_directory(key: str, root: Path | None = None) -> Path:
+    """A saved run's folder, from its key; ValueError for an unknown key or a missing run."""
+    return _run_directory(key, root)
+
+
 def _run_directory(key: str, root: Path | None) -> Path:
     if not RUN_KEY.fullmatch(key):
         raise ValueError("Unknown run identifier.")
@@ -334,6 +343,27 @@ def batch_summary(batch_id: str, root: Path | None = None) -> dict:
             "methods": {**stats["methods"], "sd": "sample standard deviation (n − 1)",
                         "reached": f"closest approach to the target within {REACH_MM:g} mm "
                                    "(metrics.min_target_distance_mm); left out when a trial predates it"}}
+
+
+def batch_methods(batch_id: str, root: Path | None = None) -> str:
+    """A methods paragraph for a comparison: drafted from the manifests of the trials batch_summary counts, with its
+    conditions and statistics."""
+    from digitalfly import provenance
+    summary = batch_summary(batch_id, root)
+    runs = [run for run in list_runs(root) if run["batch_id"] == batch_id]
+    folders, conditions, seen = [], {}, set()
+    for run in sorted(runs, key=lambda run: (run["trial"].get("index") or 0, run["key"])):  # as batch_summary counts
+        pair = (str(run["condition"]), run["trial"].get("seed"))
+        if run["trial"].get("partial") or run["metrics"].get("protocol_complete") is not True or pair in seen:
+            continue
+        seen.add(pair)
+        conditions[run["run_id"]] = str(run["condition"])
+        folders.append(_run_directory(run["key"], root))
+    manifests = [provenance.run_manifest(folder, hash_files=False) for folder in folders]
+    paragraph = provenance.comparison_paragraph(manifests, conditions, summary["methods"])
+    return "\n".join([f"# Methods draft: comparison {batch_id}", "", paragraph, "",
+                      "Drafted automatically by DigitalFly from each trial's provenance manifest. Check it and edit "
+                      "before publishing: it states what the software did, not what the results mean.", ""])
 
 
 def batch_summary_csv(summary: dict) -> str:

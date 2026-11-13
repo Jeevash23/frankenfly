@@ -1,9 +1,10 @@
 import {useEffect, useId, useState} from 'react';
-import {ArrowDownToLine, ChevronDown, ListFilter, X} from 'lucide-react';
+import {ArrowDownToLine, ChevronDown, FileText, ListFilter, X} from 'lucide-react';
 import type {BatchSummary, MetricSummary} from '../types';
 import {request} from '../api';
 import {conditionName} from '../models';
 import {intervalChart} from '../plot';
+import {MethodsDraft} from './RunExports';
 import {
   formatEstimate,
   formatInterval,
@@ -36,6 +37,7 @@ export function ComparisonSummary({
 }) {
   const id = useId();
   const [summary, setSummary] = useState<BatchSummary | null>(null);
+  const [methods, setMethods] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
     let cancelled = false;
@@ -188,6 +190,14 @@ export function ComparisonSummary({
                 <ArrowDownToLine size={13} />
                 Download CSV
               </a>
+              <button
+                className="text-button"
+                aria-expanded={methods}
+                onClick={() => setMethods(!methods)}
+              >
+                <FileText size={12} />
+                Methods draft
+              </button>
               {showTrials && (
                 <button className="text-button" onClick={showTrials}>
                   <ListFilter size={12} />
@@ -195,6 +205,12 @@ export function ComparisonSummary({
                 </button>
               )}
             </div>
+            {methods && (
+              <MethodsDraft
+                path={`/api/batches/${encodeURIComponent(batchId)}/methods`}
+                close={() => setMethods(false)}
+              />
+            )}
             <details className="summary-methods">
               <summary>How these numbers are computed</summary>
               <dl>

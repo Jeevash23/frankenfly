@@ -21,12 +21,13 @@ from digitalfly.data.builds import BuildManager, BuildRequest, catalog, catalog_
 from digitalfly.data import jobs as background, presets
 from digitalfly import scorecard as scorecards
 from digitalfly import explore
+from digitalfly import nwb as nwb_export, provenance
 from digitalfly.vision.flyvis_eyes import available as flyvis_available
 from digitalfly.simulation.experiment import APPLICATION_VERSION, RECORD_LIMIT
 from digitalfly.data.research import (RUN_KEY, ConnectivityGraph, save_graph, load_graph, list_graphs, list_runs,
     run_detail, delete_run)
-from digitalfly.data.research import (BATCH_ID, BatchSummary, RunAnnotations, RunItem, RunPage, annotate_run,
-    batch_summary, batch_summary_csv, filter_runs)
+from digitalfly.data.research import (BATCH_ID, BatchSummary, MethodsText, RunAnnotations, RunItem, RunPage,
+    annotate_run, batch_methods, batch_summary, batch_summary_csv, filter_runs, saved_run_directory)
 from digitalfly.simulation.engines import CONTROL_DT, NEURAL_DT, PHYSICS_DT, ROOT, select_gl
 from digitalfly.simulation.worker import PUBLISH_INTERVAL, Invalid, Rejected, SimulationWorker, WorkerStopped
 
@@ -202,6 +203,7 @@ def create_app(config: RunConfig | None = None, render: bool = True):
                 "single_authoritative_instance": True, "input_queue_capacity": worker.commands.maxsize,
                 "recording_limit": RECORD_LIMIT, "provenance": state["provenance"],
                 "jobs": {"available": True, "kinds": list(background.KINDS)},
+                "nwb_export": nwb_export.available(),
                 # Shipped presets can be listed and loaded; saving needs a writable configs/local/.
                 "presets": {"available": presets.CONFIG_DIR.is_dir(), "writable": presets.writable()}}
 
@@ -452,6 +454,48 @@ def create_app(config: RunConfig | None = None, render: bool = True):
             raise HTTPException(404, "Saved run not found or unreadable.") from exc
         except OSError as exc:
             raise HTTPException(500, f"The notes could not be saved: {exc.strerror or type(exc).__name__}.") from exc
+
+    # Provenance and standard formats of saved runs: the RO-Crate manifest, a drafted methods paragraph and NWB.
+    def run_folder(key: str) -> Path:
+        try:
+            return saved_run_directory(key)
+        except ValueError as exc:
+            raise HTTPException(404, "Saved run not found.") from exc
+
+    @app.get("/api/runs/{key}/manifest")
+    def run_manifest(key: str):
+        try:
+            return provenance.run_manifest(run_folder(key))
+        except (OSError, ValueError, KeyError) as exc:
+            raise HTTPException(404, "Saved run not found or unreadable.") from exc
+
+    @app.get("/api/runs/{key}/methods", responses={200: {"model": MethodsText}})
+    def run_methods(key: str):
+        try:
+            return {"markdown": provenance.run_methods(run_folder(key))}
+        except (OSError, ValueError, KeyError) as exc:
+            raise HTTPException(404, "Saved run not found or unreadable.") from exc
+
+    @app.get("/api/runs/{key}/nwb", responses={200: {"content": {"application/x-nwb": {}}}})
+    def run_nwb(key: str):
+        directory = run_folder(key)
+        if not nwb_export.available():
+            raise HTTPException(503, "NWB export needs pynwb: backend/.venv/bin/python -m pip install --require-hashes "
+                                     "-r backend/requirements-nwb.lock, then restart DigitalFly.")
+        try:
+            path = nwb_export.export_run(directory)
+        except (OSError, ValueError, KeyError) as exc:
+            raise HTTPException(500, f"The NWB file could not be written: {exc}") from exc
+        return FileResponse(path, filename=f"{key}.nwb", media_type="application/x-nwb")
+
+    @app.get("/api/batches/{batch_id}/methods", responses={200: {"model": MethodsText}})
+    def comparison_methods(batch_id: str):
+        if not re.fullmatch(BATCH_ID, batch_id):
+            raise HTTPException(404, "No saved trials belong to this comparison.")
+        try:
+            return {"markdown": batch_methods(batch_id)}
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     @app.get("/api/batches/{batch_id}/summary", responses={200: {"model": BatchSummary, "content": {"text/csv": {}}}})
     def comparison_summary(batch_id: str, format: Literal["json", "csv"] = "json"):

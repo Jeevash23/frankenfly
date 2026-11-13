@@ -17,10 +17,12 @@ import zipfile
 import numpy as np
 from digitalfly import __version__ as APPLICATION_VERSION
 from digitalfly.api.models import ConnectomeParameters, Event, Interventions, RunConfig, Sample, Stimulus, NeuralParameters
-from digitalfly.neural.connectome import TRACE_TYPES, ConnectomeCircuit, load_circuit
+from digitalfly.neural.connectome import LIF, TRACE_TYPES, ConnectomeCircuit, load_circuit
 from digitalfly.neural.model import RateCircuit
+from digitalfly import provenance as provenance_module
 from digitalfly.simulation.engines import FlyGymBody, ToyBody, CONTROL_DT, PHYSICS_DT, NEURAL_DT, ROOT
 
+LIF_DT_S = LIF["dt_ms"] / 1000
 RECORD_LIMIT = 30000
 EVENT_LIMIT = 10000  # manual input changes, the schedule a replay re-applies; bookkeeping events do not count
 SCHEDULE_KINDS = {"stimulus", "interventions", "parameters", "connectome_parameters"}
@@ -31,9 +33,13 @@ MERGED_KINDS = {"stimulus", "parameters", "speed"}
 BOOKKEEPING_KINDS = {"run", "pause", "step", "speed", "export"}  # never replayed
 BOOKKEEPING_LIMIT = 10000  # logged per run; later ones are left out after one marker event
 # 4 adds lockfiles, optional dependencies, vision.flyvis/bridge and share_safe; 5 adds the target, stimulus and
-# intervention telemetry columns, metrics.min_target_distance_mm, record_activity and activity_types.npz.
-SCHEMA_VERSION = 5
+# intervention telemetry columns, metrics.min_target_distance_mm, record_activity and activity_types.npz; 6 adds the
+# provenance manifest (ro-crate-metadata.json), methods.md, code (git commit), connectome_sources, parameter_diff and,
+# for spiking runs, spikes_readout.npz with the readout neurons' spike times.
+SCHEMA_VERSION = 6
 ACTIVITY_FILE = "activity_types.npz"
+SPIKE_FILE = "spikes_readout.npz"
+SPIKE_LIMIT = 5_000_000  # recorded readout spikes per run; past it, recording stops and the export says when
 ACTIVITY_BYTES = 128 * 2**20  # per run; past it the recorded activity keeps every second sample, and so on
 TARGET_COLUMNS = ["target_bearing_deg", "target_distance_mm", "stimulus_x_mm", "stimulus_y_mm", "stimulus_intensity",
                   "intervention_code"]
@@ -105,6 +111,18 @@ def intervention_code(interventions: Interventions) -> str:
     return ";".join(parts)
 
 
+def _write_spikes(path: Path, record: list, units: dict) -> None:
+    """spikes_readout.npz: every recorded spike as (time, unit), sorted by time, and the units' identities."""
+    substeps = np.concatenate([np.full(len(hit), step, dtype=np.int64) for step, hit in record]) if record \
+        else np.zeros(0, dtype=np.int64)
+    neurons = np.concatenate([hit for _, hit in record]).astype(np.int64) if record else np.zeros(0, dtype=np.int64)
+    position = {int(neuron): i for i, neuron in enumerate(units["neuron_index"])}
+    unit = np.array([position[int(n)] for n in neurons], dtype=np.int64)
+    order = np.lexsort((unit, substeps))
+    np.savez_compressed(path, spike_time_s=np.round(substeps[order] * LIF_DT_S, 8), spike_unit=unit[order],
+                        **{f"unit_{k}": np.asarray(v) for k, v in units.items()})
+
+
 def _write_activity(path: Path, rows: list, steps: list, names: list, counts) -> None:
     """activity_types.npz, streamed row by row, so the recording is never copied into one more array."""
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -142,6 +160,10 @@ class ExportJob:
         if exp.activity is not None:
             data = exp.circuit.data
             self.activity = (list(exp.activity), list(exp.activity_steps), list(data.type_names), data.type_counts.copy())
+        self.spikes = None
+        units = exp.spike_units()
+        if units is not None:
+            self.spikes = (exp.circuit.spike_record()[0], units)
 
     def write(self) -> dict:
         """Save the run as a folder and a ZIP. Files are written into a hidden temporary folder inside the runs folder
@@ -160,6 +182,9 @@ class ExportJob:
                         output.write(json.dumps({"step": s.step, "t": s.t, **s.body_signals}, allow_nan=False)+"\n")
             if self.activity is not None:
                 _write_activity(staging / ACTIVITY_FILE, *self.activity)
+            if self.spikes is not None:
+                _write_spikes(staging / SPIKE_FILE, *self.spikes)
+            self.write_provenance(staging)
             # Created exclusively, as the staging folder is: a link placed at either name is never written through.
             with (staged_archive.open("xb") as handle,
                   zipfile.ZipFile(handle, "w", compression=zipfile.ZIP_DEFLATED) as output):
@@ -176,6 +201,17 @@ class ExportJob:
             raise
         return {"run_id": self.run_id, "samples": len(self.records), "path": str(destination),
                 "download_url": f"/api/exports/{archive.name}"}
+
+    def write_provenance(self, staging: Path):
+        """methods.md, drafted from the manifest, then ro-crate-metadata.json, which lists every file with its hash
+        (methods.md included). Built here, off the simulation thread, from the captured metadata."""
+        meta = json.loads(self.metadata)
+        files = provenance_module.run_files(staging)
+        manifest = provenance_module.build_manifest(meta, files, self.name)
+        methods = staging / provenance_module.METHODS_FILE
+        methods.write_text(provenance_module.methods_markdown(manifest))
+        provenance_module.add_file(manifest, methods.name, methods)
+        (staging / provenance_module.MANIFEST_FILE).write_text(json.dumps(manifest, indent=2, allow_nan=False))
 
     def write_telemetry(self, path: Path):
         """One row per sample. The target columns describe the target in effect for that sample: its bearing from the
@@ -226,6 +262,8 @@ class Experiment:
         new run in the error state. Either way the configuration matches the circuit and body in use."""
         circuit = make_circuit(config)
         circuit.reset(config.seed)
+        if self.recording and getattr(circuit, "spiking", None) is not None:
+            circuit.record_spikes(np.concatenate([np.concatenate([left, right]) for _, left, right in circuit.readouts]))
         if circuit.kind == "connectome":
             scheduled = [e.interventions for e in config.protocol.events if e.interventions] if config.protocol else []
             for interventions in [config.initial_interventions] + scheduled:
@@ -266,6 +304,7 @@ class Experiment:
         types = config.record_activity == "types" and self.circuit.kind == "connectome"
         self.activity, self.activity_steps, self.activity_every = ([] if types else None), [], 1
         self.events: list[Event] = []
+        self.spike_limit_t = None  # simulated time at which spike recording stopped at SPIKE_LIMIT
         self.schedule_events = self.bookkeeping_events = 0
         self.run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
         self.started_at = datetime.now(timezone.utc).isoformat()
@@ -365,6 +404,10 @@ class Experiment:
             if last is None or last[1] is not stimulus or last[2] is not self.interventions:
                 self.inputs.append((len(self.records), stimulus, self.interventions))
             self.records.append(sample)
+            spiking = getattr(self.circuit, "spiking", None)
+            if spiking is not None and spiking.record_mask is not None and spiking.recorded_count >= SPIKE_LIMIT:
+                self.circuit.record_spikes(None)
+                self.spike_limit_t = self.t
             if self.activity is not None and self.step_index % self.activity_every == 0:
                 means = self.circuit.type_means()
                 self.activity.append(means.astype("<f4"))
@@ -606,6 +649,18 @@ class Experiment:
                 vision["bridge"] = {"file": path.name, "sha256": _sha256(path), "circuit_sha256": self.circuit.data.sha256}
         return vision
 
+    def spike_units(self) -> dict | None:
+        """The neurons whose spike times this run records (its readout neurons, spiking dynamics), with their cell
+        type, side and FlyWire root ID; None when it records none."""
+        spiking = getattr(self.circuit, "spiking", None)
+        if not self.recording or spiking is None or (spiking.record_mask is None and self.spike_limit_t is None):
+            return None
+        data, rows = self.circuit.data, []
+        for name, left, right in self.circuit.readouts:
+            rows += [(int(i), name, side) for side, members in (("left", left), ("right", right)) for i in members]
+        return {"neuron_index": [r[0] for r in rows], "root_id": [str(data.ids[r[0]]) for r in rows],
+                "cell_type": [r[1] for r in rows], "side": [r[2] for r in rows]}
+
     def metadata(self, share_safe=False) -> dict:
         neural = self.circuit.description()
         activity = None
@@ -617,8 +672,25 @@ class Experiment:
                         "arrays": {"activity": "float32, samples × cell types", "step": "control step of each sample",
                                    "time_s": "simulated time of each sample", "type_names": "cell types, in column order",
                                    "neurons_per_type": "neurons averaged in each column"}}
+        spikes = None
+        units = self.spike_units()
+        if units is not None:
+            spikes = {"file": SPIKE_FILE, "units": len(units["neuron_index"]), "spikes": self.circuit.spiking.recorded_count,
+                      "neurons": "every neuron of the readout cell types, left and right",
+                      "time": "spike_time_s: the start of the 0.1 ms substep whose update crossed the threshold "
+                              "(as Brian2's SpikeMonitor), from the reset",
+                      "stopped_at_s": self.spike_limit_t, "limit": SPIKE_LIMIT,
+                      "arrays": {"spike_time_s": "float64, sorted", "spike_unit": "row of the unit arrays",
+                                 "unit_neuron_index": "neuron index in the circuit file", "unit_root_id": "FlyWire root ID",
+                                 "unit_cell_type": "cell type", "unit_side": "left or right"}}
+        connectome_sources = None
+        if self.circuit.kind == "connectome":
+            prov = self.circuit.data.provenance
+            connectome_sources = {"sources": prov.get("sources") or [], "build": prov.get("build"),
+                                  "citations": prov.get("citations") or [], "attribution": prov.get("attribution")}
         metadata = {
             "schema_version": SCHEMA_VERSION, "application_version": APPLICATION_VERSION, "run_id": self.run_id,
+            "code": provenance_module.code_version(),
             "created_utc": self.started_at, "exported_utc": datetime.now(timezone.utc).isoformat(),
             "initial_config": self.initial_config.model_dump(), "final_config": self.config.model_dump(),
             "final_interventions": self.interventions.model_dump(), "final_sample": self.sample.model_dump() if self.sample else None,
@@ -631,7 +703,9 @@ class Experiment:
             "warmup_s": .05 if self.config.engine == "flygym" else 0,
             "rendering": {"requested": self.render_enabled, "resolution": [640, 288], "wall_target_hz": 10},
             "performance": {"active_wall_s": self.wall_s, "compute_s": self.compute_s},
-            "neural": neural, "metrics": self.metrics, "trial": self.trial, "activity": activity,
+            "neural": neural, "metrics": self.metrics, "trial": self.trial, "activity": activity, "spikes": spikes,
+            "connectome_sources": connectome_sources,
+            "parameter_diff": provenance_module.parameter_diff(self.initial_config.model_dump(mode="json")),
             "body_joint_order": [str(dof) for dof in self.body.fly.get_jointdofs_order()] if self.body is not None and self.config.engine == "flygym" else [],
             "vision": self.vision_provenance(),
             "events": [event.model_dump() for event in self.events],

@@ -425,6 +425,10 @@ export interface InterventionsInput {
   cell_types?: CellTypeInterventionInput[];
 }
 
+export interface MethodsText {
+  markdown: string;
+}
+
 export interface MetricSummary {
   mean: number | null;
   sd: number | null;
@@ -619,7 +623,9 @@ export interface RequestBodies {
 
 /** Responses with a documented shape. */
 export interface Responses {
+  'GET /api/batches/{batch_id}/methods': MethodsText;
   'GET /api/batches/{batch_id}/summary': BatchSummary;
   'GET /api/runs': RunPage;
   'PATCH /api/runs/{key}': RunItem;
+  'GET /api/runs/{key}/methods': MethodsText;
 }

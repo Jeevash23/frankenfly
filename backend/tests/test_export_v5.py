@@ -66,7 +66,7 @@ def test_telemetry_gains_target_and_intervention_columns(tmp_path):
         assert float(row["target_bearing_deg"]) == pytest.approx((bearing + 180) % 360 - 180, abs=1e-9)
         assert -180 <= float(row["target_bearing_deg"]) <= 180
     metadata = json.loads((run / "metadata.json").read_text())
-    assert metadata["schema_version"] == 5 and metadata["units"]["target_bearing"] == "deg"
+    assert metadata["schema_version"] == 6 and metadata["units"]["target_bearing"] == "deg"
     assert metadata["activity"] is None and not (run / "activity_types.npz").exists()
     assert metadata["metrics"]["min_target_distance_mm"] == min(float(r["target_distance_mm"]) for r in rows)
     # replay.py compares its own columns by name and ignores the new ones, text included.

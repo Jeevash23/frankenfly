@@ -81,9 +81,28 @@ PIP_CACHE_DIR="$PWD/.cache/pip" PIP_TOOLS_CACHE_DIR="$PWD/.cache/pip-tools" \
   --output-file backend/requirements-data.lock backend/pyproject.toml
 ```
 
+NWB export needs pynwb, which the app imports only when asked for an NWB file. It lives in the optional `nwb` extra and its own lock, `backend/requirements-nwb.lock`: the runtime lock plus pynwb 4.2.0 and what it needs (hdmf, h5py, pandas, jsonschema, ruamel.yaml and a few small packages, about 20 MB of downloads on Linux x86-64), hashed for every published file. Packages it shares with the FlyVis lock (pandas, h5py, ruamel.yaml) take that lock's pins, so both install into one environment:
+
+```sh
+backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-nwb.lock
+```
+
+To regenerate it after changing the runtime or vision lock, with uv (which reads hashes from the index instead of downloading every file):
+
+```sh
+grep -E '^[A-Za-z0-9_.-]+==' backend/requirements-vision.lock | sed 's/ \\$//; s/ ;.*//' \
+  | grep -v -E '^(torch|torchvision)==' > vision-pins.txt
+uv pip compile backend/pyproject.toml --extra test --extra nwb --universal --python-version 3.12 \
+  --generate-hashes --emit-index-url --index-url https://pypi.org/simple \
+  -c backend/requirements.lock -c vision-pins.txt -o backend/requirements-nwb.lock
+rm vision-pins.txt
+```
+
+Check that the diff against `backend/requirements.lock` only adds packages.
+
 ## Security audits and exceptions
 
-The CI security job runs pip-audit (installed from the hashed `.github/requirements-audit.txt`) over the runtime, data, FlyVis (`requirements-vision.lock`) and tools locks without installing them, and `npm audit --audit-level=high` over the frontend lockfile. pip-audit cannot look up the vision lock's `+cpu` PyTorch builds and lists them as skipped; the same versions on PyPI have no advisories.
+The CI security job runs pip-audit (installed from the hashed `.github/requirements-audit.txt`) over the runtime, data, FlyVis (`requirements-vision.lock`), NWB (`requirements-nwb.lock`) and tools locks without installing them, and `npm audit --audit-level=high` over the frontend lockfile. pip-audit cannot look up the vision lock's `+cpu` PyTorch builds and lists them as skipped; the same versions on PyPI have no advisories.
 
 **Pillow exception.** Pillow 12.3.0 has eight advisories in its TIFF, PDF-append, GIF, PPM/ImageMorph and EPS code, all fixed only in Pillow 13.0.0. FlyGym 2.1.0 requires `pillow<13` and there is no 12.x backport, so the audit ignores those eight IDs; `.github/workflows/ci.yml` lists each with its reason. None is reachable: DigitalFly encodes JPEG frames (and the demo GIF) from arrays and decodes only its own JPEG frames; it never opens TIFF, PDF, GIF, PPM/PGM or EPS input. Do not override FlyGym's cap. Drop the exception when a FlyGym release allows Pillow 13; Pillow changes only the JPEG frame bytes, not the telemetry that replay compares.
 

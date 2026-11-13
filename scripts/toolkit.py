@@ -14,6 +14,9 @@ validation scorecard and the connectivity explorer (partners, route, influence, 
     backend/.venv/bin/python scripts/toolkit.py route --source LC10a --target DNa02 --mode strongest --level neuron
     backend/.venv/bin/python scripts/toolkit.py influence --query LC10a --graph fafb783-steering
     backend/.venv/bin/python scripts/toolkit.py neuroglancer --cell-type DNa02 --cell-type LC10a
+    backend/.venv/bin/python scripts/toolkit.py nwb runs/<run folder> [--out run.nwb]
+    backend/.venv/bin/python scripts/toolkit.py manifest runs/<run folder>
+    backend/.venv/bin/python scripts/toolkit.py methods runs/<a> [runs/<b> ...]
 
 --set and --vary take dotted RunConfig names (for bias, ablation and paths: ConnectomeParameters names,
 with or without the "connectome_parameters." prefix). Values are read as JSON when they parse
@@ -25,7 +28,9 @@ names a file (dots in its name are kept: --out gain-1.5 writes gain-1.5.json); e
 report records its provenance (git commit, command line, circuits and their SHA-256, package
 versions). `circuits` only prints the list. `trials` also appends each finished trial to a .jsonl
 and the .csv while it runs; a trial that fails becomes a row with an error, and --resume skips the
-trials already saved. Every result describes this simulation, not fly behavior.
+trials already saved. `nwb` writes a saved run as NWB (needs backend/requirements-nwb.lock) and validates it;
+`manifest` prints a run's RO-Crate provenance manifest; `methods` drafts a methods paragraph for one run, or for
+several (a comparison). Every result describes this simulation, not fly behavior.
 """
 import argparse
 import json
@@ -386,6 +391,44 @@ def circuits(args):
             continue
         print(f"| {c['name']} | {'committed' if c['committed'] else 'local'} | {c['neurons']:,} | {c['connections']:,} | "
               f"{c['cell_types']:,} | {', '.join(c['seeds'])} | {', '.join(c['readout_types']) or '—'} |")
+
+
+def _run_folder(text) -> Path:
+    path = Path(text)
+    if not (path / "metadata.json").is_file():
+        raise FileNotFoundError(f"{text} is not a saved run folder (it has no metadata.json).")
+    return path
+
+
+def nwb(args):
+    from digitalfly import nwb as nwb_export
+    run = _run_folder(args.run)
+    path = nwb_export.export_run(run, Path(args.out) if args.out else None)
+    problems = nwb_export.validate(path)
+    print(f"Wrote {shown(path)} ({path.stat().st_size / 1e6:.2f} MB).")
+    if problems:
+        sys.exit("pynwb's validator reported:\n" + "\n".join(problems))
+    print("pynwb's validator found no problems.")
+
+
+def manifest(args):
+    from digitalfly import provenance
+    print(json.dumps(provenance.run_manifest(_run_folder(args.run)), indent=2))
+
+
+def methods(args):
+    from digitalfly import provenance
+    runs = [_run_folder(r) for r in args.runs]
+    if len(runs) == 1:
+        print(provenance.run_methods(runs[0]))
+        return
+    manifests = [provenance.run_manifest(r, hash_files=False) for r in runs]
+    conditions = {}
+    for run in runs:
+        meta = json.loads((run / "metadata.json").read_text())
+        if (meta.get("trial") or {}).get("condition") is not None:
+            conditions[meta["run_id"]] = str(meta["trial"]["condition"])
+    print(provenance.comparison_paragraph(manifests, conditions or None))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -786,6 +829,16 @@ def main():
     j.set_defaults(handler=jump)
     c = commands.add_parser("circuits", help="List committed and local circuits")
     c.set_defaults(handler=circuits)
+    w = commands.add_parser("nwb", help="Write a saved run as NWB and check it with pynwb's validator")
+    w.add_argument("run", help="Saved run folder (runs/<id>)")
+    w.add_argument("--out", help="NWB file to write (default: <run folder>/<run key>.nwb)")
+    w.set_defaults(handler=nwb)
+    f = commands.add_parser("manifest", help="Print a saved run's RO-Crate provenance manifest")
+    f.add_argument("run", help="Saved run folder (runs/<id>)")
+    f.set_defaults(handler=manifest)
+    d = commands.add_parser("methods", help="Draft a methods paragraph for a run, or for several runs (a comparison)")
+    d.add_argument("runs", nargs="+", help="Saved run folders (runs/<id>)")
+    d.set_defaults(handler=methods)
     m = commands.add_parser("compare", help="Fit turning to right − left readout activity in recordings and/or runs")
     m.add_argument("--recording", action="append", default=[],
                    help="Fly recording: CSV/NPZ (columns in digitalfly/compare.py) or a Rayshubskiy et al. 2025 dual .mat; "

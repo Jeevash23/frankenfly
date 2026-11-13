@@ -70,7 +70,9 @@ Export metadata includes `body_joint_order` so each joint position can be identi
 
 ## Exported signals
 
-An export (metadata schema 5) holds `metadata.json`, `telemetry.csv`, `body_signals.jsonl` and, when asked for, `activity_types.npz`. The app and its tools read runs of schemas 2–5; older runs lack the columns and fields added since.
+An export (metadata schema 6) holds `metadata.json`, `telemetry.csv`, `body_signals.jsonl`, the provenance manifest `ro-crate-metadata.json`, the drafted `methods.md` and, when asked for, `activity_types.npz`; spiking runs add `spikes_readout.npz`. The app and its tools read runs of schemas 2–6; older runs lack the columns and fields added since. The manifest, the methods draft and NWB export are described in [sharing](SHARING.md#provenance-and-standard-formats).
+
+With spiking dynamics, `spikes_readout.npz` holds every spike of every readout neuron (each side of each readout cell type): `spike_time_s` (sorted; the start of the 0.1 ms substep whose update crossed the threshold, as Brian2's SpikeMonitor stamps it, from the reset), `spike_unit` (a row of the unit arrays) and, per unit, `unit_neuron_index`, `unit_root_id`, `unit_cell_type` and `unit_side`. Recording stops after 5,000,000 spikes (`metadata.spikes.stopped_at_s` says when); it never changes the simulation. The rate columns are these trains filtered with the exponential `rate_window_ms` window, divided by `rate_scale_hz`.
 
 `telemetry.csv` has one row per recorded control step from the reset. `step`, `time_s`, `x_mm`, `y_mm`, `z_mm`, `yaw_rad` and `speed_mm_s` describe the body after the step; `sensor_l`, `sensor_r` (after sensor silencing) and `raw_sensor_l`, `raw_sensor_r` are the sensor values the step used; the `rate_*` columns are the model's readouts after the step, named after its units (a cell type whose name has a comma, such as `LAL003,LAL044`, gives a quoted header field: read the file as CSV); `motor_l`, `motor_r` is the command applied during the step. Schema 5 appends:
 

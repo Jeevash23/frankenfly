@@ -163,7 +163,7 @@ def test_replay_accepts_an_export_with_merged_events(tmp_path):
         result = exp.export(tmp_path, share_safe=True)
     finally:
         exp.close()
-    assert json.loads((Path(result["path"]) / "metadata.json").read_text())["schema_version"] == 5
+    assert json.loads((Path(result["path"]) / "metadata.json").read_text())["schema_version"] == 6
     replay = subprocess.run([sys.executable, str(ROOT / "scripts/replay.py"), result["path"]],
                             capture_output=True, text=True, timeout=120)
     assert replay.returncode == 0, replay.stderr
@@ -201,7 +201,7 @@ def test_export_records_dependencies_and_lock_hashes(tmp_path):
         metadata = json.loads((Path(exp.export(tmp_path)["path"]) / "metadata.json").read_text())
     finally:
         exp.close()
-    assert metadata["schema_version"] == 5 and metadata["share_safe"] is False and metadata["platform"]
+    assert metadata["schema_version"] == 6 and metadata["share_safe"] is False and metadata["platform"]
     dependencies = metadata["dependencies"]
     assert {"flygym", "mujoco", "numpy", "fastapi", "pydantic", "numba", "scipy", "llvmlite", "pillow"} <= set(dependencies)
     for name in ["torch", "torchvision", "flyvis"]:
