@@ -18,10 +18,43 @@ Unless an entry says otherwise, a release keeps earlier runs replaying with the 
 - **NWB export** (optional; `backend/requirements-nwb.lock` with pynwb 4.2.0, or `./scripts/setup.sh --with nwb`). `digitalfly.nwb`, `GET /api/runs/FOLDER/nwb` and `scripts/toolkit.py nwb RUN` write a saved run as an NWB 2 file that passes pynwb's validator: body position and heading in a behavior module, readout activity as a `TimeSeries` with a table of each column's cell type, side and FlyWire root IDs, per-type activity when recorded, the readout neurons' spikes as `Units`, the target as stimulus `TimeSeries` and the interventions as a `TimeIntervals` table, with the manifest in `scratch`. Runs of every schema the library reads convert.
 - **Spike times.** Spiking runs now also save `spikes_readout.npz`: the time of every spike of every readout neuron, with its cell type, side and root ID (up to 5,000,000 spikes per run). Recording them changes no number of the run.
 - The run library's download button opens a menu: **ZIP**, **NWB** (when pynwb is installed), **Manifest** and **Methods** (the drafted paragraph, with a copy button). Comparison summaries have a **Methods draft** button, and the export notice links the NWB file.
+- **An MCP server** (roadmap track E). AI agents such as Claude Code can drive the running app with `scripts/mcp.py` or the `digitalfly-mcp` command, over stdio.
+  - **Tools (32).** They cover:
+    - status;
+    - circuits and circuit builds;
+    - the live run: reset, run, pause, step, `run_for`, target, interventions and connectome parameters;
+    - export;
+    - comparisons;
+    - toolkit trials, sweeps and commands;
+    - the scorecard;
+    - the connectivity explorer, including Neuroglancer links;
+    - saved runs with their manifest and methods draft;
+    - NWB export;
+    - plugins and their metrics.
+  - **Safety.** Every tool goes through `digitalfly.client`. Read-only tools carry MCP's read-only annotation. Nothing deletes or overwrites saved data. `reset_run` and `start_comparison` replace a recorded live run only with `discard_current: true`.
+  - **Audit log.** Every call is appended to `audit/mcp.jsonl` (git-ignored) before and after it runs.
+  - **Install.** The official MCP Python SDK (mcp 2.3.0) comes from a new optional hashed lock, `backend/requirements-mcp.lock`, through `./scripts/setup.sh --with mcp`. That is 0.72 MB of downloads on top of the FlyVis and NWB locks, about 6.5 MB without them.
+  - **Docs.** [USAGE.md](docs/USAGE.md#agents-and-the-mcp-server) shows how to add the server to Claude Code (`claude mcp add digitalfly -- …`) and other MCP clients, next to the Virtual Fly Brain MCP server.
+- **Plugins** (plugin API 1, [PLUGINS.md](docs/PLUGINS.md)). Python packages with a `digitalfly.plugins` entry point can add:
+  - sensors that replace the geometric encoder's two values (`RunConfig.plugins.sensor`);
+  - stimulus programs that write a protocol;
+  - scorecard tests (`scorecard --plugin-tests`);
+  - metrics on saved runs (`scripts/toolkit.py metrics`, `GET /api/runs/KEY/metrics`);
+  - toolkit commands (`scripts/toolkit.py plugin:command`).
+
+  Plugins never change defaults: `RunConfig.plugins` is not even serialized when unset, and cards with plugin tests are never published as the app's latest. A run that uses a plugin records it, with its version, in its metadata, RO-Crate manifest and methods draft. `GET /api/plugins` and a **Plugins** section on the Experiments page list what is installed, with errors for plugins that fail to load. [`examples/plugins/`](examples/plugins/digitalfly-example-plugin) holds an example with one of each contribution.
+- `digitalfly.client` adds calls for:
+  - circuits and builds, jobs and scorecards;
+  - comparisons and their summaries;
+  - run manifests, methods drafts, replay checks and NWB downloads;
+  - plugins and plugin metrics.
+- `scripts/toolkit.py scorecard --tests none`: score only plugin tests. A partial or empty card is never published.
+- `scripts/doctor.py` reports whether the MCP SDK is installed, and CI's dependency audit covers the MCP lock.
 
 ### Fixed
 
 - A background job that failed after printing reported its last printed line as the error instead of its error message: Python buffered the job's output, so the error arrived first. Jobs now run unbuffered.
+- `./scripts/setup.sh --with nwb` was refused as an unknown part, although the help listed it.
 
 ## [0.6.0] - 2026-10-22
 

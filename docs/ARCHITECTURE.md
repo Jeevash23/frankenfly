@@ -186,3 +186,58 @@ The connectome view in the browser lays cell types out by hop distance to DNa02 
 - **Bridges.** `<circuit>.flyvis.json`, next to its circuit, holds FlyWire v783 synapse fractions from FlyVis-modelled types onto the circuit's visual projection neurons, by eye, and the circuit's hash; `load_bridge` refuses a bridge built for another version of the circuit. Bridge files never appear as circuits. `RunConfig` rejects FlyVis eyes (422) when the bridge reaches none of the input neurons on a side, for example with non-visual `input_types`, which would otherwise leave the circuit silently without input.
 - **Recorded flies.** `compare.rayshubskiy_recording` converts the Rayshubskiy et al. dual recordings (spike detection, firing rates, yaw calibration and an explicit yaw-sign setting) and by default marks samples during and 0.5 s after the optogenetic stimulus as not valid; `Recording.valid` keeps those samples out of `fit_turning` and `compare.fit_filter` (a cross-validated linear filter); `toolkit.jumping_target_run` (CLI `jump`) records comparison runs; `compare.summarize_fits` gives the spread of fits across several recordings. `scripts/fetch_recording.py` and `scripts/fetch_flyvis.py` download into the ignored cache and verify hashes; they and `build_circuit.py` download through `data/downloads.py` (standard library), which retries network errors with exponential backoff, resumes interrupted transfers with HTTP Range requests and ends with a one-line `DownloadError`.
 - **Python client.** `digitalfly/client.py` (standard library; `websockets` only for `stream`) wraps the REST commands and the telemetry WebSocket for scripts and notebooks. It sends the app's own address as `Origin`, bypasses environment proxies, merges `interventions` and `connectome_parameters` into the run's current values, and raises `ClientError` with the server's status and reason.
+
+## v0.7 interfaces: the MCP server and plugins
+
+### The MCP server
+
+`digitalfly/mcp.py` is a stdio MCP server built on the official Python SDK (`mcp` 2.3.0, `MCPServer`), from the optional `backend/requirements-mcp.lock`. It is started by `scripts/mcp.py` or the `digitalfly-mcp` entry point. `scripts/mcp.py` removes its own folder from `sys.path`, where its name would otherwise shadow the `mcp` package.
+
+**Tools.** The tools are the methods of `Toolbox` marked with `@tool`. The SDK builds each tool's input schema from its type hints (pydantic `Field` bounds included) and validates calls before they run. Every tool goes through `digitalfly.client.Client`, so the app's own validation, origin checks and refusals apply, and the server holds no simulation state.
+
+**Calls.** Each call runs `Toolbox.call` in a worker thread:
+
+1. It appends a `call` line to the audit log.
+2. It runs the tool.
+3. It appends a `result` line.
+
+If the first line cannot be written, the call is refused.
+
+**The audit log.** It is opened with `O_APPEND` and mode 0600, in the git-ignored `audit/`, and is never rewritten.
+
+**Annotations.** `readOnlyHint` marks tools that change nothing: reading, the explorer, metrics. `destructiveHint` marks the two tools that replace the live run, `reset_run` and `start_comparison`. Both refuse while the live run has recorded samples unless `discard_current` is true. No tool deletes or overwrites saved runs, presets or circuits.
+
+**Toolkit tools.** `run_trials` and `run_toolkit` start `scripts/toolkit.py` as a subprocess:
+
+- from an argument list, never a shell, in its own session, so a timeout stops its whole process group;
+- one at a time, with at most 4 workers;
+- with `--out` chosen by the server (under `runs/toolkit/mcp/`), and `--no-publish` for scorecards;
+- with an allowlist of commands; plugin commands (`plugin:name`) are allowed too.
+
+**`run_for`.** It runs the live experiment, pauses 0.3 simulated seconds before the requested time, then steps the remaining 10 ms control intervals, so it stops exactly there.
+
+**Tests.** `backend/tests/test_mcp.py` drives the toolbox against the real app through FastAPI's `TestClient`, using a `Client` subclass whose requests go to the test client. When the SDK is installed, it also checks the MCP protocol in process, with `mcp.Client(server)`.
+
+### Plugins
+
+`digitalfly/plugins.py` discovers plugins through the `digitalfly.plugins` entry-point group with `importlib.metadata`, once per process (`discover(refresh=True)` looks again).
+
+**Contributions (API 1).** They are frozen dataclasses: `Sensor`, `StimulusProgram`, `ScorecardTest`, `Metric` and `Command`, collected in a `Plugin` with its `api_version`.
+
+**Loading.**
+
+- Loading never raises. Import errors, wrong objects, invalid names, duplicate plugin names and other API versions are kept as listed errors.
+- `resolve("plugin:name", kind)` is the only way a contribution is reached.
+- `DIGITALFLY_PLUGINS=0` turns discovery off.
+
+**Where contributions enter.**
+
+- **Sensors.** `RunConfig.plugins` (`PluginChoices`: `sensor`, `stimulus`, `stimulus_parameters`) is declared with pydantic's `exclude_if`, so it is absent from every serialization while unset. Configuration hashes, exports and the reference runs are byte for byte unchanged. `RunConfig` checks that a named sensor exists (off the event loop, like circuit checks) and that the sensor model is geometric. `Experiment.reset` resolves the sensor before replacing anything. `Experiment.sense` passes a `SensorReading` to it after the body's geometric encoding, clips the result to [0, 1], then applies `zero_left` and `zero_right`.
+- **Stimulus programs.** They only write a `Protocol`, which the configuration stores, so replay never calls them.
+- **Scorecard tests.** `scorecard.plugin_tests` turns them into entries of the `TESTS` form, with `kind: "plugin"`. `plan` takes their conditions, labelled `plugin:test: label` so they never merge with another test's. Their scorer is checked to return a known status. `scorecard.run(..., plugins=[...])` adds them; `tests=[]` leaves out the built-in tests. The toolkit never publishes a card that has plugin tests.
+- **Metrics.** They read an `ExportedRun`: the folder, the metadata, and the numeric columns of `telemetry.csv`. They are reached through `plugins.run_metrics`, `GET /api/runs/{key}/metrics`, `toolkit.py metrics` and the MCP tool. A failing metric yields an error entry.
+- **Commands.** They are added to the toolkit's parser as `plugin:command`.
+
+**Provenance.** An export gets a `plugins` list (`plugins.used_by`) only when its configuration names a plugin. `provenance.build_manifest` turns each entry into a `SoftwareApplication` linked from the run, and the methods draft names it.
+
+**The app.** `GET /api/plugins` serves the listing that the Experiments page's Plugins section shows.

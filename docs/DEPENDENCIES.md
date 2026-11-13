@@ -100,9 +100,29 @@ rm vision-pins.txt
 
 Check that the diff against `backend/requirements.lock` only adds packages.
 
+The MCP server (`scripts/mcp.py`, `digitalfly.mcp`) needs the official MCP Python SDK, which nothing else imports. It lives in the optional `mcp` extra and its own lock, `backend/requirements-mcp.lock`: the runtime lock plus `mcp` 2.3.0 and `mcp-types`, httpx2, httpcore2, PyJWT, python-multipart, sse-starlette and truststore. These are pure-Python wheels of 0.72 MB in all. The SDK also needs attrs, jsonschema and its helpers (pinned by the NWB lock) and cryptography, cffi and opentelemetry-api (pinned by the FlyVis lock), about 5.7 MB more on Linux x86-64 when neither of those locks is installed, most of it cryptography's wheel. Packages it shares with the FlyVis and NWB locks take those locks' pins, so all three install into one environment. `mcp` 2 renamed v1's `FastMCP` to `MCPServer`; code written for `mcp<2` does not run against it.
+
+```sh
+backend/.venv/bin/python -m pip install --require-hashes -r backend/requirements-mcp.lock   # or ./scripts/setup.sh --with mcp
+```
+
+To regenerate it after changing the runtime, vision or NWB lock:
+
+```sh
+grep -E '^[A-Za-z0-9_.-]+==' backend/requirements-vision.lock | sed 's/ \\$//; s/ ;.*//' \
+  | grep -v -E '^(torch|torchvision)==' > vision-pins.txt
+grep -E '^[A-Za-z0-9_.-]+==' backend/requirements-nwb.lock | sed 's/ \\$//; s/ ;.*//' > nwb-pins.txt
+uv pip compile backend/pyproject.toml --extra test --extra mcp --universal --python-version 3.12 \
+  --generate-hashes --emit-index-url --index-url https://pypi.org/simple \
+  -c backend/requirements.lock -c vision-pins.txt -c nwb-pins.txt -o backend/requirements-mcp.lock
+rm vision-pins.txt nwb-pins.txt
+```
+
+As with the NWB lock, check that the diff against `backend/requirements.lock` only adds packages.
+
 ## Security audits and exceptions
 
-The CI security job runs pip-audit (installed from the hashed `.github/requirements-audit.txt`) over the runtime, data, FlyVis (`requirements-vision.lock`), NWB (`requirements-nwb.lock`) and tools locks without installing them, and `npm audit --audit-level=high` over the frontend lockfile. pip-audit cannot look up the vision lock's `+cpu` PyTorch builds and lists them as skipped; the same versions on PyPI have no advisories.
+The CI security job runs pip-audit (installed from the hashed `.github/requirements-audit.txt`) over the runtime, data, FlyVis (`requirements-vision.lock`), NWB (`requirements-nwb.lock`), MCP (`requirements-mcp.lock`) and tools locks without installing them, and `npm audit --audit-level=high` over the frontend lockfile. pip-audit cannot look up the vision lock's `+cpu` PyTorch builds and lists them as skipped; the same versions on PyPI have no advisories.
 
 **Pillow exception.** Pillow 12.3.0 has eight advisories in its TIFF, PDF-append, GIF, PPM/ImageMorph and EPS code, all fixed only in Pillow 13.0.0. FlyGym 2.1.0 requires `pillow<13` and there is no 12.x backport, so the audit ignores those eight IDs; `.github/workflows/ci.yml` lists each with its reason. None is reachable: DigitalFly encodes JPEG frames (and the demo GIF) from arrays and decodes only its own JPEG frames; it never opens TIFF, PDF, GIF, PPM/PGM or EPS input. Do not override FlyGym's cap. Drop the exception when a FlyGym release allows Pillow 13; Pillow changes only the JPEG frame bytes, not the telemetry that replay compares.
 
@@ -120,7 +140,7 @@ A weekly workflow (`.github/workflows/links.yml`, which can also be started by h
 | Frontend checks | Node 24 and Node 22.12.0 (the lower bound): format check, typecheck, unit tests and build |
 | FlyGym physics tests | Python 3.12 under Xvfb with Mesa and `MUJOCO_GL=glfw`, including the bitwise check of the fast controller path |
 | End-to-end tests | Python 3.12 (hashed locks) and Node 24: Playwright's Chromium, the frontend build, then `npm --prefix frontend run e2e` in headless Chromium against `./scripts/start.sh --toy`; the Playwright report is uploaded when it fails |
-| Dependency audit | pip-audit over the four locks and `npm audit --audit-level=high` |
+| Dependency audit | pip-audit over the runtime, data, FlyVis, NWB, MCP and tools locks and `npm audit --audit-level=high` |
 | Docker image (`docker.yml`) | On pull requests that change the `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `.devcontainer/`, the backend locks or `pyproject.toml`, the frontend manifests, or the setup, start, launch and doctor scripts, and on every push to main: builds the image and the dev-container target (nothing is pushed), then runs the doctor in the image and smoke-tests a container on a port published to 127.0.0.1 (a FlyGym reset with compound eyes, a rendered frame, saving a preset as the container user, the Host and Origin checks, the health check and a clean stop) |
 | Download links (`links.yml`) | Weekly and by hand: a one-byte range request to every pinned download URL (see above) |
 

@@ -18,7 +18,7 @@ Usage: ./scripts/setup.sh [--backend-only] [--with builder,flyvis,recording,nwb,
                      nwb        pynwb for NWB export of saved runs (backend/requirements-nwb.lock,
                                 about 20 MB)
                      mcp        the MCP Python SDK for scripts/mcp.py, the server agents such as Claude
-                                Code use (backend/requirements-mcp.lock, about 2 MB)
+                                Code use (backend/requirements-mcp.lock, 1-7 MB)
   --check          run scripts/doctor.py at the end and fail if it finds a blocking problem
 
 Run it again after every git pull: it reinstalls only what the locks changed. See docs/INSTALL.md.
