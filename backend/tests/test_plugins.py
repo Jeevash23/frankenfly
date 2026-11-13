@@ -209,3 +209,12 @@ def test_toolkit_lists_plugins_and_runs_their_commands(tmp_path, example):
                           capture_output=True, text=True, timeout=120)
     assert done.returncode == 0 and "example:straightness" in done.stdout, done.stderr
     assert json.loads((tmp_path / "m.json").read_text())["runs"][0]["metrics"][0]["plugin"] == "example"
+    published = tmp_path / "published"
+    done = subprocess.run([python, "scripts/toolkit.py", "scorecard", "--model", "engineered", "--tests", "none",
+                           "--plugin-tests", "example:target_side", "--seeds", "1", "--duration", "1.5",
+                           "--out", str(tmp_path / "card"), "--publish-dir", str(published)], cwd=ROOT,
+                          capture_output=True, text=True, timeout=300)
+    assert done.returncode == 0, done.stderr
+    card = json.loads((tmp_path / "card.json").read_text())
+    assert [t["id"] for t in card["tests"]] == ["example:target_side"] and card["plugins"][0]["plugin"] == "example"
+    assert not published.exists()  # a card with plugin tests never becomes the app's latest

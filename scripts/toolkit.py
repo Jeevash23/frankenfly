@@ -737,6 +737,8 @@ def scorecard(args):
     if not targets:
         targets = [sc.Target("connectome", dynamics=dynamics, settings=fixed)]
     tests = [t for t in (args.tests or "").split(",") if t] or None
+    if tests == ["none"]:  # with --plugin-tests: only the plugin tests
+        tests = []
     plugin_tests = [t for t in (args.plugin_tests or "").split(",") if t] or None
     seeds = numbers(args.seeds, int) if args.seeds else None
     total = len(targets)
@@ -754,7 +756,7 @@ def scorecard(args):
         toolkit.with_ending(stem, ".json").write_text(json.dumps(card, indent=1, default=str))
         write_csv(toolkit.with_ending(stem, ".csv"), card["trials"])
         # Partial cards and cards with plugin tests never replace the app's latest (default) scorecard.
-        published = None if args.no_publish or tests or plugin_tests else sc.publish(card, args.publish_dir)
+        published = None if args.no_publish or tests is not None or plugin_tests else sc.publish(card, args.publish_dir)
         if not args.progress:
             print(f"Saved {shown(stem)}.json and .csv" + (f"; latest for the app: {shown(published)}" if published else
                                                           " (not published to the app: --tests, --plugin-tests or "
@@ -774,7 +776,7 @@ def add_scorecard_command(commands):
     s.add_argument("--engine", choices=["toy", "flygym"], default="toy")
     s.add_argument("--seeds", help="Seeds, e.g. 1-3 (default 1-3 on the toy body, 1-2 on FlyGym)")
     s.add_argument("--duration", type=float, help="Simulated seconds per trial (default 3 toy, 2 FlyGym)")
-    s.add_argument("--tests", help="Comma-separated test ids (default all; a partial scorecard is not published)")
+    s.add_argument("--tests", help="Comma-separated test ids, or none (default all; a partial scorecard is not published)")
     s.add_argument("--workers", type=int, default=1, help="Parallel processes (default 1)")
     s.add_argument("--out", help="Output file stem for one model (.json and .csv); default runs/toolkit/")
     s.add_argument("--no-publish", action="store_true", help="Do not replace the app's latest scorecard for the model")
