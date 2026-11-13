@@ -1656,17 +1656,11 @@ fieldset.condition-list {
   outline: 2px solid var(--accent, #5b7047);
 }
 .run-exports-menu {
-  position: absolute;
-  right: 0;
-  z-index: 5;
+  /* In the cell, not floating: the table scrolls sideways and would clip a dropdown. */
   display: grid;
   gap: 2px;
-  min-width: 220px;
-  padding: 6px;
-  background: var(--surface, #fff);
-  border: 1px solid var(--line, #d7e1c7);
-  border-radius: 6px;
-  box-shadow: 0 6px 18px rgb(0 0 0 / 0.12);
+  margin-top: 4px;
+  text-align: left;
 }
 .run-exports-menu > a,
 .run-exports-menu > button,
@@ -1688,6 +1682,7 @@ fieldset.condition-list {
 }
 .methods-draft {
   display: grid;
+  text-align: left;
   gap: 6px;
   max-width: 900px;
 }

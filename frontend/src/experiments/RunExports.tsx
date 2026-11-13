@@ -47,23 +47,36 @@ export function RunExports({
         <ArrowDownToLine size={15} />
       </summary>
       <div className="run-exports-menu" role="group" aria-label={`Exports of run ${runKey}`}>
-        <a href={zipUrl} download>
-          ZIP <small>all files, with manifest and methods</small>
+        <a href={zipUrl} download title="All files, with the provenance manifest and methods draft">
+          ZIP
         </a>
         {nwb ? (
-          <a href={`${runPath(runKey)}/nwb`} download={`${runKey}.nwb`}>
-            NWB <small>Neurodata Without Borders</small>
+          <a
+            href={`${runPath(runKey)}/nwb`}
+            download={`${runKey}.nwb`}
+            title="Neurodata Without Borders file"
+          >
+            NWB
           </a>
         ) : (
           <span className="run-exports-off" title={NWB_MISSING}>
-            NWB <small>needs pynwb</small>
+            NWB (needs pynwb)
           </span>
         )}
-        <a href={`${runPath(runKey)}/manifest`} download={`${runKey}-ro-crate-metadata.json`}>
-          Manifest <small>RO-Crate provenance (JSON)</small>
+        <a
+          href={`${runPath(runKey)}/manifest`}
+          download={`${runKey}-ro-crate-metadata.json`}
+          title="RO-Crate provenance manifest (JSON)"
+        >
+          Manifest
         </a>
-        <button className="text-button" aria-expanded={methodsOpen} onClick={toggleMethods}>
-          Methods <small>drafted paragraph</small>
+        <button
+          className="text-button"
+          aria-expanded={methodsOpen}
+          onClick={toggleMethods}
+          title="A methods paragraph drafted from the manifest"
+        >
+          Methods
         </button>
       </div>
     </details>
