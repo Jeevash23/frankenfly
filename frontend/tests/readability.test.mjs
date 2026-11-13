@@ -1,12 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {AA_SMALL_TEXT, contrastRatio, luminance, rootTokens} from '../src/contrast.ts';
+import {AA_SMALL_TEXT, contrastRatio, luminance, themeTokens} from '../src/contrast.ts';
 
 const read = (path) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
-const sheets = ['style.css', 'research.css', 'connectome/connectome.css', 'responsive.css'];
+const sheets = [
+  'style.css',
+  'research.css',
+  'connectome/connectome.css',
+  'shell.css',
+  'responsive.css',
+];
 const style = read('style.css');
-const tokens = rootTokens(style);
+const themes = themeTokens(style);
+const tokens = themes.light;
 
 test('the contrast helper follows WCAG 2', () => {
   assert.equal(luminance('#000'), 0);
@@ -18,22 +25,44 @@ test('the contrast helper follows WCAG 2', () => {
   assert.throws(() => luminance('green'), /Not a #rgb/);
 });
 
-test('microcopy, footnote, eyebrow and label inks reach 4.5:1 on paper and canvas', () => {
-  for (const name of [
-    '--ink-micro',
-    '--ink-footnote',
-    '--ink-eyebrow',
-    '--ink-label',
-    '--ink-warning',
-    '--ink-error',
-  ])
-    for (const background of ['--paper', '--canvas']) {
-      const ratio = contrastRatio(tokens[name], tokens[background]);
-      assert.ok(ratio >= AA_SMALL_TEXT, `${name} on ${background}: ${ratio.toFixed(2)}:1`);
-    }
-  // Warnings and errors also sit on their tinted notes.
-  assert.ok(contrastRatio(tokens['--ink-warning'], '#fbf6ea') >= AA_SMALL_TEXT);
-  assert.ok(contrastRatio(tokens['--ink-error'], '#f4e9df') >= AA_SMALL_TEXT);
+// Small text inks, and the surfaces they sit on, in each theme.
+const INKS = [
+  '--ink-strong',
+  '--ink-heading',
+  '--ink-green',
+  '--ink-muted',
+  '--ink-micro',
+  '--ink-footnote',
+  '--ink-eyebrow',
+  '--ink-label',
+  '--ink-warning',
+  '--ink-error',
+];
+const SURFACES = ['--paper', '--canvas', '--surface', '--surface-2', '--field', '--accent-wash'];
+
+for (const theme of ['light', 'dark'])
+  test(`small-text inks reach 4.5:1 on every surface in the ${theme} theme`, () => {
+    const t = themes[theme];
+    for (const name of INKS)
+      for (const background of SURFACES) {
+        const ratio = contrastRatio(t[name], t[background]);
+        assert.ok(
+          ratio >= AA_SMALL_TEXT,
+          `${theme}: ${name} on ${background}: ${ratio.toFixed(2)}:1`,
+        );
+      }
+    // Warnings and errors also sit on their tinted notes, and buttons carry text on the accent.
+    assert.ok(contrastRatio(t['--ink-warning'], t['--note-warn-bg']) >= AA_SMALL_TEXT);
+    assert.ok(contrastRatio(t['--ink-error'], t['--note-error-bg']) >= AA_SMALL_TEXT);
+    assert.ok(contrastRatio(t['--on-accent'], t['--green']) >= AA_SMALL_TEXT);
+    // Chips and status pills put muted ink on the deeper surfaces.
+    for (const background of ['--surface-3'])
+      assert.ok(contrastRatio(t['--ink-muted'], t[background]) >= AA_SMALL_TEXT);
+  });
+
+test('the light theme keeps the notes it always had', () => {
+  assert.equal(tokens['--note-warn-bg'], '#fbf6ea');
+  assert.equal(tokens['--note-error-bg'], '#f4e9df');
   for (const [rule, token] of [
     ['.microcopy', '--ink-micro'],
     ['.panel-footnote', '--ink-footnote'],
@@ -44,6 +73,33 @@ test('microcopy, footnote, eyebrow and label inks reach 4.5:1 on paper and canva
       new RegExp(`\\n\\${rule} \\{[^}]*color: var\\(${token}\\)`),
       `${rule} uses ${token}`,
     );
+});
+
+test('the dark theme is declared twice, identically, and covers every colour token', () => {
+  assert.ok(Object.keys(themes.dark).length > 40);
+  assert.deepEqual(themes.darkMedia, themes.dark);
+  const colours = Object.entries(tokens).filter(([, v]) => /^#|^url\(/.test(v));
+  for (const [name] of colours) assert.ok(name in themes.dark, `${name} has a dark value`);
+  for (const name of Object.keys(themes.dark))
+    assert.ok(name in tokens, `${name} is a light token`);
+  assert.match(style, /:root \{[^}]*color-scheme: light/);
+  assert.match(themes.dark['--canvas'], /^#/);
+  assert.ok(luminance(themes.dark['--canvas']) < 0.02, 'the dark canvas is dark');
+});
+
+test('stylesheets use theme tokens, not light-only colours, for surfaces, lines and text', () => {
+  // Light colours (luminance above 0.6) written directly would stay light in the dark theme. Only
+  // the token blocks may hold them; everything else refers to a token.
+  const problems = [];
+  for (const sheet of sheets) {
+    const css = read(sheet)
+      .replace(/:root[^{]*\{[^}]*\}/g, '')
+      .replace(/@media \(prefers-color-scheme: dark\)\s*\{\s*:root[^{]*\{[^}]*\}\s*\}/g, '');
+    for (const [, prop, value] of css.matchAll(/\n\s*([\w-]+):\s*([^;{}]*);/g))
+      for (const hex of value.match(/#[0-9a-f]{6}\b|#[0-9a-f]{3}\b/gi) ?? [])
+        if (luminance(hex) > 0.6) problems.push(`${sheet}: ${prop}: ${value}`);
+  }
+  assert.deepEqual(problems, []);
 });
 
 // Running text is at least --text-min (11 px); only these decorations may be smaller, and never
@@ -83,8 +139,14 @@ test('text has an 11 px floor; only decorations go down to 10 px', () => {
 });
 
 test('every width-dependent rule lives in responsive.css', () => {
-  for (const sheet of ['style.css', 'research.css', 'connectome/connectome.css'])
+  for (const sheet of ['style.css', 'research.css', 'connectome/connectome.css', 'shell.css']) {
     assert.doesNotMatch(read(sheet), /@media[^{]*width/, `${sheet} has a width media query`);
+    assert.doesNotMatch(read(sheet), /@container/, `${sheet} has a container query`);
+  }
+  // Page content follows the page column (container queries); the shell follows the window.
+  assert.match(read('shell.css'), /main \{[^}]*container: page \/ inline-size/);
+  assert.match(read('responsive.css'), /@container page \(max-width/);
+  assert.match(read('responsive.css'), /@media \(max-width: 820px\)/);
   assert.match(read('../src/main.tsx'), /import App from '.\/App';\nimport '.\/responsive.css';/);
   // Leg force and phase readouts stay visible at every width.
   assert.doesNotMatch(read('responsive.css'), /\.leg-readouts \{\s*display: none/);

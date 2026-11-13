@@ -1,7 +1,7 @@
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import type {Job} from './types';
 import {request} from './api';
-import {JOB_POLL_MS, jobActive} from './jobs';
+import {JOB_POLL_MS, finishedReplays, jobActive} from './jobs';
 
 // Background jobs from GET /api/jobs: read once, then polled only while one waits or runs.
 // `refresh` reads them again (after starting one). Servers before v0.6 have no jobs.
@@ -46,4 +46,17 @@ export function useJobs(): {
     [refresh],
   );
   return {jobs, loaded, error, refresh, cancel};
+}
+
+// A counter that goes up when a replay check finishes, so lists of saved runs reload for its new
+// verdict. The jobs of the first listing that have finished are not news.
+export function useReplayReload(jobs: Job[], loaded: boolean): number {
+  const [reload, setReload] = useState(0);
+  const previous = useRef<Job[] | null>(null);
+  useEffect(() => {
+    if (!loaded) return;
+    if (previous.current && finishedReplays(previous.current, jobs).length) setReload((n) => n + 1);
+    previous.current = jobs;
+  }, [jobs, loaded]);
+  return reload;
 }

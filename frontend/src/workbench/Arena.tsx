@@ -58,11 +58,11 @@ export function Arena({
           height="37.5"
           patternUnits="userSpaceOnUse"
         >
-          <path d="M37.5 0H0V37.5" fill="none" stroke="#dedfd5" strokeWidth=".7" />
+          <path d="M37.5 0H0V37.5" fill="none" stroke="var(--chart-grid)" strokeWidth=".7" />
         </pattern>
       </defs>
       <rect width="300" height="300" fill={`url(#${compact ? 'grid-mini' : 'grid-main'})`} />
-      <path d="M150 0V300M0 150H300" stroke="#b9c0b5" strokeWidth=".7" />
+      <path d="M150 0V300M0 150H300" stroke="var(--chart-axis)" strokeWidth=".7" />
       <text x="286" y="143" className="map-axis">
         x
       </text>
@@ -72,7 +72,7 @@ export function Arena({
       <polyline
         points={state?.trail.map((p) => point(p[0], p[1]).join(',')).join(' ')}
         fill="none"
-        stroke="#496b57"
+        stroke="var(--series-a)"
         strokeOpacity=".5"
         strokeWidth="1.2"
       />
@@ -97,7 +97,7 @@ export function Arena({
       )}
       {pose && (
         <g transform={`translate(${fx},${fy}) rotate(${(-pose.yaw * 180) / Math.PI})`}>
-          <path d="M8 0L-5-4L-2 0L-5 4Z" fill="#284b39" />
+          <path d="M8 0L-5-4L-2 0L-5 4Z" fill="var(--ink-strong)" />
           {!compact &&
             pose.legs.map((leg, i) => (
               <polyline
@@ -111,7 +111,7 @@ export function Arena({
                   })
                   .join(' ')}
                 fill="none"
-                stroke="#284b39"
+                stroke="var(--ink-strong)"
                 strokeWidth=".8"
               />
             ))}

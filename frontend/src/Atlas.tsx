@@ -1,3 +1,4 @@
+import {PageActions} from './shell/PageHeader';
 import {useEffect, useMemo, useRef, useState} from 'react';
 import {
   ArrowUpRight,
@@ -312,16 +313,8 @@ export function AnatomyPanel({state}: {state: State | null}) {
   const selectedNeuron = data?.neurons.find((n) => n.id === selected);
   return (
     <>
-      <div className="research-intro">
-        <div>
-          <span className="eyebrow">PUBLISHED ANATOMY</span>
-          <h2>Two specimens. A closer look.</h2>
-          <p>
-            Explore real brain surfaces and selected descending neurons from male and female
-            datasets.
-          </p>
-        </div>
-        <div className="sex-selector" aria-label="Anatomical specimen">
+      <PageActions>
+        <div className="sex-selector" role="group" aria-label="Anatomical specimen">
           <button
             className={sex === 'female' ? 'selected' : ''}
             aria-pressed={sex === 'female'}
@@ -337,7 +330,7 @@ export function AnatomyPanel({state}: {state: State | null}) {
             <span>♂</span>Male <small>MaleCNS v1.0</small>
           </button>
         </div>
-      </div>
+      </PageActions>
       <div className="atlas-layout">
         <section className="panel anatomy-panel">
           <div className="panel-heading">
@@ -642,14 +635,7 @@ export function ConnectivityPanel({command, disabled}: {command: Command; disabl
   );
   return (
     <>
-      <div className="research-intro">
-        <div>
-          <span className="eyebrow">CONNECTIVITY EXPLORER</span>
-          <h2>Bring a circuit into focus.</h2>
-          <p>
-            Import a bounded graph, inspect its connections, and retain every source identifier.
-          </p>
-        </div>
+      <PageActions>
         <label className={`primary-button upload-button ${disabled ? 'disabled' : ''}`}>
           <FileUp size={16} />
           Import connectivity JSON
@@ -665,7 +651,7 @@ export function ConnectivityPanel({command, disabled}: {command: Command; disabl
             }}
           />
         </label>
-      </div>
+      </PageActions>
       {error && (
         <p className="alert error-alert" role="alert">
           {error}

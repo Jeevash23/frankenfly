@@ -820,7 +820,7 @@ function CircuitDiagram({
                 x={node.x}
                 y={node.y}
                 r={node.r}
-                fill={off ? '#e7e2d6' : activityColor(rates[type.index] ?? 0)}
+                fill={off ? 'var(--node-off)' : activityColor(rates[type.index] ?? 0)}
                 input={type.input}
                 active={selected === type.index}
                 silenced={off}
@@ -889,7 +889,14 @@ function CircuitDiagram({
           </span>
           <span>
             <svg width="14" height="14" aria-hidden="true">
-              <circle cx="7" cy="7" r="5.5" fill="#f4f1e8" stroke="#c29a55" strokeWidth="1.4" />
+              <circle
+                cx="7"
+                cy="7"
+                r="5.5"
+                fill="var(--paper)"
+                stroke="#c29a55"
+                strokeWidth="1.4"
+              />
             </svg>
             Gold ring: neurons that receive the sensor input
           </span>

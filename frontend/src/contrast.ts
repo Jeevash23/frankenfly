@@ -29,3 +29,26 @@ export function rootTokens(css: string): Record<string, string> {
       tokens[name] = value.trim();
   return tokens;
 }
+
+// The light tokens (:root), and the dark ones twice: under prefers-color-scheme (when no light
+// theme was chosen) and under data-theme="dark" (when the dark theme was chosen).
+export function themeTokens(css: string): {
+  light: Record<string, string>;
+  dark: Record<string, string>;
+  darkMedia: Record<string, string>;
+} {
+  const block = (pattern: RegExp) => {
+    const tokens: Record<string, string> = {};
+    const body = css.match(pattern)?.[1] ?? '';
+    for (const [, name, value] of body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g))
+      tokens[name] = value.trim();
+    return tokens;
+  };
+  return {
+    light: rootTokens(css),
+    dark: block(/:root\[data-theme='dark'\]\s*\{([^}]*)\}/),
+    darkMedia: block(
+      /@media \(prefers-color-scheme: dark\)\s*\{\s*:root:not\(\[data-theme='light'\]\)\s*\{([^}]*)\}/,
+    ),
+  };
+}

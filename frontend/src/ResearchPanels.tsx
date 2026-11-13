@@ -24,7 +24,7 @@ const GaitRaster = memo(
             <text x="0" y={18 + i * 19}>
               {leg.toUpperCase()}
             </text>
-            <line x1="35" x2="514" y1={14 + i * 19} y2={14 + i * 19} stroke="#e3e7dc" />
+            <line x1="35" x2="514" y1={14 + i * 19} y2={14 + i * 19} stroke="var(--chart-grid)" />
             {history
               .filter((s) => s.t >= start)
               .map((s, j) =>
@@ -115,7 +115,7 @@ export function BodyMeasurements({state}: {state: State | null}) {
                   viewBox="0 0 24 24"
                   aria-label={`${leg} CPG phase ${fmt(signals.cpg_phase_rad?.[i])} radians`}
                 >
-                  <circle cx="12" cy="12" r="9" fill="none" stroke="#d8dfce" />
+                  <circle cx="12" cy="12" r="9" fill="none" stroke="var(--chart-grid)" />
                   <path
                     d={`M12 12L${12 + 8 * Math.cos(signals.cpg_phase_rad?.[i] ?? 0)} ${12 + 8 * Math.sin(signals.cpg_phase_rad?.[i] ?? 0)}`}
                     stroke="#5a7550"
@@ -368,7 +368,7 @@ export function CircuitPanel({
               />
               <circle
                 r="32"
-                fill={i % 2 ? '#f1e9d7' : '#e5eddf'}
+                fill={i % 2 ? 'var(--node-fill-alt)' : 'var(--node-fill)'}
                 stroke={i % 2 ? '#ba955d' : '#7d9a73'}
               />
               <circle

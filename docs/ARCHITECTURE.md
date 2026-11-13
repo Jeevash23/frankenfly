@@ -240,4 +240,4 @@ If the first line cannot be written, the call is refused.
 
 **Provenance.** An export gets a `plugins` list (`plugins.used_by`) only when its configuration names a plugin. `provenance.build_manifest` turns each entry into a `SoftwareApplication` linked from the run, and the methods draft names it.
 
-**The app.** `GET /api/plugins` serves the listing that the Experiments page's Plugins section shows.
+**The app.** `GET /api/plugins` serves the listing that the app's **Extend → Plugins** page shows.

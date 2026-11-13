@@ -41,7 +41,7 @@ export function SavedComparison({
           role="img"
           aria-label="Overlay of selected saved fly trajectories"
         >
-          <path d="M220 20V310M35 165H405" stroke="#d8dfcf" />
+          <path d="M220 20V310M35 165H405" stroke="var(--chart-grid)" />
           {details.map((run, i) => (
             <polyline
               key={run.key}

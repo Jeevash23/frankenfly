@@ -6,7 +6,6 @@ import type {
   Condition,
   Config,
   CustomCondition,
-  Job,
   Protocol,
   State,
 } from '../types';
@@ -21,19 +20,14 @@ import {
 } from '../models';
 import {customProblem, customRequest, parseSeeds, sizeProblem} from '../comparison';
 import {preset, scheduleProblem, sortedEvents} from '../protocol';
-import {finishedReplays} from '../jobs';
 import {clearDraft, DRAFT_KEYS, loadDraft, readExperimentsDraft} from '../localDrafts';
 import {useLocalDraft} from '../useLocalDraft';
-import {useJobs} from '../useJobs';
 import {useCircuit} from '../connectome/useCircuit';
 import {BatchProgress} from './BatchProgress';
 import {ComparisonBuilder} from './ComparisonBuilder';
 import {ComparisonSummary} from './ComparisonSummary';
-import {JobsPanel} from './JobsPanel';
 import {ProtocolEditor} from './ProtocolEditor';
-import {RunLibrary} from './RunLibrary';
-import {ScorecardPanel} from './Scorecard';
-import {PluginsPanel} from './PluginsPanel';
+import {PageActions} from '../shell/PageHeader';
 
 export default function Experiments({
   state,
@@ -41,12 +35,23 @@ export default function Experiments({
   pending,
   disabled,
   onLoaded,
+  reload,
+  showTrials,
+  setupFirst,
+  setupDone,
 }: {
   state: State | null;
   command: Command;
   pending: Pending;
   disabled: boolean;
   onLoaded: () => void;
+  // Bumped when a replay check finishes, so the comparison statistics reload.
+  reload: number;
+  // Opens the run library filtered to a comparison's trials.
+  showTrials: (batchId: string) => void;
+  // Set by the Overview's "Set up the first experiment"; setupDone clears it once done.
+  setupFirst: boolean;
+  setupDone: () => void;
 }) {
   // The draft (protocol, seeds, conditions) survives page switches and reloads until it is run.
   const [draft] = useState(() => loadDraft(DRAFT_KEYS.experiments, readExperimentsDraft) ?? {});
@@ -88,20 +93,6 @@ export default function Experiments({
   const editsJson = JSON.stringify(edits);
   useEffect(() => setRunError(''), [editsJson]);
   const active = !!state?.batch && ['running', 'paused'].includes(state.batch.status);
-
-  // Background jobs; the library reloads when a replay check finishes, for its new verdict.
-  const {jobs, loaded, error: jobsError, refresh: refreshJobs, cancel: cancelJob} = useJobs();
-  const [reload, setReload] = useState(0);
-  // The comparison whose trials the library lists ("Show these trials in the library").
-  const [showBatch, setShowBatch] = useState<{id: string; at: number} | null>(null);
-  // The jobs of the first listing that have finished are not news.
-  const previousJobs = useRef<Job[] | null>(null);
-  useEffect(() => {
-    if (!loaded) return;
-    if (previousJobs.current && finishedReplays(previousJobs.current, jobs).length)
-      setReload((n) => n + 1);
-    previousJobs.current = jobs;
-  }, [jobs, loaded]);
 
   const schedule = scheduleProblem(protocol);
   const parsedSeeds = parseSeeds(seeds);
@@ -163,26 +154,25 @@ export default function Experiments({
       `First experiment ready: ${first.protocol.name.toLowerCase()} over ${first.protocol.duration_steps / 100} simulated seconds, seeds ${first.seeds}, comparing “${conditionNames[first.conditions[0]]}” with “${conditionNames[first.conditions[1]]}”. Press Run comparison to start. The research guide's walkthrough also switches to compound-eye input on the Workbench.`,
     );
   };
+  // The Overview's quick action, once the first snapshot says which model is loaded.
+  useEffect(() => {
+    if (!setupFirst || !state) return;
+    setupDone();
+    if (!disabled && !active) loadFirstExperiment();
+  }, [setupFirst, !!state]);
   return (
     <>
-      <div className="research-intro">
-        <div>
-          <span className="eyebrow">EXPERIMENT DESIGN</span>
-          <h2>Ask a repeatable question.</h2>
-          <p>Control the stimulus, vary one condition, and keep a record of every trial.</p>
-        </div>
-        <div className="intro-actions">
-          <button
-            className="secondary-button"
-            disabled={disabled || active}
-            onClick={loadFirstExperiment}
-          >
-            <Sparkles size={14} />
-            Set up the first experiment
-          </button>
-          <span className="mini-badge">ONE ANIMAL AT A TIME / LOCAL</span>
-        </div>
-      </div>
+      <PageActions>
+        <span className="mini-badge">ONE ANIMAL AT A TIME · LOCAL</span>
+        <button
+          className="secondary-button"
+          disabled={disabled || active}
+          onClick={loadFirstExperiment}
+        >
+          <Sparkles size={14} />
+          Set up the first experiment
+        </button>
+      </PageActions>
       {(error || notice) && (
         <div
           className={`alert ${error ? 'error-alert' : 'export-alert'}`}
@@ -226,25 +216,9 @@ export default function Experiments({
         <ComparisonSummary
           batchId={state.batch.id}
           reload={`${state.batch.status}-${state.batch.results.length}-${reload}`}
-          showTrials={() => setShowBatch({id: state.batch!.id, at: Date.now()})}
+          showTrials={() => showTrials(state.batch!.id)}
         />
       )}
-      {jobsError && <p className="microcopy">{jobsError}</p>}
-      <ScorecardPanel state={state} jobs={jobs} refreshJobs={refreshJobs} disabled={disabled} />
-      <JobsPanel jobs={jobs} cancel={(id) => void cancelJob(id)} />
-      <PluginsPanel />
-      <RunLibrary
-        state={state}
-        command={command}
-        disabled={disabled}
-        batchActive={active}
-        jobs={jobs}
-        refreshJobs={refreshJobs}
-        cancelJob={cancelJob}
-        reload={reload}
-        showBatch={showBatch}
-        onLoaded={onLoaded}
-      />
     </>
   );
 }

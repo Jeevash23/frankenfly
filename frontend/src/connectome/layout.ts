@@ -146,12 +146,11 @@ export function topPartners(
   return result.sort((a, b) => b.synapses - a.synapses || a.type - b.type).slice(0, limit);
 }
 
-// Pale paper at rest to deep green at full activity.
+// --node-rest at rest to --node-hot at full activity (in the light theme pale paper to deep green),
+// mixed by the browser so the diagram follows the theme.
 export function activityColor(rate: number): string {
   const t = Math.max(0, Math.min(1, rate));
-  const from = [238, 240, 232],
-    to = [43, 86, 63];
-  return `rgb(${from.map((v, i) => Math.round(v + (to[i] - v) * t)).join(',')})`;
+  return `color-mix(in srgb, var(--node-hot) ${Math.round(t * 1000) / 10}%, var(--node-rest))`;
 }
 
 // A focusable spot in the diagram, for keyboard movement between nodes.

@@ -139,20 +139,9 @@ test('build and connectivity drafts', () => {
   assert.equal(readConnectivityDraft({key: 'abc'}), null);
 });
 
-test('the page and atlas tab live in the hash', () => {
-  assert.deepEqual(parseHash(''), {page: 'workbench', atlas: null});
-  assert.deepEqual(parseHash('#/experiments'), {page: 'experiments', atlas: null});
-  assert.deepEqual(parseHash('#/atlas/circuit'), {page: 'atlas', atlas: 'circuit'});
-  assert.deepEqual(parseHash('#atlas/build'), {page: 'atlas', atlas: 'build'});
-  assert.deepEqual(parseHash('#/atlas/nowhere'), {page: 'atlas', atlas: null});
-  assert.deepEqual(parseHash('#/somewhere'), {page: 'workbench', atlas: null});
-  for (const [page, atlas] of [
-    ['workbench', 'anatomy'],
-    ['atlas', 'connectivity'],
-    ['experiments', 'circuit'],
-  ]) {
-    const back = parseHash(routeHash(page, atlas));
-    assert.equal(back.page, page);
-    assert.equal(back.atlas, page === 'atlas' ? atlas : null);
-  }
+test('every page lives in the hash and survives a round trip', () => {
+  assert.equal(parseHash('#/workbench').route, 'workbench');
+  assert.equal(parseHash('#/connectome/build').route, 'build');
+  for (const id of ['overview', 'protocols', 'library', 'explorer', 'atlas', 'agents'])
+    assert.equal(parseHash(routeHash(id)).route, id);
 });

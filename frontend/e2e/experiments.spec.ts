@@ -14,7 +14,7 @@ test.afterAll(async ({playwright}) => {
 });
 
 test('a comparison at full speed completes and shows its statistics', async ({page, request}) => {
-  await openApp(page, '#/experiments');
+  await openApp(page, '#/experiments/protocols');
   await page.getByLabel('Comparison seeds').fill('1, 2');
   for (const condition of ['Neural control', 'Left sensor off'])
     await page.getByRole('checkbox', {name: condition, exact: true}).check();
@@ -48,8 +48,9 @@ test('a comparison at full speed completes and shows its statistics', async ({pa
   const text = await (await request.get(csv!)).text();
   expect(text.split('\n')[0]).toBe('kind,condition,baseline,metric,n,mean,sd,ci95_low,ci95_high');
 
-  // The library lists the comparison's trials.
+  // The library, on its own page, lists the comparison's trials.
   await statistics.getByRole('button', {name: 'Show these trials in the library'}).click();
+  await expect(page).toHaveURL(/#\/experiments\/library$/);
   await expect(page.getByLabel('Filter by comparison ID')).toHaveValue(batch.id);
   await expect(page.getByText(/Showing 4 of 4 matching runs/)).toBeVisible();
 });
@@ -71,11 +72,15 @@ test('a share-safe export is tagged, found by its tag and verified by replay', a
   const key = href!.match(/\/api\/exports\/(.+)\.zip$/)![1];
   created.add(key);
 
-  await page.getByRole('tab', {name: 'Experiments'}).click();
+  await page
+    .getByRole('navigation', {name: 'Main navigation'})
+    .getByRole('link', {name: 'Run library'})
+    .click();
   await page.getByRole('searchbox', {name: 'Search runs'}).fill(key);
+  // Each row's export menu is named after its run.
   const row = page
     .getByRole('row')
-    .filter({has: page.getByRole('link', {name: `Download run ${key}`})});
+    .filter({has: page.locator(`summary[aria-label="Export run ${key}"]`)});
   await expect(row).toHaveCount(1);
   await expect(page.getByText(/Showing 1 of 1 matching run\b/)).toBeVisible();
 

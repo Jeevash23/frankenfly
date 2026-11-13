@@ -51,8 +51,18 @@ Unless an entry says otherwise, a release keeps earlier runs replaying with the 
 - `scripts/toolkit.py scorecard --tests none`: score only plugin tests. A partial or empty card is never published.
 - `scripts/doctor.py` reports whether the MCP SDK is installed, and CI's dependency audit covers the MCP lock.
 
+### Changed
+
+- **The app is a research hub with a sidebar** instead of three tabs under a large banner. The sidebar groups every page: **Overview**; **Simulate** (Workbench); **Experiments** (Protocols & comparisons, Run library, Jobs); **Validate** (Scorecard); **Connectome** (Explorer, Build a circuit, Live circuit); **Anatomy** (Atlas, Imported connectivity); **Extend** (Plugins, and **Agents & MCP**, a short how-to for the MCP server). It collapses to icons (remembered in the browser) and is a drawer on phones. Each page has its own address (`#/experiments/library`, `#/connectome/explorer`, ...); the old ones (`#/experiments`, `#/atlas/circuit`, `#/atlas/explore`, ...) redirect to the page that now holds the same view, without a history entry. Each page opens with a compact header (title, one line, its actions) instead of the banner.
+- **Overview**: the live simulation (with Run/Pause and a link to the Workbench), recent runs, the latest scorecard per model as pass / partial / fail chips, running and recent jobs, installed plugins, quick actions (set up the first experiment, build a circuit, explore DNa02, run the scorecard) and the caveat that results are properties of these models, not fly biology. It reads existing endpoints only. An empty or unknown address now opens the Overview rather than the Workbench.
+- **Command palette** (Ctrl+K or ⌘K, or the header's search box): jump to any page, run common actions (run or pause, step, export the current run, set up the first experiment, score the Workbench model, switch theme, collapse the sidebar, model notes, Quit) and look up cell types to open in the connectivity explorer (`#/connectome/explorer?type=DNa02`).
+- **Dark theme.** Every colour is a theme token on `:root`, with dark values applied under `prefers-color-scheme: dark` or when chosen with the header's sun/moon button (kept in the browser's storage; the palette can return to following the system). Charts, the arena map, the live circuit (its activity colours now mix two tokens) and both anatomy views are drawn from the tokens. `tests/readability.test.mjs` checks 4.5:1 small-text contrast in both themes, that the two dark blocks match, and that no stylesheet writes a light-only colour outside the tokens. A small `theme-init.js`, served by the app, applies a stored choice before the first paint.
+- **One component style**: selects (including the explorer's **Graph**), text and number fields, buttons, segmented controls, table headers, chips and cards share one look. The header is compact: brand, search, connection, a running-jobs count that links to **Jobs**, theme, model notes and Quit.
+- Page content now adapts to the width of the page column (container queries) rather than of the window, so the sidebar never squeezes a layout meant for a wider screen.
+
 ### Fixed
 
+- The end-to-end test of the run library looked for a per-run download link that the export menu had replaced; it now finds the row by its export menu.
 - A background job that failed after printing reported its last printed line as the error instead of its error message: Python buffered the job's output, so the error arrived first. Jobs now run unbuffered.
 - `./scripts/setup.sh --with nwb` was refused as an unknown part, although the help listed it.
 

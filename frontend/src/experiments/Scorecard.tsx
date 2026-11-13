@@ -13,6 +13,7 @@ import {
   STATUS_TEXT,
   type ScorecardListing,
 } from '../scorecard';
+import {jobActive} from '../jobs';
 
 // The validation scorecard: each published perturbation → behavior result, scored for the latest
 // run of every model, with the source, the rule fixed in advance and the measured number.
@@ -21,11 +22,16 @@ export function ScorecardPanel({
   jobs,
   refreshJobs,
   disabled,
+  autoScore = false,
+  autoScoreDone,
 }: {
   state: State | null;
   jobs: Job[];
   refreshJobs: () => void;
   disabled: boolean;
+  // Set by the Overview's "Run the scorecard": score the Workbench model once the cards load.
+  autoScore?: boolean;
+  autoScoreDone?: () => void;
 }) {
   const [listing, setListing] = useState<ScorecardListing | null>(null);
   const [error, setError] = useState('');
@@ -52,14 +58,6 @@ export function ScorecardPanel({
     if (previous.current && finishedScorecards(previous.current, jobs)) setRound((n) => n + 1);
     previous.current = jobs;
   }, [jobs]);
-  if (!listing) return error ? <p className="microcopy">{error}</p> : null;
-  const card = pickCard(listing.scorecards, chosen ?? keyFor(current));
-  const running = jobs.some(
-    (j) =>
-      j.kind === 'scorecard' &&
-      j.target === keyFor(current) &&
-      ['queued', 'running'].includes(j.status),
-  );
   const score = async () => {
     setNotice('');
     const r = await request('POST', '/api/scorecards/run', current);
@@ -72,11 +70,27 @@ export function ScorecardPanel({
     );
     refreshJobs();
   };
+  useEffect(() => {
+    if (!autoScore || !listing || !state) return;
+    autoScoreDone?.();
+    const busy = jobs.some(
+      (j) => j.kind === 'scorecard' && j.target === keyFor(current) && jobActive(j),
+    );
+    if (!disabled && !busy) void score();
+  }, [autoScore, !!listing, !!state]);
+  if (!listing) return error ? <p className="microcopy">{error}</p> : null;
+  const card = pickCard(listing.scorecards, chosen ?? keyFor(current));
+  const running = jobs.some(
+    (j) =>
+      j.kind === 'scorecard' &&
+      j.target === keyFor(current) &&
+      ['queued', 'running'].includes(j.status),
+  );
   return (
     <section className="panel scorecard-panel" aria-labelledby="scorecard-heading">
       <div className="panel-heading">
         <div>
-          <h2 id="scorecard-heading">Validation scorecard</h2>
+          <h2 id="scorecard-heading">Model scores</h2>
         </div>
         <span className="subtle-label">Published perturbation → behavior results</span>
       </div>
