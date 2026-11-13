@@ -4,21 +4,23 @@ test.beforeEach(async ({request}) => {
   await resetToy(request);
 });
 
-test('the page and atlas tab survive a reload and follow Back', async ({page}) => {
+test('pages survive a reload and follow Back and Forward', async ({page}) => {
   await openApp(page);
-  await page.getByRole('tab', {name: 'Neural atlas'}).click();
-  await expect(page).toHaveURL(/#\/atlas\/anatomy$/);
-  await page.getByRole('tab', {name: 'Build a circuit'}).click();
-  await expect(page).toHaveURL(/#\/atlas\/build$/);
+  const nav = page.getByRole('navigation', {name: 'Main navigation'});
+  await nav.getByRole('link', {name: 'Atlas'}).click();
+  await expect(page).toHaveURL(/#\/anatomy\/atlas$/);
+  await nav.getByRole('link', {name: 'Build a circuit'}).click();
+  await expect(page).toHaveURL(/#\/connectome\/build$/);
+  await expect(nav.getByRole('link', {name: 'Build a circuit'})).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
 
   await page.reload();
-  await expect(page.getByRole('tab', {name: 'Neural atlas'})).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
-  await expect(page.getByRole('tab', {name: 'Build a circuit'})).toHaveAttribute(
-    'aria-selected',
-    'true',
+  await expect(page.getByRole('heading', {level: 1, name: 'Build a circuit'})).toBeVisible();
+  await expect(nav.getByRole('link', {name: 'Build a circuit'})).toHaveAttribute(
+    'aria-current',
+    'page',
   );
   // The committed side-balanced circuits are listed like the others, and say how they were built.
   const circuits = page.getByRole('table').filter({hasText: 'Seeds · readout'});
@@ -30,22 +32,17 @@ test('the page and atlas tab survive a reload and follow Back', async ({page}) =
   );
 
   await page.goBack();
-  await expect(page).toHaveURL(/#\/atlas\/anatomy$/);
-  await expect(page.getByRole('tab', {name: 'Male & female anatomy'})).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
+  await expect(page).toHaveURL(/#\/anatomy\/atlas$/);
+  await expect(page.getByRole('heading', {level: 1, name: 'Male & female anatomy'})).toBeVisible();
   await page.goForward();
-  await expect(page).toHaveURL(/#\/atlas\/build$/);
+  await expect(page).toHaveURL(/#\/connectome\/build$/);
 
-  await page.getByRole('tab', {name: 'Experiments'}).click();
-  await expect(page).toHaveURL(/#\/experiments$/);
+  await nav.getByRole('link', {name: 'Protocols & comparisons'}).click();
+  await expect(page).toHaveURL(/#\/experiments\/protocols$/);
   await page.reload();
-  await expect(page.getByRole('heading', {name: /The experiment notebook/})).toBeVisible();
-  await expect(page.getByRole('tab', {name: 'Experiments'})).toHaveAttribute(
-    'aria-selected',
-    'true',
-  );
+  await expect(
+    page.getByRole('heading', {level: 1, name: 'Protocols & comparisons'}),
+  ).toBeVisible();
 });
 
 test('the builder sends side balance, never with a whole-brain build', async ({page, request}) => {
@@ -53,7 +50,7 @@ test('the builder sends side balance, never with a whole-brain build', async ({p
     !(await request.get('/api/connectome/catalog')).ok(),
     'The builder form needs the prepared FlyWire catalog (scripts/build_circuit.py prepare).',
   );
-  await openApp(page, '#/atlas/build');
+  await openApp(page, '#/connectome/build');
   await page.getByLabel('Circuit name').fill('e2e-never-built');
   await page.getByLabel('Add a seed').fill('DNa02');
   await page.getByRole('button', {name: 'Add seed', exact: true}).click();

@@ -19,7 +19,7 @@ test('the app loads without console errors and shows its version', async ({
   consoleErrors,
 }) => {
   await openApp(page);
-  await expect(page.getByRole('heading', {name: /The sensorimotor workbench/})).toBeVisible();
+  await expect(page.getByRole('heading', {level: 1, name: 'Workbench'})).toBeVisible();
   const {version} = await (await request.get('/api/health')).json();
   await expect(page.getByRole('banner').getByText(`v${version}`, {exact: true})).toBeVisible();
   await expect(page.getByText('PAUSED', {exact: true})).toBeVisible();
